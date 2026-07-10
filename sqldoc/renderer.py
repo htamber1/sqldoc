@@ -248,7 +248,9 @@ HTML_TEMPLATE = """
         .table-name { font-size: 1.15rem; font-weight: 700; color: var(--text-strong); }
         .table-meta { font-size: 0.8rem; color: var(--muted); margin-top: 4px; font-family: 'Consolas', monospace; }
         .table-description { font-size: 0.9rem; color: #cbd5e1; margin-top: 10px; line-height: 1.6; }
-        .row-count { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid var(--border-strong); padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+        .row-count { padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; border: 1px solid var(--border-strong); background: rgba(255,255,255,0.05); color: var(--muted); }
+        .row-count.has-data { background: rgba(16,185,129,0.13); color: #34d399; border-color: rgba(16,185,129,0.3); }
+        .row-count.no-data { background: rgba(148,163,184,0.09); color: var(--muted); border-color: var(--border-strong); }
         table { width: 100%; border-collapse: collapse; }
         th { background: var(--card-head); padding: 11px 16px; text-align: left; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border-strong); }
         td { padding: 12px 16px; font-size: 0.875rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text); }
@@ -453,7 +455,7 @@ HTML_TEMPLATE = """
                         <div class="table-description">{{ table.description }}</div>
                         {% endif %}
                     </div>
-                    <div class="row-count">{{ "{:,}".format(table.row_count) }} rows</div>
+                    <div class="row-count {{ 'has-data' if table.row_count else 'no-data' }}">{{ "{:,}".format(table.row_count) }} row{{ '' if table.row_count == 1 else 's' }}</div>
                 </div>
                 <table>
                     <thead>
