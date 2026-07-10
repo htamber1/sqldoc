@@ -232,7 +232,7 @@ def main(config, server, database, username, password, connection_string, output
     else:
         privacy = "cloud (Anthropic) - schema metadata sent off-network"
 
-    click.echo(f"\nsqldoc v1.1.0")
+    click.echo(f"\nsqldoc v1.2.0")
     click.echo(f"{'='*40}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -386,7 +386,7 @@ def scan(config, server, database, username, password, connection_string, schema
     except ValueError as e:
         raise click.UsageError(f"Invalid pii_patterns in config: {e}")
 
-    click.echo("\nsqldoc v1.1.0  -  PII / compliance scan")
+    click.echo("\nsqldoc v1.2.0  -  PII / compliance scan")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -497,7 +497,7 @@ class DefaultGroup(click.Group):
 
 
 @click.group(cls=DefaultGroup)
-@click.version_option("1.1.0", prog_name="sqldoc")
+@click.version_option("1.2.0", prog_name="sqldoc")
 def cli():
     """sqldoc — SQL Server documentation + PII / compliance scanner."""
 
