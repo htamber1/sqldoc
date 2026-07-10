@@ -96,6 +96,13 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
     --username sa --password '***' --no-ai --output docs.html
 ```
 
+Markdown export for a GitHub wiki (format inferred from the `.md` extension):
+
+```bash
+python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --no-ai --output docs.md
+```
+
 ### Options
 
 | Option | Description |
@@ -104,7 +111,8 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--database` | Database name to document (**required**) |
 | `--username` | SQL Server username (**required**) |
 | `--password` | SQL Server password (**required**) |
-| `--output` | Output HTML file path (default `documentation.html`) |
+| `--output` | Output file path (default `documentation.html`) |
+| `--format html\|markdown\|pdf` | Output format. Defaults to the `--output` extension (`.md`→markdown, `.pdf`→pdf), else HTML |
 | `--mode local\|cloud` | AI backend: `local` (Ollama, default) or `cloud` (Anthropic) |
 | `--model` | Model to use. Defaults per mode: `llama3.1:8b` (local), `claude-haiku-4-5` (cloud) |
 | `--schemas` | Comma-separated list of schemas to include (default: all) |

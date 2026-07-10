@@ -5,14 +5,30 @@ from dotenv import load_dotenv
 from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures
 from sqldoc.renderer import render_html
+from sqldoc.markdown_renderer import render_markdown
 
 load_dotenv()
 
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'output',
-    'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'yes',
+    'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format', 'yes',
 }
+
+# Output file extension -> format, used when --format is not given explicitly.
+_EXT_FORMAT = {
+    '.html': 'html', '.htm': 'html',
+    '.md': 'markdown', '.markdown': 'markdown',
+    '.pdf': 'pdf',
+}
+
+
+def resolve_format(fmt, output):
+    """Pick the output format: explicit --format wins, else infer from the
+    output file extension, else default to html."""
+    if fmt:
+        return fmt
+    return _EXT_FORMAT.get(os.path.splitext(output)[1].lower(), 'html')
 
 
 def load_config(path: str, explicit: bool) -> dict:
@@ -51,14 +67,15 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--database', default=None, help='Database name to document')
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
-@click.option('--output', default='documentation.html', help='Output HTML file path')
+@click.option('--output', default='documentation.html', help='Output file path')
+@click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf']), help='Output format (default: inferred from --output extension, else html)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
 @click.option('--model', default=None, help='Model to use (default: llama3.1:8b for local, claude-haiku-4-5 for cloud)')
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, output, mode, model, schemas, no_ai, concurrency, yes):
+def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -66,8 +83,10 @@ def main(config, server, database, username, password, output, mode, model, sche
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
 
-    def resolve(name, value):
-        if ctx.get_parameter_source(name).name == 'COMMANDLINE':
+    def resolve(name, value, param=None):
+        # `name` is the config key; `param` is the Click parameter name when it
+        # differs (e.g. config key 'format' vs. option dest 'output_format').
+        if ctx.get_parameter_source(param or name).name == 'COMMANDLINE':
             return value
         return cfg.get(name, value)
 
@@ -76,6 +95,7 @@ def main(config, server, database, username, password, output, mode, model, sche
     username = resolve('username', username)
     password = resolve('password', password)
     output = resolve('output', output)
+    output_format = resolve('format', output_format, param='output_format')
     mode = resolve('mode', mode)
     model = resolve('model', model)
     schemas = resolve('schemas', schemas)
@@ -96,6 +116,10 @@ def main(config, server, database, username, password, output, mode, model, sche
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
     if not isinstance(concurrency, int) or not (1 <= concurrency <= 64):
         raise click.UsageError(f"Invalid concurrency '{concurrency}' (must be an integer 1-64).")
+    if output_format not in (None, 'html', 'markdown', 'pdf'):
+        raise click.UsageError(f"Invalid format '{output_format}' (must be html, markdown, or pdf).")
+
+    output_format = resolve_format(output_format, output)
 
     # Resolve the model per backend when not explicitly set, so --model works
     # for both without a local default (llama tag) leaking into cloud calls.
@@ -116,7 +140,7 @@ def main(config, server, database, username, password, output, mode, model, sche
     click.echo(f"Database: {database}")
     click.echo(f"Mode:     {'No AI' if no_ai else mode}")
     click.echo(f"Privacy:  {privacy}")
-    click.echo(f"Output:   {output}")
+    click.echo(f"Output:   {output} ({output_format})")
     click.echo(f"{'='*40}\n")
 
     # Guard: cloud mode sends schema metadata off the client's network. Require
@@ -176,9 +200,15 @@ def main(config, server, database, username, password, output, mode, model, sche
     else:
         click.echo("Skipping AI descriptions (--no-ai flag set)")
 
-    # Render HTML
-    click.echo(f"\nRendering documentation...")
-    render_html(database, tables, output, views=views, procedures=procedures)
+    # Render in the requested format
+    click.echo(f"\nRendering documentation ({output_format})...")
+    if output_format == 'markdown':
+        render_markdown(database, tables, output, views=views, procedures=procedures)
+    elif output_format == 'pdf':
+        from sqldoc.pdf_renderer import render_pdf
+        render_pdf(database, tables, output, views=views, procedures=procedures)
+    else:
+        render_html(database, tables, output, views=views, procedures=procedures)
 
     click.echo(f"\nDone! Open {output} in your browser to view the documentation.")
 
