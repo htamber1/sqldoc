@@ -17,8 +17,9 @@ load_dotenv()
 @click.option('--model', default=None, help='Model to use (default: llama3.1:8b for local, claude-haiku-4-5 for cloud)')
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
+@click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(server, database, username, password, output, mode, model, schemas, no_ai, yes):
+def main(server, database, username, password, output, mode, model, schemas, no_ai, concurrency, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Resolve the model per backend when not explicitly set, so --model works
@@ -88,11 +89,11 @@ def main(server, database, username, password, output, mode, model, schemas, no_
 
     # Generate AI descriptions
     if not no_ai:
-        click.echo(f"\nGenerating AI descriptions using {mode} mode...")
+        click.echo(f"\nGenerating AI descriptions using {mode} mode ({concurrency} parallel)...")
         try:
-            tables = enrich_tables(tables, mode=mode, model=model)
-            views = enrich_views(views, mode=mode, model=model)
-            procedures = enrich_procedures(procedures, mode=mode, model=model)
+            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency)
+            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency)
+            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency)
         except Exception as e:
             click.echo(f"\nAI generation failed: {e}", err=True)
             click.echo("Try --no-ai to generate schema-only documentation")
