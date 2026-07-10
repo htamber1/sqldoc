@@ -34,11 +34,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Roadmap
 **Phase 1 — visual parity/lead vs. Redgate SQL Doc (DONE).** ER diagram + real-time search. Both shipped and validated (`--no-ai`).
 
-**Phase 2 — deeper coverage + AI quality (largely DONE, see above).** Remaining/deferred: more object types (constraints, computed columns, triggers), `ai.py` retry/backoff + optional description caching, ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
+**Phase 2 — deeper coverage + AI quality (first wave DONE, see above).**
 
-**Phase 3 — output formats + distribution (PROPOSED, not yet agreed).**
-- Export formats beyond HTML: Markdown, JSON, PDF.
-- Connection UX: connection-string / `.env`-driven credentials; `--dry-run` cloud cost estimate. (Config file — done in Phase 2.)
+_Agreed next (2026-07-10), building now:_
+- **PDF export** — a print/PDF-friendly rendering of the documentation.
+- **Markdown export** — for GitHub wikis (per-object or single-file `.md`).
+- **Schema change detection** — diff two runs and highlight what changed (added/removed/altered tables, columns, indexes, views, procs). Flagship enterprise feature (Dataedo charges premium for this).
+
+_Decisions:_
+- **SQL definitions stay out of AI calls for now.** View/proc definitions are extracted + rendered locally but never sent to the model, holding the cloud data boundary at "names/types/keys/row counts." A future **`--include-definitions`** opt-in flag will let users trade the wider boundary for richer AI descriptions that read the definition body; it must update the `Privacy:` banner + cloud warning to state that definitions are being sent, and stay off by default.
+
+_Deferred:_ more object types (constraints, computed columns, triggers), `ai.py` retry/backoff + optional description caching, ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
+
+**Phase 3 — distribution (PROPOSED, not yet agreed).**
+- JSON export; connection UX (connection-string / `.env`-driven credentials); `--dry-run` cloud cost estimate. (Config file — done in Phase 2.)
 - Packaging: `pyproject.toml` + console entry point (`sqldoc` command); replace ad-hoc `test_*.py` with a real pytest suite.
 
 > Phase 3 is a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
