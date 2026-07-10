@@ -103,6 +103,13 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
     --username sa --password '***' --no-ai --output docs.md
 ```
 
+PDF export (self-contained, no system libraries — uses `fpdf2`):
+
+```bash
+python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --no-ai --output docs.pdf
+```
+
 ### Options
 
 | Option | Description |
