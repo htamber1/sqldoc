@@ -4,6 +4,21 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **PII drift detection** (`sqldoc scan --baseline`) — snapshots findings and
+  diffs the next scan, reporting new / resolved / risk-changed findings.
+- **SARIF 2.1.0 export** (`sqldoc scan --sarif`) — import PII findings into
+  GitHub Advanced Security / Azure DevOps and gate CI.
+- **Custom PII patterns** — define org-specific categories in `.sqldoc.yml`
+  under `pii_patterns:` (checked before the built-in catalog).
+
+### Changed / infrastructure
+- GitHub Actions CI runs pytest (3.10–3.12) on push/PR; README CI badge.
+- Removed the ad-hoc root `test_*.py` scripts (superseded by the pytest suite,
+  now 77 tests). Added `PUBLISHING.md` (PyPI release walkthrough).
+
 ## [1.1.0] — 2026-07-10
 
 ### Added — PII / compliance scanner (`sqldoc scan`)
