@@ -85,7 +85,7 @@ Pinned in `requirements.txt`: `click`, `pyodbc`, `anthropic`, `jinja2`, `request
 
 ## Tests
 
-`test_*.py` in the repo root are **not** pytest tests — they are ad-hoc scripts hardcoded to a local `AdventureWorks2022` database (`localhost`, `sa`/`SqlDoc123!`) and, for two of them, a running Ollama. Run one directly, e.g. `venv/Scripts/python.exe test_render.py`. They require live infrastructure and will fail without it. Do not treat them as a CI-style suite.
+Real pytest suite under `tests/` — **no live SQL Server or Ollama required** (pyodbc + the LLM calls are mocked). Run with `venv/Scripts/python.exe -m pytest -q` (or `pip install -e .[test]` for the `pytest`/`pypdf` extra). Coverage: extractor parsing via a fake pyodbc layer (`tests/conftest.py`), AI retry + cache, snapshot diffing, all three renderers, the PII engine, and CLI flag/command-group behavior. The old ad-hoc `test_*.py` scripts were removed in the v1.1 cleanup.
 
 ## Architecture
 
