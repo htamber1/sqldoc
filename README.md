@@ -72,13 +72,13 @@ assets) built for navigating large schemas:
 ## Installation
 
 ```bash
-# from the repo root
 python -m venv venv
 venv/Scripts/activate        # Windows;  source venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
+pip install .                # installs sqldoc and the `sqldoc` command
 ```
 
-For cloud mode, create a `.env` file in the repo root with your API key:
+Use `pip install -e .` for an editable/development install. For cloud mode,
+create a `.env` file in the working directory with your API key:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
@@ -86,7 +86,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## Usage
 
-Run as a module from the repo root:
+Once installed, run the `sqldoc` command:
+
+```bash
+sqldoc --server <host> --database <db> --username <user> --password <pw> \
+    --output docs.html
+```
+
+You can also run it as a module without installing (`python -m sqldoc.cli ...`).
 
 ```bash
 python -m sqldoc.cli --server <host> --database <db> \

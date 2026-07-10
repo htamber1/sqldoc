@@ -51,14 +51,14 @@ _Third wave — DONE (2026-07-10):_ **triggers + computed columns** (extractor +
 _Deferred:_ remaining object types (constraints), ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle).
 
 **Phase 3 — distribution (PROPOSED, not yet agreed).**
-- JSON export; connection UX (connection-string / `.env`-driven credentials); `--dry-run` cloud cost estimate. (Config file — done in Phase 2.)
-- Packaging: `pyproject.toml` + console entry point (`sqldoc` command); replace ad-hoc `test_*.py` with a real pytest suite.
+- JSON export; `.env`-driven credentials; `--dry-run` cloud cost estimate. (Config file + `--connection-string` — done in Phase 2.)
+- Replace ad-hoc `test_*.py` with a real pytest suite. (Packaging — `pyproject.toml` + `sqldoc` console entry point — done in Phase 2.)
 
 > Phase 3 is a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
 
 ## Running
 
-There is no `setup.py`/`pyproject.toml` and no console-script entry point (a `requirements.txt` now exists). Run the CLI as a module from the repo root, using the checked-in venv:
+Packaged with `pyproject.toml` (setuptools); `pip install .` (or `-e .`) installs the **`sqldoc`** console command (entry point `sqldoc.cli:main`). You can still run it as a module from the repo root using the checked-in venv:
 
 ```bash
 venv/Scripts/python.exe -m sqldoc.cli --server <host> --database <db> --username <user> --password <pw> --output docs.html

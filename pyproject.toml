@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqldoc"
+version = "0.1.0"
+description = "Automated documentation generator for SQL Server databases, with optional AI-written descriptions."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "htamber" }]
+keywords = ["sql-server", "documentation", "database", "schema", "er-diagram"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Database",
+    "Topic :: Documentation",
+]
+dependencies = [
+    "anthropic>=0.109",
+    "click>=8.1",
+    "Jinja2>=3.1",
+    "pyodbc>=5.0",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "fpdf2>=2.8",
+    "requests>=2.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/htamber1/sqldoc"
+Repository = "https://github.com/htamber1/sqldoc"
+
+[project.scripts]
+sqldoc = "sqldoc.cli:main"
+
+[tool.setuptools]
+packages = ["sqldoc"]

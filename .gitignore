@@ -3,6 +3,10 @@ venv/
 __pycache__/
 *.pyc
 *.html
+# Packaging build artifacts
+*.egg-info/
+build/
+dist/
 # May contain DB credentials; commit .sqldoc.example.yml instead.
 .sqldoc.yml
 # Generated schema snapshots for change detection (commit intentionally if you
