@@ -6,6 +6,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file.
 
+## Project status & roadmap (as of 2026-07-09)
+
+### Built & validated
+- **Cloud model + `--model` wiring** — `_call_anthropic` model is configurable and defaults to `claude-haiku-4-5` (cheap/fast, fits the one-call-per-table/column workload); `--model` threads through both backends with per-mode defaults.
+- **Privacy guardrails** — local-first by default, mode-aware `Privacy:` banner line, cloud confirmation prompt (with `--yes` bypass for CI). Data boundary: only schema metadata is ever sent off-network; row data is never read.
+- **ER diagram** (`renderer.py` → `_build_er`) — self-contained SVG: schema-colored table boxes in a masonry layout, deduped bezier FK arrows, self-reference loops, legend, zoom controls.
+- **Real-time search** — sticky search box filtering tables + columns, with column drill-down, empty-group collapse, and a live match count.
+- **Repo hygiene** — `README.md`, `requirements.txt`, `.gitignore` (`venv/`, `.env`, `*.html`), committer email corrected across history, pushed to `github.com/htamber1/sqldoc`.
+
+**Validated end-to-end:** the `--no-ai` path against a local `AdventureWorks2022` (71 tables / 6 schemas). Renderer output confirmed: 71 SVG boxes, 86 FK arrows, well-formed SVG XML, search wiring present.
+
+### Pending / unvalidated
+- **The AI path has NOT been run end-to-end** — neither local (Ollama) nor cloud (Anthropic). `--no-ai` deliberately skips `ai.py`. This is the highest-priority smoke test before relying on generated descriptions.
+- **ER diagram browser QA** — auto-layout can produce crossing arrows on dense schemas (71 tables is a lot). Not yet eyeballed in a browser. Visual polish is explicitly deferred.
+- No automated test suite (see Tests below — the `test_*.py` scripts are ad-hoc, not pytest).
+
+### Roadmap
+**Phase 1 — visual parity/lead vs. Redgate SQL Doc (DONE).** ER diagram + real-time search. Both shipped and validated (`--no-ai`).
+
+**Phase 2 — deeper coverage + AI quality (PROPOSED, not yet agreed).**
+- Extract more object types: views, stored procedures, indexes, constraints, computed columns, triggers.
+- `ai.py` performance/robustness: concurrency or batching for `enrich_tables` (currently serial, one blocking call per table/column — the slow path), retry/backoff, optional description caching.
+- ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
+
+**Phase 3 — output formats + distribution (PROPOSED, not yet agreed).**
+- Export formats beyond HTML: Markdown, JSON, PDF.
+- Connection UX: config file / connection-string / `.env`-driven credentials; `--dry-run` cloud cost estimate.
+- Packaging: `pyproject.toml` + console entry point (`sqldoc` command); replace ad-hoc `test_*.py` with a real pytest suite.
+
+> Phases 2–3 are a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
+
 ## Running
 
 There is no `setup.py`/`pyproject.toml` and no console-script entry point (a `requirements.txt` now exists). Run the CLI as a module from the repo root, using the checked-in venv:
