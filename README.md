@@ -39,6 +39,24 @@ never a salary.
    real-time search, and collapsible view/procedure definitions, styled inline,
    no external assets or dependencies to serve.
 
+### HTML output — an IDE-like reading experience
+
+The HTML report is a self-contained, dark-themed app (one file, no external
+assets) built for navigating large schemas:
+
+- **Sidebar navigation tree** — a collapsible left panel lists every schema and
+  its tables/views/procedures (type-tagged); click any item to smooth-scroll to
+  its card. The whole sidebar and each schema node collapse.
+- **Interactive ER diagram** — schema-banded left-to-right layout showing only
+  FK-connected tables, with arrows colored by schema. Hover a table to spotlight
+  its relationships; click it to jump to its documentation card.
+- **Real-time search + type filter** — filter to All / Tables / Views /
+  Procedures and search across names and columns at once.
+- **Copy SQL** — one-click copy button on every view and stored-procedure
+  definition.
+- **Color-coded row counts** — green pills for populated tables, gray for empty
+  ones, with thousands separators.
+
 ## Requirements
 
 - **Python 3.10+**
