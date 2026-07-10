@@ -1,5 +1,7 @@
 # sqldoc
 
+[![CI](https://github.com/htamber1/sqldoc/actions/workflows/ci.yml/badge.svg)](https://github.com/htamber1/sqldoc/actions/workflows/ci.yml)
+
 Automated documentation generator for **SQL Server** databases.
 
 `sqldoc` connects to a SQL Server database, extracts its schema, uses an LLM to
