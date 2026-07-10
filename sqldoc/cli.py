@@ -11,6 +11,7 @@ from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_s
 from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
                         findings_snapshot, diff_findings, iter_findings_diff_lines)
 from sqldoc.pii_renderer import render_pii_html
+from sqldoc.sarif import render_sarif
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
-    'baseline', 'no_baseline', 'yes',
+    'baseline', 'no_baseline', 'sarif', 'yes',
 }
 
 
@@ -346,8 +347,9 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--model', default=None, help='Model for --sample confirmation (default per mode)')
 @click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
+@click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, yes):
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -366,6 +368,7 @@ def scan(config, server, database, username, password, connection_string, schema
     sample = resolve('sample', sample)
     baseline = resolve('baseline', baseline)
     no_baseline = resolve('no_baseline', no_baseline)
+    sarif = resolve('sarif', sarif)
     yes = resolve('yes', yes)
 
     if mode not in ('local', 'cloud'):
@@ -438,6 +441,8 @@ def scan(config, server, database, username, password, connection_string, schema
 
     click.echo("\nRendering report...")
     render_pii_html(database, findings, output, sampled=sample)
+    if sarif:
+        render_sarif(database, findings, sarif)
 
     s = summarize(findings)
     click.echo(
