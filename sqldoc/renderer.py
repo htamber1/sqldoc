@@ -1,6 +1,6 @@
 import math
-from jinja2 import Template
-from sqldoc.extractor import Table
+from jinja2 import Environment
+from sqldoc.extractor import Table, View, StoredProcedure
 from datetime import datetime
 
 # Palette used to color-code schemas in the ER diagram (cycled if there are more
@@ -140,7 +140,7 @@ HTML_TEMPLATE = """
         .header h1 { font-size: 2rem; margin-bottom: 8px; }
         .header p { color: #a0aec0; font-size: 0.95rem; }
         .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 20px; margin-bottom: 40px; }
         .stat-card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }
         .stat-card .number { font-size: 2rem; font-weight: 700; color: #4f46e5; }
         .stat-card .label { color: #6b7280; font-size: 0.875rem; margin-top: 4px; }
@@ -179,6 +179,18 @@ HTML_TEMPLATE = """
         .badge-fk { background: #dbeafe; color: #1e40af; }
         .badge-nullable { background: #f3f4f6; color: #6b7280; }
         .col-description { color: #4b5563; font-size: 0.85rem; line-height: 1.5; }
+        .badge-uq { background: #dcfce7; color: #166534; }
+        .badge-out { background: #fae8ff; color: #86198f; }
+        .type-badge { padding: 4px 12px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
+        .type-badge.view { background: #cffafe; color: #0e7490; }
+        .type-badge.proc { background: #ede9fe; color: #6d28d9; }
+        .subsection-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; padding: 14px 16px 6px; }
+        .index-section { border-top: 1px solid #f3f4f6; }
+        .no-params { padding: 14px 16px; color: #9ca3af; font-size: 0.85rem; font-style: italic; }
+        details.definition { border-top: 1px solid #f3f4f6; }
+        details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 600; color: #4f46e5; user-select: none; }
+        details.definition summary:hover { background: #f9fafb; }
+        details.definition pre { margin: 0; padding: 16px; background: #1e293b; color: #e2e8f0; font-size: 0.78rem; line-height: 1.5; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; }
         .no-results { display: none; text-align: center; color: #9ca3af; padding: 40px; font-size: 0.95rem; }
         .footer { text-align: center; padding: 40px; color: #9ca3af; font-size: 0.85rem; }
     </style>
@@ -194,6 +206,18 @@ HTML_TEMPLATE = """
                 <div class="number">{{ total_tables }}</div>
                 <div class="label">Tables</div>
             </div>
+            {% if total_views %}
+            <div class="stat-card">
+                <div class="number">{{ total_views }}</div>
+                <div class="label">Views</div>
+            </div>
+            {% endif %}
+            {% if total_procedures %}
+            <div class="stat-card">
+                <div class="number">{{ total_procedures }}</div>
+                <div class="label">Procedures</div>
+            </div>
+            {% endif %}
             <div class="stat-card">
                 <div class="number">{{ total_columns }}</div>
                 <div class="label">Columns</div>
@@ -250,6 +274,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div id="doc-body">
+        <div class="section-title">Tables</div>
         {% for schema, tables in schemas.items() %}
         <div class="schema-group">
             <div class="schema-title">{{ schema }}</div>
@@ -296,12 +321,129 @@ HTML_TEMPLATE = """
                         {% endfor %}
                     </tbody>
                 </table>
+                {% if table.indexes %}
+                <div class="index-section">
+                    <div class="subsection-title">Indexes ({{ table.indexes|length }})</div>
+                    <table>
+                        <thead>
+                            <tr><th>Name</th><th>Type</th><th>Columns</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for idx in table.indexes %}
+                            <tr>
+                                <td class="col-name">{{ idx.name }}
+                                    {% if idx.is_primary_key %}<span class="badge badge-pk">PK</span>{% elif idx.is_unique %}<span class="badge badge-uq">UNIQUE</span>{% endif %}
+                                </td>
+                                <td class="col-type">{{ idx.type_desc }}</td>
+                                <td class="col-description">{{ idx.key_columns|join(', ') }}{% if idx.included_columns %} <span style="color:#6b7280;">(incl: {{ idx.included_columns|join(', ') }})</span>{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
             </div>
             {% endfor %}
         </div>
         {% endfor %}
+
+        {% if views_by_schema %}
+        <div class="section-title">Views</div>
+        {% for schema, views in views_by_schema.items() %}
+        <div class="schema-group">
+            <div class="schema-title">{{ schema }}</div>
+            {% for view in views %}
+            <div class="table-card"
+                 data-name="{{ (schema ~ '.' ~ view.name)|lower }}"
+                 data-search="{{ (schema ~ ' ' ~ view.name ~ ' view ' ~ (view.columns|map(attribute='name')|join(' ')) ~ ' ' ~ (view.columns|map(attribute='data_type')|join(' ')))|lower }}">
+                <div class="table-header">
+                    <div>
+                        <div class="table-name">{{ view.name }}</div>
+                        <div class="table-meta">{{ view.schema }}.{{ view.name }}</div>
+                        {% if view.description %}
+                        <div class="table-description">{{ view.description }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="type-badge view">VIEW</div>
+                </div>
+                {% if view.columns %}
+                <table>
+                    <thead>
+                        <tr><th>Column</th><th>Type</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for col in view.columns %}
+                        <tr data-col="{{ (col.name ~ ' ' ~ col.data_type)|lower }}">
+                            <td class="col-name">{{ col.name }}</td>
+                            <td class="col-type">{{ col.data_type }}</td>
+                            <td class="col-description">{{ col.description or "" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% endif %}
+                {% if view.definition %}
+                <details class="definition">
+                    <summary>Definition</summary>
+                    <pre><code>{{ view.definition }}</code></pre>
+                </details>
+                {% endif %}
+            </div>
+            {% endfor %}
         </div>
-        <div class="no-results" id="no-results">No tables or columns match your search.</div>
+        {% endfor %}
+        {% endif %}
+
+        {% if procs_by_schema %}
+        <div class="section-title">Stored Procedures</div>
+        {% for schema, procs in procs_by_schema.items() %}
+        <div class="schema-group">
+            <div class="schema-title">{{ schema }}</div>
+            {% for proc in procs %}
+            <div class="table-card"
+                 data-name="{{ (schema ~ '.' ~ proc.name)|lower }}"
+                 data-search="{{ (schema ~ ' ' ~ proc.name ~ ' procedure proc ' ~ (proc.parameters|map(attribute='name')|join(' ')) ~ ' ' ~ (proc.parameters|map(attribute='data_type')|join(' ')))|lower }}">
+                <div class="table-header">
+                    <div>
+                        <div class="table-name">{{ proc.name }}</div>
+                        <div class="table-meta">{{ proc.schema }}.{{ proc.name }}</div>
+                        {% if proc.description %}
+                        <div class="table-description">{{ proc.description }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="type-badge proc">PROC</div>
+                </div>
+                {% if proc.parameters %}
+                <table>
+                    <thead>
+                        <tr><th>Parameter</th><th>Type</th><th>Direction</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for p in proc.parameters %}
+                        <tr data-col="{{ (p.name ~ ' ' ~ p.data_type)|lower }}">
+                            <td class="col-name">{{ p.name }}</td>
+                            <td class="col-type">{{ p.data_type }}</td>
+                            <td>{% if p.is_output %}<span class="badge badge-out">OUTPUT</span>{% else %}<span class="badge badge-nullable">IN</span>{% endif %}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="no-params">No parameters</div>
+                {% endif %}
+                {% if proc.definition %}
+                <details class="definition">
+                    <summary>Definition</summary>
+                    <pre><code>{{ proc.definition }}</code></pre>
+                </details>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+        {% endif %}
+        </div>
+        <div class="no-results" id="no-results">No objects match your search.</div>
     </div>
     <div class="footer">Generated by sqldoc</div>
 
@@ -364,7 +506,7 @@ HTML_TEMPLATE = """
                         .some(function (c) { return c.style.display !== 'none'; });
                     g.style.display = any ? '' : 'none';
                 });
-                counter.textContent = q ? (shown + ' of ' + total + ' tables') : '';
+                counter.textContent = q ? (shown + ' of ' + total + ' objects') : '';
                 noResults.style.display = (q && shown === 0) ? 'block' : 'none';
             }
 
@@ -376,24 +518,46 @@ HTML_TEMPLATE = """
 """
 
 
-def render_html(database: str, tables: list[Table], output_path: str):
-    schemas = {}
-    for table in tables:
-        if table.schema not in schemas:
-            schemas[table.schema] = []
-        schemas[table.schema].append(table)
+def _group_by_schema(objects: list) -> dict:
+    grouped = {}
+    for obj in objects:
+        grouped.setdefault(obj.schema, []).append(obj)
+    return grouped
+
+
+def render_html(
+    database: str,
+    tables: list[Table],
+    output_path: str,
+    views: list[View] = None,
+    procedures: list[StoredProcedure] = None,
+):
+    views = views or []
+    procedures = procedures or []
+
+    schemas = _group_by_schema(tables)
+    views_by_schema = _group_by_schema(views)
+    procs_by_schema = _group_by_schema(procedures)
 
     total_columns = sum(len(t.columns) for t in tables)
+    # Schema count spans every documented object type, not just tables.
+    all_schemas = {t.schema for t in tables} | {v.schema for v in views} | {p.schema for p in procedures}
 
-    template = Template(HTML_TEMPLATE)
+    # autoescape=True so SQL definitions / names / descriptions containing
+    # <, >, & (e.g. "@CheckDate <= ...") render as text, not broken markup.
+    template = Environment(autoescape=True).from_string(HTML_TEMPLATE)
     html = template.render(
         database=database,
         tables=tables,
         schemas=schemas,
+        views_by_schema=views_by_schema,
+        procs_by_schema=procs_by_schema,
         er=_build_er(tables),
         total_tables=len(tables),
+        total_views=len(views),
+        total_procedures=len(procedures),
         total_columns=total_columns,
-        total_schemas=len(schemas),
+        total_schemas=len(all_schemas),
         generated_at=datetime.now().strftime("%B %d, %Y at %I:%M %p")
     )
 

@@ -1,8 +1,8 @@
 import click
 import os
 from dotenv import load_dotenv
-from sqldoc.extractor import extract_metadata
-from sqldoc.ai import enrich_tables
+from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
+from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures
 from sqldoc.renderer import render_html
 
 load_dotenv()
@@ -63,23 +63,36 @@ def main(server, database, username, password, output, mode, model, schemas, no_
     click.echo("Connecting to SQL Server...")
     try:
         tables = extract_metadata(server, database, username, password)
+        views = extract_views(server, database, username, password)
+        procedures = extract_procedures(server, database, username, password)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
 
-    click.echo(f"Found {len(tables)} tables across {len(set(t.schema for t in tables))} schemas")
+    all_schemas = {o.schema for o in tables + views + procedures}
+    click.echo(
+        f"Found {len(tables)} tables, {len(views)} views, {len(procedures)} procedures "
+        f"across {len(all_schemas)} schemas"
+    )
 
-    # Filter schemas if specified
+    # Filter schemas if specified (applies to every object type)
     if schemas:
         schema_list = [s.strip() for s in schemas.split(',')]
         tables = [t for t in tables if t.schema in schema_list]
-        click.echo(f"Filtered to {len(tables)} tables in schemas: {', '.join(schema_list)}")
+        views = [v for v in views if v.schema in schema_list]
+        procedures = [p for p in procedures if p.schema in schema_list]
+        click.echo(
+            f"Filtered to {len(tables)} tables, {len(views)} views, {len(procedures)} procedures "
+            f"in schemas: {', '.join(schema_list)}"
+        )
 
     # Generate AI descriptions
     if not no_ai:
         click.echo(f"\nGenerating AI descriptions using {mode} mode...")
         try:
             tables = enrich_tables(tables, mode=mode, model=model)
+            views = enrich_views(views, mode=mode, model=model)
+            procedures = enrich_procedures(procedures, mode=mode, model=model)
         except Exception as e:
             click.echo(f"\nAI generation failed: {e}", err=True)
             click.echo("Try --no-ai to generate schema-only documentation")
@@ -89,7 +102,7 @@ def main(server, database, username, password, output, mode, model, schemas, no_
 
     # Render HTML
     click.echo(f"\nRendering documentation...")
-    render_html(database, tables, output)
+    render_html(database, tables, output, views=views, procedures=procedures)
 
     click.echo(f"\nDone! Open {output} in your browser to view the documentation.")
 
