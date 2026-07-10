@@ -103,3 +103,37 @@ def test_findings_diff_no_change():
     d = diff_findings(s, s)
     assert d["has_changes"] is False
     assert "No PII drift" in format_findings_diff(d)
+
+
+# --- Custom PII patterns ---------------------------------------------------
+
+def test_custom_category_detects_new_column():
+    from sqldoc.pii import load_custom_categories
+    cats = load_custom_categories([{
+        "category": "Employee Number", "patterns": ["employeenumber"],
+        "severity": "MEDIUM", "regulations": ["Internal"], "action": "Restrict.",
+        "types": ["int"],
+    }])
+    t = _table([_col("EmployeeNumber", "int")])
+    f = scan_tables([t], extra_categories=cats)[0]
+    assert f.category == "Employee Number"
+    assert f.risk == "MEDIUM" and "Internal" in f.regulations
+
+
+def test_custom_category_takes_priority_over_builtin():
+    from sqldoc.pii import load_custom_categories
+    cats = load_custom_categories([{
+        "category": "Internal Account", "patterns": ["accountnumber"], "severity": "LOW",
+    }])
+    f = scan_tables([_table([_col("AccountNumber", "varchar")])], extra_categories=cats)[0]
+    assert f.category == "Internal Account"   # not the built-in "Bank Account"
+
+
+def test_load_custom_categories_validation():
+    from sqldoc.pii import load_custom_categories
+    with pytest.raises(ValueError):
+        load_custom_categories([{"category": "X"}])                       # no patterns
+    with pytest.raises(ValueError):
+        load_custom_categories([{"category": "X", "patterns": ["a"], "severity": "BOGUS"}])
+    with pytest.raises(ValueError):
+        load_custom_categories(["not-a-mapping"])

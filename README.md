@@ -270,6 +270,20 @@ sqldoc scan --server localhost --database AdventureWorks2022 \
     --username sa --password '***' --sarif findings.sarif
 ```
 
+**Custom patterns** — define org-specific sensitive-column categories in
+`.sqldoc.yml` under `pii_patterns:` (checked before the built-in catalog). See
+[`.sqldoc.example.yml`](.sqldoc.example.yml):
+
+```yaml
+pii_patterns:
+  - category: "Employee ID"
+    patterns: ['\bempid\b', 'employeenumber']
+    severity: MEDIUM            # HIGH / MEDIUM / LOW
+    regulations: ["Internal Policy"]
+    action: "Restrict to HR systems."
+    types: [varchar, nvarchar]  # optional; a matching type confirms
+```
+
 ## How it works
 
 `sqldoc` is a three-stage pipeline, one module per stage:

@@ -157,3 +157,22 @@ def test_scan_command_writes_report(monkeypatch, tmp_path):
     assert "HIGH:" in res.output
     html = out.read_text(encoding="utf-8")
     assert "Email Address" in html and "National ID / SSN" in html
+
+
+def test_scan_custom_pii_patterns_from_config(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    staff = Table("dbo", "Staff", 1, columns=[
+        Column("BadgeCode", "nvarchar", 20, True, False, False, None, None),
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [staff])
+    cfg = tmp_path / "c.yml"
+    cfg.write_text("pii_patterns:\n  - category: Badge\n    patterns: ['badgecode']\n    severity: LOW\n",
+                   encoding="utf-8")
+    out = tmp_path / "pii.html"
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--config", str(cfg), "--server", "h", "--database", "DB",
+        "--username", "u", "--password", "p", "--no-baseline", "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "custom PII pattern" in res.output
+    assert "Badge" in out.read_text(encoding="utf-8")

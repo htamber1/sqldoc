@@ -9,7 +9,8 @@ from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
 from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
-                        findings_snapshot, diff_findings, iter_findings_diff_lines)
+                        findings_snapshot, diff_findings, iter_findings_diff_lines,
+                        load_custom_categories)
 from sqldoc.pii_renderer import render_pii_html
 from sqldoc.sarif import render_sarif
 
@@ -20,7 +21,7 @@ CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
-    'baseline', 'no_baseline', 'sarif', 'yes',
+    'baseline', 'no_baseline', 'sarif', 'pii_patterns', 'yes',
 }
 
 
@@ -376,6 +377,12 @@ def scan(config, server, database, username, password, connection_string, schema
     if model is None:
         model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
 
+    # Validate custom PII patterns before connecting, so config errors fail fast.
+    try:
+        custom_cats = load_custom_categories(cfg.get('pii_patterns'))
+    except ValueError as e:
+        raise click.UsageError(f"Invalid pii_patterns in config: {e}")
+
     click.echo("\nsqldoc v1.1.0  -  PII / compliance scan")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
@@ -395,7 +402,9 @@ def scan(config, server, database, username, password, connection_string, schema
         allow = [s.strip() for s in schemas.split(',')]
         tables = [t for t in tables if t.schema in allow]
 
-    findings = scan_tables(tables)
+    if custom_cats:
+        click.echo(f"Loaded {len(custom_cats)} custom PII pattern(s) from config.")
+    findings = scan_tables(tables, extra_categories=custom_cats)
     affected = len({(f.schema, f.table) for f in findings})
     click.echo(f"Flagged {len(findings)} column(s) across {affected} table(s).")
 

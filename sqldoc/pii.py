@@ -125,14 +125,14 @@ def _downgrade(risk: str) -> str:
     return {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}[risk]
 
 
-def _match_category(column_name: str):
-    """Match a column name against the PII catalog. Patterns containing a word
-    boundary (\\b) are matched against the space-separated token string so short
-    tokens (ssn, tin, dob, zip) don't over-match as substrings; other patterns
-    are matched as substrings against the separator-free compact name."""
+def _match_category(column_name: str, categories: list):
+    """Match a column name against a PII category list. Patterns containing a
+    word boundary (\\b) are matched against the space-separated token string so
+    short tokens (ssn, tin, dob, zip) don't over-match as substrings; other
+    patterns are matched as substrings against the separator-free compact name."""
     toks = _tokens(column_name)
     compact = _compact(column_name)
-    for cat in PII_CATEGORIES:
+    for cat in categories:
         for pat in cat.patterns:
             target = toks if r"\b" in pat else compact
             if re.search(pat, target):
@@ -140,12 +140,43 @@ def _match_category(column_name: str):
     return None
 
 
-def scan_tables(tables) -> list:
-    """Detect likely-PII columns from names + data types (no data access)."""
+_VALID_SEVERITY = {"HIGH", "MEDIUM", "LOW"}
+
+
+def load_custom_categories(items) -> list:
+    """Parse enterprise-defined PII categories (from `.sqldoc.yml`'s
+    `pii_patterns:`) into PIICategory objects. Raises ValueError on bad input."""
+    cats = []
+    for i, it in enumerate(items or []):
+        if not isinstance(it, dict):
+            raise ValueError(f"pii_patterns[{i}] must be a mapping")
+        name = it.get("category")
+        patterns = it.get("patterns")
+        if not name or not patterns:
+            raise ValueError(f"pii_patterns[{i}] needs 'category' and a non-empty 'patterns' list")
+        severity = str(it.get("severity", "MEDIUM")).upper()
+        if severity not in _VALID_SEVERITY:
+            raise ValueError(f"pii_patterns[{i}] severity must be HIGH/MEDIUM/LOW, got {severity!r}")
+        cats.append(PIICategory(
+            name=str(name),
+            patterns=list(patterns),
+            severity=severity,
+            regulations=list(it.get("regulations", [])),
+            action=str(it.get("action", "")),
+            expected_types={str(t).lower() for t in it.get("types", [])},
+        ))
+    return cats
+
+
+def scan_tables(tables, extra_categories=None) -> list:
+    """Detect likely-PII columns from names + data types (no data access).
+    `extra_categories` (custom, enterprise-defined) are checked before the
+    built-in catalog so org-specific patterns take priority."""
+    categories = list(extra_categories or []) + PII_CATEGORIES
     findings = []
     for t in tables:
         for col in t.columns:
-            cat = _match_category(col.name)
+            cat = _match_category(col.name, categories)
             if not cat:
                 continue
             dtype = (col.data_type or "").lower()

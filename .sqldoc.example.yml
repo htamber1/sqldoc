@@ -21,3 +21,21 @@ no_ai: false                  # true = schema-only, skip all LLM calls
 concurrency: 8                # parallel AI calls during enrichment (1-64)
 "yes": false                  # true = skip the cloud-mode confirmation prompt
                               # (quote the key: bare yes: is a YAML boolean)
+
+# --- Custom PII patterns for `sqldoc scan` (optional) ---
+# Define your own sensitive-column categories in addition to the built-in
+# catalog. Checked before the built-ins, so org-specific patterns win.
+# Patterns are regexes; use \b for short whole-word tokens (matched against a
+# camelCase-tokenized name), otherwise a substring of the compact name.
+# pii_patterns:
+#   - category: "Employee ID"
+#     patterns: ['\bempid\b', 'employeenumber']
+#     severity: MEDIUM              # HIGH / MEDIUM / LOW
+#     regulations: ["Internal Policy"]
+#     action: "Restrict to HR systems; do not expose in analytics."
+#     types: [varchar, nvarchar]    # optional; a matching type confirms
+#   - category: "Customer Secret"
+#     patterns: ['customersecret', 'apitoken']
+#     severity: HIGH
+#     regulations: ["Security"]
+#     action: "Move to a secrets vault; never store in the database."
