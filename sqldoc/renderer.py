@@ -1,4 +1,3 @@
-import math
 from jinja2 import Environment
 from sqldoc.extractor import Table, View, StoredProcedure
 from datetime import datetime
@@ -14,20 +13,27 @@ SCHEMA_PALETTE = [
 def _build_er(tables: list[Table]) -> dict:
     """Compute an SVG entity-relationship layout from the extracted tables.
 
-    Boxes are packed into columns (masonry: each next box drops into the
-    shortest column) and foreign keys become curved connector paths. All
-    geometry is computed here so the template only has to emit SVG.
+    Only tables that participate in at least one foreign-key relationship are
+    drawn (isolated tables are dropped to cut clutter). Boxes are laid out
+    left-to-right in per-schema bands — each band is one or more vertical
+    columns — instead of a masonry pack, which keeps related tables grouped
+    and reduces crossing lines. Each foreign key becomes a curved connector
+    coloured by the child table's schema. All geometry is computed here so the
+    template only has to emit SVG.
     """
     # Layout constants (px)
     CHAR_W = 6.6      # approx width of one monospace char at 11px
     PAD = 10
     HEADER_H = 24
     ROW_H = 17
-    MIN_W = 140
+    MIN_W = 150
     MAX_CHARS = 34    # truncate long "col : type" lines to keep boxes bounded
-    GUT_X = 70
-    GUT_Y = 40
-    MARGIN = 30
+    COL_GUT_X = 60    # gap between columns within a schema band
+    SCHEMA_GUT = 96   # extra gap between schema bands
+    ROW_GUT_Y = 34
+    MARGIN = 40
+    BAND_LABEL_H = 30
+    MAX_COL_H = 1100  # wrap a band into another column past this height
 
     schemas_sorted = sorted({t.schema for t in tables})
     schema_colors = {
@@ -35,10 +41,33 @@ def _build_er(tables: list[Table]) -> dict:
         for i, s in enumerate(schemas_sorted)
     }
 
+    # Resolve FK edges at the table level first, to find which tables are
+    # connected (as a child with an FK, or as a referenced parent).
+    name_to_id = {}  # bare table name (lowercased) -> box id
+    for t in tables:
+        name_to_id.setdefault(t.name.lower(), f"{t.schema}.{t.name}")
+
+    raw_pairs = []
+    for t in tables:
+        child_id = f"{t.schema}.{t.name}"
+        for c in t.columns:
+            if c.is_foreign_key and c.references_table:
+                pid = name_to_id.get(c.references_table.lower())
+                if pid:
+                    raw_pairs.append((child_id, pid))
+
+    connected = set()
+    for child_id, pid in raw_pairs:
+        connected.add(child_id)
+        connected.add(pid)
+
+    # Build box geometry for connected tables only.
     boxes = []
     id_to_box = {}
-    name_to_id = {}  # bare table name (lowercased) -> box id, for FK resolution
     for t in tables:
+        bid = f"{t.schema}.{t.name}"
+        if bid not in connected:
+            continue
         cols = []
         maxlen = len(t.name)
         for c in t.columns:
@@ -51,78 +80,94 @@ def _build_er(tables: list[Table]) -> dict:
                 "is_pk": c.is_primary_key,
                 "is_fk": c.is_foreign_key,
             })
-        w = max(MIN_W, int(maxlen * CHAR_W) + PAD * 2)
-        h = HEADER_H + ROW_H * max(1, len(cols))
-        bid = f"{t.schema}.{t.name}"
         box = {
             "id": bid,
             "title": t.name,
+            "schema": t.schema,
             "color": schema_colors[t.schema],
-            "w": w,
-            "h": h,
+            "w": max(MIN_W, int(maxlen * CHAR_W) + PAD * 2),
+            "h": HEADER_H + ROW_H * max(1, len(cols)),
             "columns": cols,
+            "anchor": "er-" + bid.lower().replace(".", "-"),
         }
         boxes.append(box)
         id_to_box[bid] = box
-        name_to_id.setdefault(t.name.lower(), bid)
 
-    # Masonry placement into a fixed number of equal-width columns.
-    n = len(boxes)
-    ncols = max(1, min(6, round(math.sqrt(n)))) if n else 1
+    # Uniform column width so columns line up cleanly across bands.
     slot_w = max((b["w"] for b in boxes), default=MIN_W)
-    col_bottoms = [MARGIN] * ncols
-    for b in boxes:
-        ci = col_bottoms.index(min(col_bottoms))
-        b["x"] = MARGIN + ci * (slot_w + GUT_X)
-        b["y"] = col_bottoms[ci]
-        b["cx"] = b["x"] + b["w"] // 2
-        col_bottoms[ci] += b["h"] + GUT_Y
 
-    total_w = MARGIN * 2 + ncols * slot_w + (ncols - 1) * GUT_X
-    total_h = (max(col_bottoms) if col_bottoms else MARGIN) + MARGIN
+    # Left-to-right layout: one band per (connected) schema; stack boxes
+    # vertically and wrap into an extra column when a column gets too tall.
+    bands = []
+    x_cursor = MARGIN
+    connected_schemas = [s for s in schemas_sorted if any(b["schema"] == s for b in boxes)]
+    for schema in connected_schemas:
+        sboxes = sorted((b for b in boxes if b["schema"] == schema),
+                        key=lambda b: b["title"].lower())
+        band_start = x_cursor
+        col_x = x_cursor
+        top = MARGIN + BAND_LABEL_H
+        y = top
+        ncols = 1
+        for b in sboxes:
+            if y > top and y + b["h"] > top + MAX_COL_H:
+                col_x += slot_w + COL_GUT_X
+                y = top
+                ncols += 1
+            b["x"] = col_x
+            b["y"] = y
+            b["cx"] = b["x"] + b["w"] // 2
+            y += b["h"] + ROW_GUT_Y
+        band_w = ncols * slot_w + (ncols - 1) * COL_GUT_X
+        bands.append({
+            "schema": schema,
+            "color": schema_colors[schema],
+            "x": band_start,
+            "label_y": MARGIN + 4,
+        })
+        x_cursor = band_start + band_w + SCHEMA_GUT
 
-    # Foreign-key edges, deduped per (child, parent) table pair.
+    total_w = (x_cursor - SCHEMA_GUT + MARGIN) if bands else MARGIN * 2
+    total_h = max((b["y"] + b["h"] for b in boxes), default=MARGIN) + MARGIN
+
+    # Foreign-key edges, deduped per (child, parent) pair, coloured by child.
     edges = []
     seen = set()
-    for t in tables:
-        child_id = f"{t.schema}.{t.name}"
+    for child_id, pid in raw_pairs:
+        if child_id not in id_to_box or pid not in id_to_box:
+            continue
+        key = (child_id, pid)
+        if key in seen:
+            continue
+        seen.add(key)
         cb = id_to_box[child_id]
-        for c in t.columns:
-            if not (c.is_foreign_key and c.references_table):
-                continue
-            pid = name_to_id.get(c.references_table.lower())
-            if not pid:
-                continue
-            key = (child_id, pid)
-            if key in seen:
-                continue
-            seen.add(key)
-            pb = id_to_box[pid]
+        pb = id_to_box[pid]
 
-            if child_id == pid:
-                # Self-reference: small loop off the right edge.
-                x = cb["x"] + cb["w"]
-                y = cb["y"] + cb["h"] // 2
-                d = f"M {x} {y} C {x + 55} {y - 34}, {x + 55} {y + 34}, {x} {y}"
+        if child_id == pid:
+            # Self-reference: small loop off the right edge.
+            x = cb["x"] + cb["w"]
+            yy = cb["y"] + cb["h"] // 2
+            d = f"M {x} {yy} C {x + 55} {yy - 34}, {x + 55} {yy + 34}, {x} {yy}"
+        else:
+            if pb["cx"] >= cb["cx"]:
+                sx, sy = cb["x"] + cb["w"], cb["y"] + cb["h"] // 2
+                ex, ey = pb["x"], pb["y"] + pb["h"] // 2
             else:
-                if pb["cx"] >= cb["cx"]:
-                    sx, sy = cb["x"] + cb["w"], cb["y"] + cb["h"] // 2
-                    ex, ey = pb["x"], pb["y"] + pb["h"] // 2
-                else:
-                    sx, sy = cb["x"], cb["y"] + cb["h"] // 2
-                    ex, ey = pb["x"] + pb["w"], pb["y"] + pb["h"] // 2
-                dx = ex - sx
-                c1x = int(sx + dx * 0.4)
-                c2x = int(ex - dx * 0.4)
-                d = f"M {sx} {sy} C {c1x} {sy}, {c2x} {ey}, {ex} {ey}"
-            edges.append({"d": d})
+                sx, sy = cb["x"], cb["y"] + cb["h"] // 2
+                ex, ey = pb["x"] + pb["w"], pb["y"] + pb["h"] // 2
+            dx = ex - sx
+            c1x = int(sx + dx * 0.45)
+            c2x = int(ex - dx * 0.45)
+            d = f"M {sx} {sy} C {c1x} {sy}, {c2x} {ey}, {ex} {ey}"
+        edges.append({"d": d, "child": child_id, "parent": pid, "color": cb["color"]})
 
     return {
         "boxes": boxes,
         "edges": edges,
+        "bands": bands,
         "width": int(total_w),
         "height": int(total_h),
-        "legend": [{"schema": s, "color": schema_colors[s]} for s in schemas_sorted],
+        "legend": [{"schema": s, "color": schema_colors[s]} for s in connected_schemas],
     }
 
 
@@ -184,6 +229,17 @@ HTML_TEMPLATE = """
         .er-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
         .er-canvas { overflow: auto; max-height: 640px; background: #0c0f14; }
         #er-svg { transform-origin: 0 0; transition: transform 0.1s ease-out; }
+        .er-box { cursor: pointer; }
+        #er-svg .er-box, #er-svg .er-edge { transition: opacity 0.15s ease; }
+        #er-svg.dimmed .er-box { opacity: 0.18; }
+        #er-svg.dimmed .er-box.hi { opacity: 1; }
+        #er-svg.dimmed .er-edge { opacity: 0.05; }
+        #er-svg.dimmed .er-edge.hi { opacity: 1; stroke-width: 4; }
+        .table-card.flash { animation: erflash 1.6s ease-out; }
+        @keyframes erflash {
+            0% { border-color: var(--gold); box-shadow: 0 0 0 3px rgba(245,158,11,0.45); }
+            100% { border-color: var(--border); box-shadow: 0 4px 20px rgba(0,0,0,0.35); }
+        }
         .schema-group { margin-bottom: 44px; }
         .schema-title { font-size: 1.25rem; font-weight: 700; color: var(--blue); border-bottom: 2px solid rgba(59,130,246,0.5); padding-bottom: 10px; margin-bottom: 22px; }
         .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.35); margin-bottom: 24px; overflow: hidden; transition: border-color 0.15s; }
@@ -272,15 +328,18 @@ HTML_TEMPLATE = """
             <div class="er-canvas">
                 <svg id="er-svg" width="{{ er.width }}" height="{{ er.height }}" viewBox="0 0 {{ er.width }} {{ er.height }}" xmlns="http://www.w3.org/2000/svg">
                     <defs>
-                        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                            <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"></path>
+                        <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                            <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"></path>
                         </marker>
                     </defs>
+                    {% for band in er.bands %}
+                    <text x="{{ band.x }}" y="{{ band.label_y + 12 }}" fill="{{ band.color }}" font-size="13" font-weight="700" letter-spacing="1.5">{{ band.schema|upper }}</text>
+                    {% endfor %}
                     {% for e in er.edges %}
-                    <path d="{{ e.d }}" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.8"></path>
+                    <path class="er-edge" data-child="{{ e.child }}" data-parent="{{ e.parent }}" d="{{ e.d }}" fill="none" stroke="{{ e.color }}" stroke-width="2.5" marker-end="url(#arrow)" opacity="0.85"></path>
                     {% endfor %}
                     {% for box in er.boxes %}
-                    <g>
+                    <g class="er-box" data-id="{{ box.id }}" data-target="{{ box.anchor }}">
                         <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="{{ box.h }}" rx="6" fill="#1e2530" stroke="{{ box.color }}" stroke-width="1.5"></rect>
                         <path d="M {{ box.x }} {{ box.y + 6 }} q 0 -6 6 -6 h {{ box.w - 12 }} q 6 0 6 6 v 18 h -{{ box.w }} z" fill="{{ box.color }}"></path>
                         <text x="{{ box.cx }}" y="{{ box.y + 16 }}" text-anchor="middle" fill="white" font-size="12" font-weight="700">{{ box.title }}</text>
@@ -317,6 +376,7 @@ HTML_TEMPLATE = """
             <div class="schema-title">{{ schema }}</div>
             {% for table in tables %}
             <div class="table-card"
+                 id="er-{{ (schema ~ '-' ~ table.name)|lower }}"
                  data-name="{{ (schema ~ '.' ~ table.name)|lower }}"
                  data-search="{{ (schema ~ ' ' ~ table.name ~ ' ' ~ (table.columns|map(attribute='name')|join(' ')) ~ ' ' ~ (table.columns|map(attribute='data_type')|join(' ')))|lower }}">
                 <div class="table-header">
@@ -579,6 +639,55 @@ HTML_TEMPLATE = """
                     activeFilter = btn.getAttribute('data-filter');
                     filterBtns.forEach(function (b) { b.classList.toggle('active', b === btn); });
                     apply();
+                });
+            });
+        })();
+
+        // --- ER diagram: hover-highlight connected tables + click to jump ---
+        (function () {
+            var svg = document.getElementById('er-svg');
+            if (!svg) { return; }
+            var boxes = Array.prototype.slice.call(svg.querySelectorAll('.er-box'));
+            var edges = Array.prototype.slice.call(svg.querySelectorAll('.er-edge'));
+            var allBtn = document.querySelector('.filter-btn[data-filter="all"]');
+
+            boxes.forEach(function (box) {
+                var id = box.getAttribute('data-id');
+
+                box.addEventListener('mouseenter', function () {
+                    var keep = {};
+                    keep[id] = true;
+                    edges.forEach(function (ed) {
+                        var c = ed.getAttribute('data-child');
+                        var p = ed.getAttribute('data-parent');
+                        if (c === id || p === id) {
+                            ed.classList.add('hi');
+                            keep[c] = true;
+                            keep[p] = true;
+                        }
+                    });
+                    boxes.forEach(function (b) {
+                        b.classList.toggle('hi', !!keep[b.getAttribute('data-id')]);
+                    });
+                    svg.classList.add('dimmed');
+                });
+
+                box.addEventListener('mouseleave', function () {
+                    svg.classList.remove('dimmed');
+                    edges.forEach(function (ed) { ed.classList.remove('hi'); });
+                    boxes.forEach(function (b) { b.classList.remove('hi'); });
+                });
+
+                box.addEventListener('click', function () {
+                    var el = document.getElementById(box.getAttribute('data-target'));
+                    if (!el) { return; }
+                    // Make sure the target card is visible if a type filter is active.
+                    if (allBtn && !allBtn.classList.contains('active')) { allBtn.click(); }
+                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    el.classList.remove('flash');
+                    void el.offsetWidth;  // restart the flash animation
+                    el.classList.add('flash');
+                    setTimeout(function () { el.classList.remove('flash'); }, 1600);
                 });
             });
         })();
