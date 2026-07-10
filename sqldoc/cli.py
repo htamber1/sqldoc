@@ -28,11 +28,11 @@ def main(server, database, username, password, output, mode, model, schemas, no_
 
     # Describe the data-egress posture for the chosen mode
     if no_ai:
-        privacy = "No AI — schema only, nothing leaves this machine"
+        privacy = "No AI - schema only, nothing leaves this machine"
     elif mode == "local":
-        privacy = "local (Ollama) — no data leaves this network"
+        privacy = "local (Ollama) - no data leaves this network"
     else:
-        privacy = "cloud (Anthropic) — schema metadata sent off-network"
+        privacy = "cloud (Anthropic) - schema metadata sent off-network"
 
     click.echo(f"\nsqldoc v0.1.0")
     click.echo(f"{'='*40}")
