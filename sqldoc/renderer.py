@@ -274,6 +274,10 @@ HTML_TEMPLATE = """
         details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700; color: #cbd5e1; user-select: none; letter-spacing: 0.02em; }
         details.definition summary:hover { background: rgba(255,255,255,0.025); }
         details.definition pre { margin: 0; padding: 16px; background: #05070d; color: #cbd5e1; font-size: 0.78rem; line-height: 1.55; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; border-top: 1px solid var(--border); }
+        .def-wrap { position: relative; }
+        .copy-sql { position: absolute; top: 10px; right: 12px; z-index: 2; background: rgba(30,37,48,0.92); color: var(--muted); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 12px; font-size: 0.72rem; font-weight: 600; cursor: pointer; transition: color 0.15s, border-color 0.15s, background 0.15s; }
+        .copy-sql:hover { color: var(--text-strong); border-color: var(--blue); background: #1e2530; }
+        .copy-sql.copied { color: #34d399; border-color: rgba(16,185,129,0.5); }
         .no-results { display: none; text-align: center; color: var(--faint); padding: 40px; font-size: 0.95rem; }
         .footer { text-align: center; padding: 40px; color: var(--faint); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 20px; }
         /* Layout: left navigation sidebar + main content */
@@ -547,7 +551,10 @@ HTML_TEMPLATE = """
                 {% if view.definition %}
                 <details class="definition">
                     <summary>Definition</summary>
-                    <pre><code>{{ view.definition }}</code></pre>
+                    <div class="def-wrap">
+                        <button type="button" class="copy-sql">Copy</button>
+                        <pre><code>{{ view.definition }}</code></pre>
+                    </div>
                 </details>
                 {% endif %}
             </div>
@@ -599,7 +606,10 @@ HTML_TEMPLATE = """
                 {% if proc.definition %}
                 <details class="definition">
                     <summary>Definition</summary>
-                    <pre><code>{{ proc.definition }}</code></pre>
+                    <div class="def-wrap">
+                        <button type="button" class="copy-sql">Copy</button>
+                        <pre><code>{{ proc.definition }}</code></pre>
+                    </div>
                 </details>
                 {% endif %}
             </div>
@@ -789,6 +799,43 @@ HTML_TEMPLATE = """
                     setTimeout(function () { el.classList.remove('flash'); }, 1600);
                     if (window.innerWidth < 860) { body.classList.add('nav-collapsed'); }
                 });
+            });
+        })();
+
+        // --- Copy SQL buttons on view/procedure definition blocks ---
+        (function () {
+            function fallbackCopy(text) {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                document.body.appendChild(ta);
+                ta.focus();
+                ta.select();
+                var ok = false;
+                try { ok = document.execCommand('copy'); } catch (err) {}
+                document.body.removeChild(ta);
+                return ok;
+            }
+            function flash(btn) {
+                btn.textContent = 'Copied!';
+                btn.classList.add('copied');
+                setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+            }
+            document.addEventListener('click', function (e) {
+                var btn = e.target.closest && e.target.closest('.copy-sql');
+                if (!btn) { return; }
+                var code = btn.parentElement.querySelector('code');
+                if (!code) { return; }
+                var text = code.textContent;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(
+                        function () { flash(btn); },
+                        function () { if (fallbackCopy(text)) { flash(btn); } }
+                    );
+                } else if (fallbackCopy(text)) {
+                    flash(btn);
+                }
             });
         })();
     </script>
