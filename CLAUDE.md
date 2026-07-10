@@ -17,8 +17,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Validated end-to-end:** the `--no-ai` path against a local `AdventureWorks2022` (71 tables / 6 schemas). Renderer output confirmed: 71 SVG boxes, 86 FK arrows, well-formed SVG XML, search wiring present.
 
+**AI path validated end-to-end (2026-07-10):** both backends run clean against `AdventureWorks2022`.
+- **Local (Ollama, `llama3.1:8b`)** — `--schemas HumanResources` (6 tables): 6/6 table descriptions + 40/40 column descriptions populated and coherent; ~38s wall-clock (serial, one blocking call per table/column, as documented).
+- **Cloud (Anthropic, default `claude-haiku-4-5`)** — `--schemas dbo` (3 tables) with `--yes`: 3/3 table + 21/21 column descriptions, coherent; ~7s. Privacy banner, warning, and `--yes` bypass all fired as designed.
+
 ### Pending / unvalidated
-- **The AI path has NOT been run end-to-end** — neither local (Ollama) nor cloud (Anthropic). `--no-ai` deliberately skips `ai.py`. This is the highest-priority smoke test before relying on generated descriptions.
 - **ER diagram browser QA** — auto-layout can produce crossing arrows on dense schemas (71 tables is a lot). Not yet eyeballed in a browser. Visual polish is explicitly deferred.
 - No automated test suite (see Tests below — the `test_*.py` scripts are ad-hoc, not pytest).
 
