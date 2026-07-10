@@ -35,9 +35,18 @@ def _attributes(col) -> str:
         parts.append("FK")
         if col.references_table:
             parts.append(f"-> {col.references_table}.{col.references_column}")
+    if col.is_computed:
+        parts.append("computed")
     if col.is_nullable:
         parts.append("nullable")
     return ", ".join(parts)
+
+
+def _col_desc(col) -> str:
+    desc = col.description or ""
+    if col.is_computed and col.computed_definition:
+        desc = (desc + " " if desc else "") + f"(= {col.computed_definition})"
+    return desc
 
 
 class _Doc(FPDF):
@@ -159,7 +168,7 @@ def render_pdf(database, tables, output_path, views=None, procedures=None):
             _description(pdf, table.description)
             _table(pdf,
                    ["Column", "Type", "Attributes", "Description"],
-                   [[c.name, c.data_type, _attributes(c), c.description or ""] for c in table.columns],
+                   [[c.name, c.data_type, _attributes(c), _col_desc(c)] for c in table.columns],
                    widths=(24, 16, 22, 38))
             if table.indexes:
                 idx_rows = []
@@ -171,6 +180,13 @@ def render_pdf(database, tables, output_path, views=None, procedures=None):
                         cols += f" (incl: {', '.join(idx.included_columns)})"
                     idx_rows.append([name, idx.type_desc, cols])
                 _table(pdf, ["Index", "Type", "Columns"], idx_rows, widths=(38, 24, 38))
+            if table.triggers:
+                trg_rows = []
+                for tg in table.triggers:
+                    timing = "INSTEAD OF" if tg.is_instead_of else "AFTER"
+                    trg_rows.append([tg.name + (" (disabled)" if tg.is_disabled else ""),
+                                     timing, ", ".join(tg.events)])
+                _table(pdf, ["Trigger", "Timing", "Events"], trg_rows, widths=(38, 24, 30))
             pdf.ln(2)
 
     # --- Views ---

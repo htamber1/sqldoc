@@ -27,9 +27,18 @@ def _attributes(col) -> str:
         parts.append("FK")
         if col.references_table:
             parts.append(f"→ {col.references_table}.{col.references_column}")
+    if col.is_computed:
+        parts.append("computed")
     if col.is_nullable:
         parts.append("nullable")
     return ", ".join(parts)
+
+
+def _col_description(col) -> str:
+    desc = col.description or ""
+    if col.is_computed and col.computed_definition:
+        desc = (desc + " " if desc else "") + f"(computed: {col.computed_definition})"
+    return desc
 
 
 def render_markdown(database, tables, output_path, views=None, procedures=None):
@@ -88,7 +97,7 @@ def render_markdown(database, tables, output_path, views=None, procedures=None):
         L.append("| Column | Type | Attributes | Description |")
         L.append("| --- | --- | --- | --- |")
         for col in table.columns:
-            L.append(f"| {_cell(col.name)} | {_cell(col.data_type)} | {_cell(_attributes(col))} | {_cell(col.description)} |")
+            L.append(f"| {_cell(col.name)} | {_cell(col.data_type)} | {_cell(_attributes(col))} | {_cell(_col_description(col))} |")
         L.append("")
         if table.indexes:
             L.append("**Indexes**")
@@ -102,6 +111,23 @@ def render_markdown(database, tables, output_path, views=None, procedures=None):
                 if idx.included_columns:
                     cols += f" (incl: {', '.join(idx.included_columns)})"
                 L.append(f"| {_cell(name)} | {_cell(idx.type_desc)} | {_cell(cols)} |")
+            L.append("")
+        if table.triggers:
+            L.append("**Triggers**")
+            L.append("")
+            for tg in table.triggers:
+                timing = "INSTEAD OF" if tg.is_instead_of else "AFTER"
+                meta = f"{timing} {', '.join(tg.events)}" + (" — DISABLED" if tg.is_disabled else "")
+                L.append(f"- **{_cell(tg.name)}** — {_cell(meta)}")
+                if tg.definition:
+                    L.append("")
+                    L.append("  <details><summary>Definition</summary>")
+                    L.append("")
+                    L.append("  ```sql")
+                    L.append(tg.definition.strip())
+                    L.append("  ```")
+                    L.append("")
+                    L.append("  </details>")
             L.append("")
 
     # --- Views ---

@@ -266,6 +266,13 @@ HTML_TEMPLATE = """
         .col-description { color: #cbd5e1; font-size: 0.85rem; line-height: 1.5; }
         .badge-uq { background: rgba(16,185,129,0.15); color: #34d399; border-color: rgba(16,185,129,0.35); }
         .badge-out { background: rgba(217,70,239,0.15); color: #e879f9; border-color: rgba(217,70,239,0.35); }
+        .badge-computed { background: rgba(168,85,247,0.15); color: #c084fc; border-color: rgba(168,85,247,0.35); }
+        .badge-disabled { background: rgba(220,38,38,0.15); color: #f87171; border-color: rgba(220,38,38,0.35); }
+        .computed-expr { color: var(--muted); font-family: 'Consolas', monospace; font-size: 0.78rem; margin-top: 4px; }
+        .trigger-row { padding: 10px 16px; }
+        .trigger-row + .trigger-row { border-top: 1px solid var(--border); }
+        .trigger-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .trigger-row details.definition { border-top: none; margin-top: 8px; }
         .type-badge { padding: 4px 13px; border-radius: 20px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; border: 1px solid transparent; }
         .type-badge.view { background: rgba(6,182,212,0.15); color: #22d3ee; border-color: rgba(6,182,212,0.35); }
         .type-badge.proc { background: rgba(139,92,246,0.15); color: #a78bfa; border-color: rgba(139,92,246,0.35); }
@@ -474,12 +481,16 @@ HTML_TEMPLATE = """
                             <td>
                                 {% if col.is_primary_key %}<span class="badge badge-pk">PK</span>{% endif %}
                                 {% if col.is_foreign_key %}<span class="badge badge-fk">FK</span>{% endif %}
+                                {% if col.is_computed %}<span class="badge badge-computed">computed</span>{% endif %}
                                 {% if col.is_nullable %}<span class="badge badge-nullable">nullable</span>{% endif %}
                             </td>
                             <td class="col-description">
                                 {{ col.description or "" }}
                                 {% if col.is_foreign_key and col.references_table %}
                                 <div style="color:#6b7280;font-size:0.8rem;margin-top:4px;">→ {{ col.references_table }}.{{ col.references_column }}</div>
+                                {% endif %}
+                                {% if col.is_computed and col.computed_definition %}
+                                <div class="computed-expr">= {{ col.computed_definition }}</div>
                                 {% endif %}
                             </td>
                         </tr>
@@ -505,6 +516,30 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         </tbody>
                     </table>
+                </div>
+                {% endif %}
+                {% if table.triggers %}
+                <div class="index-section">
+                    <div class="subsection-title">Triggers ({{ table.triggers|length }})</div>
+                    {% for tg in table.triggers %}
+                    <div class="trigger-row">
+                        <div class="trigger-head">
+                            <span class="col-name">{{ tg.name }}</span>
+                            <span class="badge badge-fk">{{ 'INSTEAD OF' if tg.is_instead_of else 'AFTER' }}</span>
+                            {% for ev in tg.events %}<span class="badge badge-nullable">{{ ev }}</span>{% endfor %}
+                            {% if tg.is_disabled %}<span class="badge badge-disabled">DISABLED</span>{% endif %}
+                        </div>
+                        {% if tg.definition %}
+                        <details class="definition">
+                            <summary>Definition</summary>
+                            <div class="def-wrap">
+                                <button type="button" class="copy-sql">Copy</button>
+                                <pre><code>{{ tg.definition }}</code></pre>
+                            </div>
+                        </details>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
                 </div>
                 {% endif %}
             </div>

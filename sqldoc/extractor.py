@@ -13,6 +13,8 @@ class Column:
     references_table: Optional[str]
     references_column: Optional[str]
     description: Optional[str] = None
+    is_computed: bool = False
+    computed_definition: Optional[str] = None
 
 @dataclass
 class Index:
@@ -24,12 +26,21 @@ class Index:
     included_columns: list[str] = field(default_factory=list)
 
 @dataclass
+class Trigger:
+    name: str
+    is_instead_of: bool     # INSTEAD OF vs AFTER
+    is_disabled: bool
+    events: list[str] = field(default_factory=list)   # INSERT / UPDATE / DELETE
+    definition: Optional[str] = None
+
+@dataclass
 class Table:
     schema: str
     name: str
     row_count: int
     columns: list[Column] = field(default_factory=list)
     indexes: list[Index] = field(default_factory=list)
+    triggers: list[Trigger] = field(default_factory=list)
     description: Optional[str] = None
 
 @dataclass
@@ -84,6 +95,35 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
     """)
     tables_raw = cursor.fetchall()
 
+    # DML triggers on tables (one query for the whole DB, grouped by table).
+    # STRING_AGG collapses the per-event rows in sys.trigger_events.
+    cursor.execute("""
+        SELECT
+            s.name AS schema_name,
+            t.name AS table_name,
+            tr.name AS trigger_name,
+            tr.is_instead_of_trigger,
+            tr.is_disabled,
+            m.definition,
+            (SELECT STRING_AGG(te.type_desc, ',')
+             FROM sys.trigger_events te WHERE te.object_id = tr.object_id) AS events
+        FROM sys.triggers tr
+        INNER JOIN sys.tables t ON tr.parent_id = t.object_id
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        LEFT JOIN sys.sql_modules m ON tr.object_id = m.object_id
+        WHERE tr.parent_class = 1 AND tr.is_ms_shipped = 0
+        ORDER BY s.name, t.name, tr.name
+    """)
+    triggers_by_table = {}
+    for row in cursor.fetchall():
+        triggers_by_table.setdefault((row.schema_name, row.table_name), []).append(Trigger(
+            name=row.trigger_name,
+            is_instead_of=bool(row.is_instead_of_trigger),
+            is_disabled=bool(row.is_disabled),
+            events=[e for e in (row.events or "").split(",") if e],
+            definition=str(row.definition) if row.definition else None,
+        ))
+
     tables = []
     for schema_name, table_name, row_count in tables_raw:
         cursor.execute("""
@@ -96,7 +136,9 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
                 CASE WHEN fk.parent_column_id IS NOT NULL THEN 1 ELSE 0 END AS is_foreign_key,
                 rt.name AS references_table,
                 rc.name AS references_column,
-                ep.value AS description
+                ep.value AS description,
+                c.is_computed,
+                cc.definition AS computed_definition
             FROM sys.columns c
             INNER JOIN sys.types tp ON c.user_type_id = tp.user_type_id
             INNER JOIN sys.tables t ON c.object_id = t.object_id
@@ -111,6 +153,7 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
             LEFT JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
             LEFT JOIN sys.columns rc ON fk.referenced_object_id = rc.object_id AND fk.referenced_column_id = rc.column_id
             LEFT JOIN sys.extended_properties ep ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
+            LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
             WHERE t.name = ? AND s.name = ?
             ORDER BY c.column_id
         """, table_name, schema_name)
@@ -131,7 +174,9 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
                 is_foreign_key=bool(row.is_foreign_key),
                 references_table=row.references_table,
                 references_column=row.references_column,
-                description=str(row.description) if row.description else None
+                description=str(row.description) if row.description else None,
+                is_computed=bool(row.is_computed),
+                computed_definition=str(row.computed_definition) if row.computed_definition else None,
             ))
 
         # Indexes on this table. One row per (index, column); grouped below.
@@ -175,6 +220,7 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
             row_count=row_count,
             columns=columns,
             indexes=list(indexes_by_name.values()),
+            triggers=triggers_by_table.get((schema_name, table_name), []),
         ))
 
     conn.close()
