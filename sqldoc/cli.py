@@ -14,19 +14,50 @@ load_dotenv()
 @click.option('--password', required=True, help='SQL Server password')
 @click.option('--output', default='documentation.html', help='Output HTML file path')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
-@click.option('--model', default='llama3.1:8b', help='Model to use (default: llama3.1:8b for local)')
+@click.option('--model', default=None, help='Model to use (default: llama3.1:8b for local, claude-haiku-4-5 for cloud)')
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
-def main(server, database, username, password, output, mode, model, schemas, no_ai):
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
+def main(server, database, username, password, output, mode, model, schemas, no_ai, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
+
+    # Resolve the model per backend when not explicitly set, so --model works
+    # for both without a local default (llama tag) leaking into cloud calls.
+    if model is None:
+        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+
+    # Describe the data-egress posture for the chosen mode
+    if no_ai:
+        privacy = "No AI — schema only, nothing leaves this machine"
+    elif mode == "local":
+        privacy = "local (Ollama) — no data leaves this network"
+    else:
+        privacy = "cloud (Anthropic) — schema metadata sent off-network"
 
     click.echo(f"\nsqldoc v0.1.0")
     click.echo(f"{'='*40}")
     click.echo(f"Server:   {server}")
     click.echo(f"Database: {database}")
     click.echo(f"Mode:     {'No AI' if no_ai else mode}")
+    click.echo(f"Privacy:  {privacy}")
     click.echo(f"Output:   {output}")
     click.echo(f"{'='*40}\n")
+
+    # Guard: cloud mode sends schema metadata off the client's network. Require
+    # explicit confirmation so it can never happen by accident. Row data is never
+    # read or transmitted — only table/column names, types, keys, and row counts.
+    if not no_ai and mode == "cloud":
+        click.echo(
+            "WARNING: Cloud mode sends schema metadata (table names, column names,\n"
+            "         data types, keys, and row counts) to Anthropic's API. No table\n"
+            "         row data is ever read or sent. Use --mode local to keep\n"
+            "         everything on this network."
+        )
+        if yes:
+            click.echo("Proceeding with cloud mode (confirmed via --yes).")
+        elif not click.confirm("Proceed with cloud mode?", default=False):
+            click.echo("Aborted. Re-run with --mode local to stay on-network.")
+            raise click.Abort()
 
     # Extract metadata
     click.echo("Connecting to SQL Server...")

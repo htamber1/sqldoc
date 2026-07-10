@@ -24,7 +24,7 @@ Respond with only the description, no preamble."""
     if mode == "local":
         return _call_ollama(prompt, model)
     else:
-        return _call_anthropic(prompt)
+        return _call_anthropic(prompt, model)
 
 def generate_column_description(table_name: str, col, mode: str = "local", model: str = "llama3.1:8b") -> str:
     prompt = f"""In one sentence, describe what the column '{col.name}' ({col.data_type}) likely stores in the '{table_name}' table. Respond with only the description, no preamble."""
@@ -32,7 +32,7 @@ def generate_column_description(table_name: str, col, mode: str = "local", model
     if mode == "local":
         return _call_ollama(prompt, model)
     else:
-        return _call_anthropic(prompt)
+        return _call_anthropic(prompt, model)
 
 def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
     response = requests.post(
@@ -45,10 +45,10 @@ def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
     )
     return response.json()["response"].strip()
 
-def _call_anthropic(prompt: str) -> str:
+def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5") -> str:
     client = Anthropic()
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=200,
         messages=[{"role": "user", "content": prompt}]
     )
