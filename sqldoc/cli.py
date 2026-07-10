@@ -21,7 +21,7 @@ CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
-    'baseline', 'no_baseline', 'sarif', 'pii_patterns', 'yes',
+    'baseline', 'no_baseline', 'sarif', 'pii_patterns', 'fail_on', 'yes',
 }
 
 
@@ -349,8 +349,10 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
+@click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high', 'new-high']), default='none',
+              help='Exit non-zero to gate CI: high = any HIGH finding; new-high = a new HIGH finding vs the baseline')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, yes):
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, fail_on, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -370,6 +372,7 @@ def scan(config, server, database, username, password, connection_string, schema
     baseline = resolve('baseline', baseline)
     no_baseline = resolve('no_baseline', no_baseline)
     sarif = resolve('sarif', sarif)
+    fail_on = resolve('fail_on', fail_on, param='fail_on')
     yes = resolve('yes', yes)
 
     if mode not in ('local', 'cloud'):
@@ -438,6 +441,7 @@ def scan(config, server, database, username, password, connection_string, schema
 
     # PII drift: diff this scan's findings against the previous baseline, then
     # overwrite it (mirrors schema change detection, but for regulated data).
+    drift = None
     if not no_baseline:
         base_path = baseline or os.path.join('.sqldoc-pii-snapshots', _safe_filename(database) + '.json')
         current = findings_snapshot(database, findings)
@@ -445,7 +449,8 @@ def scan(config, server, database, username, password, connection_string, schema
         if previous is None:
             click.echo(f"\nNo previous scan at {base_path} - saving baseline for drift detection.")
         else:
-            print_pii_diff(diff_findings(previous, current), base_path)
+            drift = diff_findings(previous, current)
+            print_pii_diff(drift, base_path)
         save_snapshot(current, base_path)
 
     click.echo("\nRendering report...")
@@ -460,6 +465,24 @@ def scan(config, server, database, username, password, connection_string, schema
         + f"    LOW: {s['by_risk']['LOW']}"
     )
     click.echo(f"Open {output} in your browser for the full compliance report.")
+
+    # CI gate: exit non-zero so a pipeline can fail on regulated-data exposure.
+    gate_msg = None
+    if fail_on == 'high':
+        n = s['by_risk']['HIGH']
+        if n:
+            gate_msg = f"{n} HIGH-risk finding(s) present"
+    elif fail_on == 'new-high':
+        if drift is not None:
+            new_high = [k for k in drift['added'] if drift['_new'].get(k, {}).get('risk') == 'HIGH']
+            escalated = [c for c in drift['risk_changed'] if c['new'] == 'HIGH']
+            count = len(new_high) + len(escalated)
+            if count:
+                gate_msg = f"{count} new HIGH-risk finding(s) since the baseline"
+        # No baseline yet -> nothing to compare; the baseline was just seeded.
+    if gate_msg:
+        click.echo(click.style(f"\nGATE FAILED: {gate_msg} (--fail-on {fail_on}).", fg='red', bold=True))
+        ctx.exit(1)
 
 
 class DefaultGroup(click.Group):

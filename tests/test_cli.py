@@ -159,6 +159,33 @@ def test_scan_command_writes_report(monkeypatch, tmp_path):
     assert "Email Address" in html and "National ID / SSN" in html
 
 
+def test_scan_fail_on_high_exits_nonzero(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    t = Table("dbo", "People", 1, columns=[
+        Column("NationalID", "nvarchar", 20, True, False, False, None, None),  # HIGH
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [t])
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-baseline", "--fail-on", "high", "--output", str(tmp_path / "p.html"),
+    ])
+    assert res.exit_code == 1, res.output
+    assert "GATE FAILED" in res.output
+
+
+def test_scan_fail_on_high_passes_without_high(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    t = Table("dbo", "People", 1, columns=[
+        Column("FirstName", "nvarchar", 50, True, False, False, None, None),  # LOW
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [t])
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-baseline", "--fail-on", "high", "--output", str(tmp_path / "p.html"),
+    ])
+    assert res.exit_code == 0, res.output
+
+
 def test_scan_custom_pii_patterns_from_config(monkeypatch, tmp_path):
     from sqldoc.extractor import Table, Column
     staff = Table("dbo", "Staff", 1, columns=[

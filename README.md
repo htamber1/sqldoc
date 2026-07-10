@@ -261,6 +261,10 @@ sqldoc scan --server localhost --database AdventureWorks2022 \
 resolved, and risk-changed findings (like schema change detection, for regulated
 data). `--baseline PATH` / `--no-baseline`.
 
+**CI gating** — `--fail-on high` exits non-zero if any HIGH finding exists;
+`--fail-on new-high` fails only on a *new* HIGH finding vs the baseline. Combine
+with `--sarif` to both gate the build and upload findings.
+
 **SARIF export** — add `--sarif findings.sarif` to also emit SARIF 2.1.0 for
 **GitHub Advanced Security** / **Azure DevOps**, so PII findings appear in the
 security dashboard and can gate CI:
