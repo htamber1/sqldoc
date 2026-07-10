@@ -134,71 +134,95 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ database }} Database Documentation</title>
     <style>
+        /* Premium dark theme:
+           bg #0a0a0f · cards #0f172a · electric blue #3b82f6 · gold #f59e0b */
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; color: #212529; }
-        .header { background: #1a1a2e; color: white; padding: 40px; }
-        .header h1 { font-size: 2rem; margin-bottom: 8px; }
-        .header p { color: #a0aec0; font-size: 0.95rem; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 20px; margin-bottom: 40px; }
-        .stat-card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }
-        .stat-card .number { font-size: 2rem; font-weight: 700; color: #4f46e5; }
-        .stat-card .label { color: #6b7280; font-size: 0.875rem; margin-top: 4px; }
-        .search-bar { position: sticky; top: 0; z-index: 20; background: #f8f9fa; padding: 16px 0; margin-bottom: 8px; }
-        .search-bar input { width: 100%; padding: 12px 16px; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 8px; outline: none; }
-        .search-bar input:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.15); }
-        .search-count { font-size: 0.8rem; color: #6b7280; margin-top: 6px; min-height: 1em; }
-        .section-title { font-size: 1.5rem; font-weight: 700; margin: 24px 0 16px; color: #111827; }
-        .er-panel { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 40px; overflow: hidden; }
-        .er-toolbar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; flex-wrap: wrap; }
-        .er-toolbar button { border: 1px solid #d1d5db; background: #f9fafb; border-radius: 6px; padding: 4px 12px; font-size: 0.85rem; cursor: pointer; }
-        .er-toolbar button:hover { background: #eef2ff; border-color: #4f46e5; }
+        :root {
+            --bg: #0a0a0f; --card: #0f172a; --card-head: #0b1222;
+            --blue: #3b82f6; --blue-soft: #60a5fa; --gold: #f59e0b; --gold-soft: #fbbf24;
+            --text: #e5e7eb; --text-strong: #f8fafc; --muted: #94a3b8; --faint: #64748b;
+            --border: rgba(255,255,255,0.07); --border-strong: rgba(255,255,255,0.12);
+        }
+        html { scroll-behavior: smooth; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+        ::selection { background: rgba(59,130,246,0.35); color: #fff; }
+        /* Slim dark scrollbars */
+        ::-webkit-scrollbar { width: 11px; height: 11px; }
+        ::-webkit-scrollbar-track { background: #0a0e18; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 6px; border: 2px solid #0a0e18; }
+        ::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+        .header { position: relative; background: radial-gradient(1200px 300px at 15% -20%, rgba(59,130,246,0.16), transparent 60%), radial-gradient(900px 300px at 90% -30%, rgba(245,158,11,0.12), transparent 55%), linear-gradient(180deg, #08080d, #0a0a0f); padding: 56px 40px 52px; border-bottom: 1px solid var(--border); }
+        .header::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, var(--blue), var(--gold)); }
+        .header .brand { display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+        .header h1 { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 10px; background: linear-gradient(90deg, #fff 10%, var(--blue-soft) 55%, var(--gold-soft) 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+        .header p { color: var(--muted); font-size: 0.95rem; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px 20px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 18px; margin-bottom: 44px; }
+        .stat-card { position: relative; background: linear-gradient(180deg, #101a30, var(--card)); border: 1px solid var(--border); border-radius: 14px; padding: 24px; text-align: center; overflow: hidden; transition: border-color 0.15s, transform 0.15s; }
+        .stat-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--blue), var(--gold)); opacity: 0.7; }
+        .stat-card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+        .stat-card .number { font-size: 2.3rem; font-weight: 800; color: var(--gold); letter-spacing: -0.02em; }
+        .stat-card .label { color: var(--muted); font-size: 0.8rem; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.08em; }
+        .search-bar { position: sticky; top: 0; z-index: 20; background: linear-gradient(180deg, var(--bg) 70%, rgba(10,10,15,0.85)); padding: 16px 0; margin-bottom: 8px; }
+        .search-bar input { width: 100%; padding: 13px 18px; font-size: 1rem; background: var(--card); border: 1px solid var(--border-strong); border-radius: 10px; outline: none; color: var(--text); transition: border-color 0.15s, box-shadow 0.15s; }
+        .search-bar input::placeholder { color: var(--faint); }
+        .search-bar input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
+        .search-count { font-size: 0.8rem; color: var(--muted); margin-top: 8px; min-height: 1em; }
+        .section-title { font-size: 1.55rem; font-weight: 800; letter-spacing: -0.01em; margin: 28px 0 18px; color: var(--blue); display: flex; align-items: center; gap: 12px; }
+        .section-title::before { content: ""; width: 4px; height: 1.3em; border-radius: 3px; background: linear-gradient(180deg, var(--blue), var(--gold)); }
+        .er-panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 44px; overflow: hidden; }
+        .er-toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+        .er-toolbar button { border: 1px solid var(--border-strong); background: #131c31; color: var(--text); border-radius: 8px; padding: 5px 14px; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; }
+        .er-toolbar button:hover { background: #1e293b; border-color: var(--blue); color: #fff; }
         .er-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-left: auto; }
-        .er-legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem; color: #4b5563; }
+        .er-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--muted); }
         .er-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
-        .er-canvas { overflow: auto; max-height: 640px; background: #fbfbfd; }
+        .er-canvas { overflow: auto; max-height: 640px; background: #070b14; }
         #er-svg { transform-origin: 0 0; transition: transform 0.1s ease-out; }
-        .schema-group { margin-bottom: 40px; }
-        .schema-title { font-size: 1.25rem; font-weight: 600; color: #4f46e5; border-bottom: 2px solid #4f46e5; padding-bottom: 8px; margin-bottom: 20px; }
-        .table-card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; overflow: hidden; }
-        .table-header { padding: 20px 24px; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: flex-start; }
-        .table-name { font-size: 1.1rem; font-weight: 600; color: #111827; }
-        .table-meta { font-size: 0.8rem; color: #6b7280; margin-top: 4px; }
-        .table-description { font-size: 0.9rem; color: #4b5563; margin-top: 8px; line-height: 1.6; }
-        .row-count { background: #ede9fe; color: #4f46e5; padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 500; white-space: nowrap; }
+        .schema-group { margin-bottom: 44px; }
+        .schema-title { font-size: 1.25rem; font-weight: 700; color: var(--blue); border-bottom: 2px solid rgba(59,130,246,0.5); padding-bottom: 10px; margin-bottom: 22px; }
+        .table-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 4px 20px rgba(0,0,0,0.35); margin-bottom: 24px; overflow: hidden; transition: border-color 0.15s; }
+        .table-card:hover { border-color: var(--border-strong); }
+        .table-header { padding: 20px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+        .table-name { font-size: 1.15rem; font-weight: 700; color: var(--text-strong); }
+        .table-meta { font-size: 0.8rem; color: var(--muted); margin-top: 4px; font-family: 'Consolas', monospace; }
+        .table-description { font-size: 0.9rem; color: #cbd5e1; margin-top: 10px; line-height: 1.6; }
+        .row-count { background: rgba(59,130,246,0.14); color: var(--blue-soft); border: 1px solid rgba(59,130,246,0.3); padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
         table { width: 100%; border-collapse: collapse; }
-        th { background: #f9fafb; padding: 10px 16px; text-align: left; font-size: 0.8rem; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e5e7eb; }
-        td { padding: 12px 16px; font-size: 0.875rem; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
+        th { background: var(--card-head); padding: 11px 16px; text-align: left; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border-strong); }
+        td { padding: 12px 16px; font-size: 0.875rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text); }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #f9fafb; }
-        tr.hl td { background: #fef9c3; }
-        .col-name { font-weight: 500; font-family: monospace; color: #111827; }
-        .col-type { color: #6b7280; font-family: monospace; font-size: 0.8rem; }
-        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 500; margin-right: 4px; }
-        .badge-pk { background: #fef3c7; color: #92400e; }
-        .badge-fk { background: #dbeafe; color: #1e40af; }
-        .badge-nullable { background: #f3f4f6; color: #6b7280; }
-        .col-description { color: #4b5563; font-size: 0.85rem; line-height: 1.5; }
-        .badge-uq { background: #dcfce7; color: #166534; }
-        .badge-out { background: #fae8ff; color: #86198f; }
-        .type-badge { padding: 4px 12px; border-radius: 20px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; white-space: nowrap; }
-        .type-badge.view { background: #cffafe; color: #0e7490; }
-        .type-badge.proc { background: #ede9fe; color: #6d28d9; }
-        .subsection-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; padding: 14px 16px 6px; }
-        .index-section { border-top: 1px solid #f3f4f6; }
-        .no-params { padding: 14px 16px; color: #9ca3af; font-size: 0.85rem; font-style: italic; }
-        details.definition { border-top: 1px solid #f3f4f6; }
-        details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 600; color: #4f46e5; user-select: none; }
-        details.definition summary:hover { background: #f9fafb; }
-        details.definition pre { margin: 0; padding: 16px; background: #1e293b; color: #e2e8f0; font-size: 0.78rem; line-height: 1.5; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; }
-        .no-results { display: none; text-align: center; color: #9ca3af; padding: 40px; font-size: 0.95rem; }
-        .footer { text-align: center; padding: 40px; color: #9ca3af; font-size: 0.85rem; }
+        tr:hover td { background: rgba(255,255,255,0.025); }
+        tr.hl td { background: rgba(245,158,11,0.13); }
+        .col-name { font-weight: 600; font-family: 'Consolas', monospace; color: var(--text-strong); }
+        .col-type { color: var(--muted); font-family: 'Consolas', monospace; font-size: 0.8rem; }
+        .badge { display: inline-block; padding: 2px 9px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; margin-right: 4px; border: 1px solid transparent; }
+        .badge-pk { background: rgba(245,158,11,0.15); color: var(--gold-soft); border-color: rgba(245,158,11,0.4); }
+        .badge-fk { background: rgba(59,130,246,0.15); color: var(--blue-soft); border-color: rgba(59,130,246,0.4); }
+        .badge-nullable { background: rgba(148,163,184,0.1); color: var(--muted); border-color: rgba(148,163,184,0.25); }
+        .col-description { color: #cbd5e1; font-size: 0.85rem; line-height: 1.5; }
+        .badge-uq { background: rgba(16,185,129,0.15); color: #34d399; border-color: rgba(16,185,129,0.35); }
+        .badge-out { background: rgba(217,70,239,0.15); color: #e879f9; border-color: rgba(217,70,239,0.35); }
+        .type-badge { padding: 4px 13px; border-radius: 20px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; border: 1px solid transparent; }
+        .type-badge.view { background: rgba(6,182,212,0.15); color: #22d3ee; border-color: rgba(6,182,212,0.35); }
+        .type-badge.proc { background: rgba(139,92,246,0.15); color: #a78bfa; border-color: rgba(139,92,246,0.35); }
+        .subsection-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 14px 16px 6px; }
+        .index-section { border-top: 1px solid var(--border); }
+        .no-params { padding: 14px 16px; color: var(--faint); font-size: 0.85rem; font-style: italic; }
+        details.definition { border-top: 1px solid var(--border); }
+        details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700; color: var(--blue); user-select: none; letter-spacing: 0.02em; }
+        details.definition summary:hover { background: rgba(255,255,255,0.025); }
+        details.definition pre { margin: 0; padding: 16px; background: #05070d; color: #cbd5e1; font-size: 0.78rem; line-height: 1.55; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; border-top: 1px solid var(--border); }
+        .no-results { display: none; text-align: center; color: var(--faint); padding: 40px; font-size: 0.95rem; }
+        .footer { text-align: center; padding: 40px; color: var(--faint); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 20px; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>{{ database }} Documentation</h1>
-        <p>Generated on {{ generated_at }} using sqldoc</p>
+        <span class="brand">sqldoc &middot; Database Documentation</span>
+        <h1>{{ database }}</h1>
+        <p>Generated on {{ generated_at }}</p>
     </div>
     <div class="container">
         <div class="stats">
@@ -245,20 +269,20 @@ HTML_TEMPLATE = """
                 <svg id="er-svg" width="{{ er.width }}" height="{{ er.height }}" viewBox="0 0 {{ er.width }} {{ er.height }}" xmlns="http://www.w3.org/2000/svg">
                     <defs>
                         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                            <path d="M0,0 L10,5 L0,10 z" fill="#64748b"></path>
+                            <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"></path>
                         </marker>
                     </defs>
                     {% for e in er.edges %}
-                    <path d="{{ e.d }}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.75"></path>
+                    <path d="{{ e.d }}" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" opacity="0.8"></path>
                     {% endfor %}
                     {% for box in er.boxes %}
                     <g>
-                        <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="{{ box.h }}" rx="6" fill="white" stroke="{{ box.color }}" stroke-width="1.5"></rect>
+                        <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="{{ box.h }}" rx="6" fill="#0f172a" stroke="{{ box.color }}" stroke-width="1.5"></rect>
                         <path d="M {{ box.x }} {{ box.y + 6 }} q 0 -6 6 -6 h {{ box.w - 12 }} q 6 0 6 6 v 18 h -{{ box.w }} z" fill="{{ box.color }}"></path>
                         <text x="{{ box.cx }}" y="{{ box.y + 16 }}" text-anchor="middle" fill="white" font-size="12" font-weight="700">{{ box.title }}</text>
                         {% for col in box.columns %}
                         <text x="{{ box.x + 8 }}" y="{{ box.y + 24 + loop.index0 * 17 + 12 }}" font-size="11" font-family="monospace"
-                              fill="{% if col.is_pk %}#92400e{% elif col.is_fk %}#1e40af{% else %}#374151{% endif %}"
+                              fill="{% if col.is_pk %}#fbbf24{% elif col.is_fk %}#60a5fa{% else %}#cbd5e1{% endif %}"
                               font-weight="{% if col.is_pk %}700{% else %}400{% endif %}">{{ col.label }}</text>
                         {% endfor %}
                     </g>
