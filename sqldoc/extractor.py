@@ -66,8 +66,8 @@ class StoredProcedure:
     definition: Optional[str] = None
     description: Optional[str] = None
 
-def get_connection(server: str, database: str, username: str, password: str):
-    conn_str = (
+def build_connection_string(server: str, database: str, username: str, password: str) -> str:
+    return (
         f"DRIVER={{ODBC Driver 18 for SQL Server}};"
         f"SERVER={server};"
         f"DATABASE={database};"
@@ -75,10 +75,12 @@ def get_connection(server: str, database: str, username: str, password: str):
         f"PWD={password};"
         f"TrustServerCertificate=yes;"
     )
-    return pyodbc.connect(conn_str)
 
-def extract_metadata(server: str, database: str, username: str, password: str) -> list[Table]:
-    conn = get_connection(server, database, username, password)
+def get_connection(connection_string: str):
+    return pyodbc.connect(connection_string)
+
+def extract_metadata(connection_string: str) -> list[Table]:
+    conn = get_connection(connection_string)
     cursor = conn.cursor()
 
     # Get all tables with row counts
@@ -227,8 +229,8 @@ def extract_metadata(server: str, database: str, username: str, password: str) -
     return tables
 
 
-def extract_views(server: str, database: str, username: str, password: str) -> list[View]:
-    conn = get_connection(server, database, username, password)
+def extract_views(connection_string: str) -> list[View]:
+    conn = get_connection(connection_string)
     cursor = conn.cursor()
 
     # Views + their SQL definition and any MS_Description. minor_id = 0 targets
@@ -297,8 +299,8 @@ def extract_views(server: str, database: str, username: str, password: str) -> l
     return views
 
 
-def extract_procedures(server: str, database: str, username: str, password: str) -> list[StoredProcedure]:
-    conn = get_connection(server, database, username, password)
+def extract_procedures(connection_string: str) -> list[StoredProcedure]:
+    conn = get_connection(connection_string)
     cursor = conn.cursor()
 
     cursor.execute("""

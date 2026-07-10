@@ -138,6 +138,7 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--database` | Database name to document (**required**) |
 | `--username` | SQL Server username (**required**) |
 | `--password` | SQL Server password (**required**) |
+| `--connection-string` | Full ODBC connection string — an alternative to the four flags above |
 | `--output` | Output file path (default `documentation.html`) |
 | `--format html\|markdown\|pdf` | Output format. Defaults to the `--output` extension (`.md`→markdown, `.pdf`→pdf), else HTML |
 | `--mode local\|cloud` | AI backend: `local` (Ollama, default) or `cloud` (Anthropic) |
@@ -152,8 +153,16 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--config` | Path to a config file (default `.sqldoc.yml` if present) |
 | `--yes` / `-y` | Skip the cloud-mode confirmation prompt (for non-interactive/CI use) |
 
-The connection flags are marked required above, but any of them (and every other
-option) can instead be supplied from a config file — see below.
+Instead of the four connection flags you can pass a single
+`--connection-string` (handy for enterprise/Azure connection strings); the
+database name is parsed from it for labeling. Any option (and the connection
+flags) can also be supplied from a config file — see below.
+
+```bash
+python -m sqldoc.cli --connection-string \
+  "DRIVER={ODBC Driver 18 for SQL Server};SERVER=host;DATABASE=Sales;UID=user;PWD=***;TrustServerCertificate=yes;" \
+  --output docs.html
+```
 
 ## Config file
 

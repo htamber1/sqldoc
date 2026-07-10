@@ -1,13 +1,13 @@
-from sqldoc.extractor import extract_metadata
+from sqldoc.extractor import extract_metadata, build_connection_string
 
 print("Connecting to AdventureWorks2022...")
 
-tables = extract_metadata(
+tables = extract_metadata(build_connection_string(
     server="localhost",
     database="AdventureWorks2022",
     username="sa",
-    password="SqlDoc123!"
-)
+    password="SqlDoc123!",
+))
 
 print(f"Success! Found {len(tables)} tables\n")
 

@@ -70,6 +70,8 @@ Key options (see `sqldoc/cli.py`):
 - `--no-ai` — skip all LLM calls, emit schema-only docs. Use this to iterate on extraction/rendering without a running LLM (also the fastest smoke test of the CLI plumbing).
 - `--schemas` — comma-separated schema allowlist; filtering happens in `cli.py` *after* full extraction, and applies to tables, views, and procedures alike.
 - `--concurrency` — parallel AI calls during enrichment (1-64, default 8). Threaded to all three `enrich_*` functions, which run their per-object calls through a `ThreadPoolExecutor`.
+- `--connection-string` — full ODBC connection string as an alternative to `--server/--database/--username/--password`; takes precedence over them. The database name is parsed out (`DATABASE=`/`Initial Catalog=`) for labeling + snapshot/cache filenames. The extractor now takes a single connection string (`build_connection_string()` assembles it from parts).
+- `--cache` / `--no-cache` — AI description cache (default `.sqldoc-cache/<database>.json`). Reuses descriptions for objects whose structural signature is unchanged; gitignored.
 - `--config` — path to a `.sqldoc.yml` (default `.sqldoc.yml` in cwd if present). Any option can be set there; an explicit CLI flag overrides the config, which overrides the built-in default. Connection flags are optional when supplied via config.
 - `--yes` / `-y` — bypass the cloud confirmation prompt (below) for non-interactive/CI runs.
 

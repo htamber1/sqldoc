@@ -2,7 +2,8 @@ import click
 import os
 import yaml
 from dotenv import load_dotenv
-from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
+import re
+from sqldoc.extractor import extract_metadata, extract_views, extract_procedures, build_connection_string
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
@@ -12,10 +13,17 @@ load_dotenv()
 
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
-    'server', 'database', 'username', 'password', 'output',
+    'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'yes',
 }
+
+
+def _parse_database(connection_string: str):
+    """Best-effort extraction of the database name from a connection string,
+    for labeling output and naming snapshot/cache files."""
+    m = re.search(r'(?:DATABASE|Initial\s+Catalog)\s*=\s*([^;]+)', connection_string, re.IGNORECASE)
+    return m.group(1).strip() if m else None
 
 _DIFF_COLORS = {'add': 'green', 'remove': 'red', 'change': 'yellow'}
 
@@ -87,6 +95,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--database', default=None, help='Database name to document')
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to --server/--database/--username/--password)')
 @click.option('--output', default='documentation.html', help='Output file path')
 @click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf']), help='Output format (default: inferred from --output extension, else html)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
@@ -99,7 +108,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--cache', default=None, help='AI description cache path (default: .sqldoc-cache/<database>.json)')
 @click.option('--no-cache', is_flag=True, default=False, help='Disable the AI description cache (always regenerate)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, cache, no_cache, yes):
+def main(config, server, database, username, password, connection_string, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, cache, no_cache, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -118,6 +127,7 @@ def main(config, server, database, username, password, output, output_format, mo
     database = resolve('database', database)
     username = resolve('username', username)
     password = resolve('password', password)
+    connection_string = resolve('connection_string', connection_string)
     output = resolve('output', output)
     output_format = resolve('format', output_format, param='output_format')
     mode = resolve('mode', mode)
@@ -131,15 +141,23 @@ def main(config, server, database, username, password, output, output_format, mo
     no_cache = resolve('no_cache', no_cache)
     yes = resolve('yes', yes)
 
-    # Validate merged values (config can supply out-of-range/invalid values that
-    # bypass Click's per-option validation, which only sees CLI input).
-    missing = [n for n, v in (('server', server), ('database', database),
-                              ('username', username), ('password', password)) if not v]
-    if missing:
-        raise click.UsageError(
-            "Missing required connection settings: " + ", ".join(missing) +
-            ". Provide them via CLI flags or a .sqldoc.yml config file."
-        )
+    # Resolve how we connect: a full connection string takes precedence over the
+    # individual --server/--database/--username/--password parts.
+    if connection_string:
+        conn_str = connection_string
+        # database is only used for labeling + snapshot/cache filenames.
+        database = database or _parse_database(connection_string) or 'database'
+    else:
+        missing = [n for n, v in (('server', server), ('database', database),
+                                  ('username', username), ('password', password)) if not v]
+        if missing:
+            raise click.UsageError(
+                "Missing connection settings: " + ", ".join(missing) +
+                ". Provide --server/--database/--username/--password, a "
+                "--connection-string, or a .sqldoc.yml config file."
+            )
+        conn_str = build_connection_string(server, database, username, password)
+
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
     if not isinstance(concurrency, int) or not (1 <= concurrency <= 64):
@@ -164,7 +182,7 @@ def main(config, server, database, username, password, output, output_format, mo
 
     click.echo(f"\nsqldoc v0.1.0")
     click.echo(f"{'='*40}")
-    click.echo(f"Server:   {server}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
     click.echo(f"Mode:     {'No AI' if no_ai else mode}")
     click.echo(f"Privacy:  {privacy}")
@@ -190,9 +208,9 @@ def main(config, server, database, username, password, output, output_format, mo
     # Extract metadata
     click.echo("Connecting to SQL Server...")
     try:
-        tables = extract_metadata(server, database, username, password)
-        views = extract_views(server, database, username, password)
-        procedures = extract_procedures(server, database, username, password)
+        tables = extract_metadata(conn_str)
+        views = extract_views(conn_str)
+        procedures = extract_procedures(conn_str)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
