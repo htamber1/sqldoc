@@ -180,7 +180,7 @@ def main(config, server, database, username, password, connection_string, output
     else:
         privacy = "cloud (Anthropic) - schema metadata sent off-network"
 
-    click.echo(f"\nsqldoc v0.1.0")
+    click.echo(f"\nsqldoc v1.0.0")
     click.echo(f"{'='*40}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
