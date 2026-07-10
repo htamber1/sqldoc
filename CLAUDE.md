@@ -6,7 +6,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`). The CLI is a command group: **`sqldoc doc`** (documentation) and **`sqldoc scan`** (PII scan); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
-## Project status & roadmap (as of 2026-07-09)
+## Project status (v1.2.0, as of 2026-07-10)
+
+Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan`** (PII/compliance). Tags **v1.0.0 / v1.1.0 / v1.2.0** pushed to `github.com/htamber1/sqldoc`. **79 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`).
+
+### What's built (all shipped + tested)
+**`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
+
+**`sqldoc scan`** — `pii.py` (~15 PII categories → HIGH/MEDIUM/LOW + HIPAA/GDPR/PCI-DSS + action; camelCase-aware matcher; type confirmation; optional AI `--sample` with values never stored; **custom categories** via `.sqldoc.yml` `pii_patterns:`) → `pii_renderer.py` (dark compliance HTML: dashboard, risk filter, CSV export). **PII drift** (`--baseline`), **SARIF export** (`sarif.py`, `--sarif`), **CI gate** (`--fail-on high|new-high`).
+
+**Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite + `tests/conftest.py` fake-pyodbc; GitHub Actions CI (`.github/workflows/ci.yml`); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
+
+### Outstanding manual steps (need the user's credentials — see PUBLISHING.md)
+1. **Push `.github/workflows/ci.yml`** — the git PAT lacks the `workflow` scope, so the file is on disk (untracked) but not pushed. Add the scope + push, or paste via the GitHub web UI. Contains a `test` job (pytest) + a guarded `pii-gate` job.
+2. **Publish to PyPI** — builds + `twine check` pass, name `sqldoc` is free. Follow `PUBLISHING.md`. Decide first: (a) a license, (b) public PyPI vs. the paid tiers.
+3. **GitHub Release pages** for the three tags (optional; the tags themselves exist).
+
+### Next session — planned features
+- **Entitlement layer** (unblocks paid tiers + public PyPI): license-key gating for `scan`, audit logs, air-gapped-mode validation.
+- **JSON export** — `--format json` (doc) + machine-readable findings (scan) for programmatic consumers.
+- **Constraints** (check/unique/default, FK actions) — the last object type not yet extracted; **ER layout toggles** (key-columns-only / connected-only).
+- **`--include-definitions`** opt-in — send view/proc/trigger bodies to the AI for richer descriptions (must update the `Privacy:` banner + cloud warning; off by default).
+- **Scan depth** — more PII categories + false-positive tuning; a confidence-threshold flag; per-column suppression/allowlist so known-safe columns don't re-alert.
+- **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
+
+### Standing decisions
+- SQL definitions stay **out of AI calls** (metadata-only cloud boundary) until `--include-definitions` ships.
+- Per-server subscription pricing; four tiers documented in `pricing-strategy.md`.
+
+---
+
+_Chronological build log (v0.1 → v1.2) follows._
 
 ### Built & validated
 - **Cloud model + `--model` wiring** — `_call_anthropic` model is configurable and defaults to `claude-haiku-4-5` (cheap/fast, fits the one-call-per-table/column workload); `--model` threads through both backends with per-mode defaults.
@@ -28,33 +58,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Renderer hardening** — switched to an autoescaping Jinja `Environment` so SQL definitions containing `<`/`>`/`&` render as text instead of corrupting the HTML.
 
 ### Pending / unvalidated
-- **ER diagram browser QA** — auto-layout can produce crossing arrows on dense schemas (71 tables is a lot). Not yet eyeballed in a browser. Visual polish is explicitly deferred. The new Views/Procedures sections and index tables have also only been validated structurally (regex over the HTML), not eyeballed in a browser.
-- No automated test suite (see Tests below — the `test_*.py` scripts are ad-hoc, not pytest).
+- **ER diagram + reports** were eyeballed via headless-Edge screenshots during development; the ER auto-layout can still produce some crossing arrows on very dense schemas. (Automated test suite now exists — see Tests below.)
 
-### Roadmap
-**Phase 1 — visual parity/lead vs. Redgate SQL Doc (DONE).** ER diagram + real-time search. Both shipped and validated (`--no-ai`).
-
-**Phase 2 — deeper coverage + AI quality (first wave DONE, see above).**
-
-_Second wave — DONE & validated (2026-07-10):_
-- **Markdown export** (`markdown_renderer.py`) — single-file `.md` for GitHub wikis: stats, schema-grouped TOC with anchor links, column/index tables, view/proc SQL definitions in `<details>` + fenced ```sql. Pipes/newlines escaped in cells.
-- **PDF export** (`pdf_renderer.py`, `fpdf2`) — multi-page A4 with title/stats, schema-grouped Tables/Views/Procedures, bordered tables, monospace definitions, footer page numbers. Pure-Python (no system libs); lazily imported; Latin-1 text sanitization. Validated to a 54-page PDF.
-- **Schema change detection** (`snapshot.py`) — each run writes a structural JSON snapshot to `.sqldoc-snapshots/<database>.json` and diffs the next run against it, printing a git-diff-style report (added/dropped tables, added/dropped columns, type/nullability/pk changes, view/proc add/remove). `--snapshot PATH` / `--no-snapshot`. Snapshots capture structure only (no descriptions, no row data). Gitignored by default.
-- **Format selection** — `--format html|markdown|pdf`, else inferred from the `--output` extension; all three renderers share the `(database, tables, output, views, procedures)` signature. cli dispatches; PDF import is lazy so html/markdown work without `fpdf2`.
-- **HTML output UX (IDE-like)** — premium charcoal dark theme; sticky collapsible **sidebar navigation tree** (schema → tables/views/procs, click smooth-scrolls to the object's `obj-<schema>-<name>` card and flashes it); **interactive ER diagram** (FK-connected tables only, left-to-right schema bands, schema-colored arrows, hover-to-spotlight, click-to-jump); **type filter** (All/Tables/Views/Procedures) composed with real-time search; **Copy SQL** buttons on every definition; **color-coded row counts** (green = has rows, gray = empty). All CSS/JS inlined in `HTML_TEMPLATE`; card anchors use the shared `obj-` id scheme.
-
-_Decisions:_
-- **SQL definitions stay out of AI calls for now.** View/proc definitions are extracted + rendered locally but never sent to the model, holding the cloud data boundary at "names/types/keys/row counts." A future **`--include-definitions`** opt-in flag will let users trade the wider boundary for richer AI descriptions that read the definition body; it must update the `Privacy:` banner + cloud warning to state that definitions are being sent, and stay off by default.
-
-_Third wave — DONE (2026-07-10):_ **triggers + computed columns** (extractor + all 3 renderers); **`ai.py` retry/backoff** (exp. backoff + jitter, `MAX_ATTEMPTS`) around both LLM backends; **description cache** (`--cache`/`--no-cache`, `.sqldoc-cache/<database>.json`) keyed by `(model, kind, structural signature)` so unchanged objects are reused instead of regenerated. Dark mode shipped earlier.
-
-_Deferred:_ remaining object types (constraints), ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle).
-
-**Phase 3 — distribution (PROPOSED, not yet agreed).**
-- JSON export; `.env`-driven credentials; `--dry-run` cloud cost estimate. (Config file + `--connection-string` — done in Phase 2.)
-- Replace ad-hoc `test_*.py` with a real pytest suite. (Packaging — `pyproject.toml` + `sqldoc` console entry point — done in Phase 2.)
-
-> Phase 3 is a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
+> Historical roadmap (Phases 1–3) is fully delivered through v1.2.0. The current forward plan is in **Next session — planned features** at the top of this section; Markdown/PDF/schema-diff/HTML-UX/triggers/computed-columns/retry/cache all shipped in the v1.1–1.2 line.
 
 ## Running
 
