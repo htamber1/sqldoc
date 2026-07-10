@@ -88,7 +88,7 @@ def _build_er(tables: list[Table]) -> dict:
             "w": max(MIN_W, int(maxlen * CHAR_W) + PAD * 2),
             "h": HEADER_H + ROW_H * max(1, len(cols)),
             "columns": cols,
-            "anchor": "er-" + bid.lower().replace(".", "-"),
+            "anchor": "obj-" + bid.lower().replace(".", "-"),
         }
         boxes.append(box)
         id_to_box[bid] = box
@@ -276,6 +276,37 @@ HTML_TEMPLATE = """
         details.definition pre { margin: 0; padding: 16px; background: #05070d; color: #cbd5e1; font-size: 0.78rem; line-height: 1.55; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; border-top: 1px solid var(--border); }
         .no-results { display: none; text-align: center; color: var(--faint); padding: 40px; font-size: 0.95rem; }
         .footer { text-align: center; padding: 40px; color: var(--faint); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: 20px; }
+        /* Layout: left navigation sidebar + main content */
+        .layout { display: flex; align-items: flex-start; }
+        .sidebar { flex: 0 0 272px; width: 272px; position: sticky; top: 0; height: 100vh; overflow-y: auto; background: #0c1017; border-right: 1px solid var(--border); }
+        .main { flex: 1 1 auto; min-width: 0; }
+        body.nav-collapsed .sidebar { display: none; }
+        .sidebar-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 16px; background: #0c1017; border-bottom: 1px solid var(--border); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+        .nav-collapse { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1.15rem; line-height: 1; padding: 0 2px; }
+        .nav-collapse:hover { color: var(--text-strong); }
+        .nav-tree { padding: 8px; }
+        .nav-schema { margin-bottom: 2px; }
+        .nav-schema-btn { width: 100%; display: flex; align-items: center; gap: 7px; background: none; border: none; color: var(--blue-soft); font-size: 0.85rem; font-weight: 700; padding: 7px 8px; cursor: pointer; text-align: left; border-radius: 6px; }
+        .nav-schema-btn:hover { background: rgba(255,255,255,0.04); }
+        .nav-schema-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-caret { font-size: 0.62rem; color: var(--muted); transition: transform 0.15s; }
+        .nav-schema.collapsed .nav-caret { transform: rotate(-90deg); }
+        .nav-count { margin-left: auto; font-size: 0.7rem; color: var(--faint); font-weight: 600; }
+        .nav-schema.collapsed .nav-children { display: none; }
+        .nav-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 18px; font-size: 0.82rem; color: var(--text); text-decoration: none; border-radius: 6px; }
+        .nav-item > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nav-item:hover { background: rgba(59,130,246,0.1); color: var(--text-strong); }
+        .nav-item.active { background: rgba(59,130,246,0.18); color: var(--blue-soft); }
+        .nt { flex: 0 0 auto; width: 15px; height: 15px; border-radius: 3px; font-size: 0.58rem; font-weight: 700; font-style: normal; display: inline-flex; align-items: center; justify-content: center; }
+        .nt-t { background: rgba(59,130,246,0.2); color: #60a5fa; }
+        .nt-v { background: rgba(6,182,212,0.2); color: #22d3ee; }
+        .nt-p { background: rgba(139,92,246,0.2); color: #a78bfa; }
+        .nav-reopen { display: none; position: fixed; left: 0; top: 96px; z-index: 40; background: var(--card); color: var(--blue-soft); border: 1px solid var(--border-strong); border-left: none; border-radius: 0 8px 8px 0; padding: 14px 7px; cursor: pointer; writing-mode: vertical-rl; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; }
+        .nav-reopen:hover { border-color: var(--blue); color: #fff; }
+        body.nav-collapsed .nav-reopen { display: block; }
+        @media (max-width: 860px) {
+            .sidebar { position: fixed; top: 0; left: 0; z-index: 45; box-shadow: 0 0 50px rgba(0,0,0,0.7); }
+        }
     </style>
 </head>
 <body>
@@ -284,6 +315,37 @@ HTML_TEMPLATE = """
         <h1>{{ database }}</h1>
         <p>Generated on {{ generated_at }}</p>
     </div>
+    <button type="button" class="nav-reopen" id="nav-reopen" title="Show navigation">&#9776; NAV</button>
+    <div class="layout">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-head">
+                <span>Navigation</span>
+                <button type="button" class="nav-collapse" id="nav-collapse" title="Hide navigation">&laquo;</button>
+            </div>
+            <nav class="nav-tree">
+                {% for grp in nav %}
+                <div class="nav-schema">
+                    <button type="button" class="nav-schema-btn">
+                        <span class="nav-caret">&#9662;</span>
+                        <span class="nav-schema-name">{{ grp.schema }}</span>
+                        <span class="nav-count">{{ grp.tables|length + grp.views|length + grp.procs|length }}</span>
+                    </button>
+                    <div class="nav-children">
+                        {% for name in grp.tables %}
+                        <a class="nav-item" href="#obj-{{ (grp.schema ~ '-' ~ name)|lower }}"><i class="nt nt-t">T</i><span>{{ name }}</span></a>
+                        {% endfor %}
+                        {% for name in grp.views %}
+                        <a class="nav-item" href="#obj-{{ (grp.schema ~ '-' ~ name)|lower }}"><i class="nt nt-v">V</i><span>{{ name }}</span></a>
+                        {% endfor %}
+                        {% for name in grp.procs %}
+                        <a class="nav-item" href="#obj-{{ (grp.schema ~ '-' ~ name)|lower }}"><i class="nt nt-p">P</i><span>{{ name }}</span></a>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </nav>
+        </aside>
+        <div class="main">
     <div class="container">
         <div class="stats">
             <div class="stat-card">
@@ -376,7 +438,7 @@ HTML_TEMPLATE = """
             <div class="schema-title">{{ schema }}</div>
             {% for table in tables %}
             <div class="table-card"
-                 id="er-{{ (schema ~ '-' ~ table.name)|lower }}"
+                 id="obj-{{ (schema ~ '-' ~ table.name)|lower }}"
                  data-name="{{ (schema ~ '.' ~ table.name)|lower }}"
                  data-search="{{ (schema ~ ' ' ~ table.name ~ ' ' ~ (table.columns|map(attribute='name')|join(' ')) ~ ' ' ~ (table.columns|map(attribute='data_type')|join(' ')))|lower }}">
                 <div class="table-header">
@@ -453,6 +515,7 @@ HTML_TEMPLATE = """
             <div class="schema-title">{{ schema }}</div>
             {% for view in views %}
             <div class="table-card"
+                 id="obj-{{ (schema ~ '-' ~ view.name)|lower }}"
                  data-name="{{ (schema ~ '.' ~ view.name)|lower }}"
                  data-search="{{ (schema ~ ' ' ~ view.name ~ ' view ' ~ (view.columns|map(attribute='name')|join(' ')) ~ ' ' ~ (view.columns|map(attribute='data_type')|join(' ')))|lower }}">
                 <div class="table-header">
@@ -502,6 +565,7 @@ HTML_TEMPLATE = """
             <div class="schema-title">{{ schema }}</div>
             {% for proc in procs %}
             <div class="table-card"
+                 id="obj-{{ (schema ~ '-' ~ proc.name)|lower }}"
                  data-name="{{ (schema ~ '.' ~ proc.name)|lower }}"
                  data-search="{{ (schema ~ ' ' ~ proc.name ~ ' procedure proc ' ~ (proc.parameters|map(attribute='name')|join(' ')) ~ ' ' ~ (proc.parameters|map(attribute='data_type')|join(' ')))|lower }}">
                 <div class="table-header">
@@ -546,6 +610,8 @@ HTML_TEMPLATE = """
         {% endif %}
         </div>
         <div class="no-results" id="no-results">No objects match your search.</div>
+    </div>
+        </div>
     </div>
     <div class="footer">Generated by sqldoc</div>
 
@@ -691,6 +757,40 @@ HTML_TEMPLATE = """
                 });
             });
         })();
+
+        // --- Sidebar navigation: collapse, schema toggles, jump to card ---
+        (function () {
+            var body = document.body;
+            var collapseBtn = document.getElementById('nav-collapse');
+            var reopenBtn = document.getElementById('nav-reopen');
+            if (collapseBtn) { collapseBtn.addEventListener('click', function () { body.classList.add('nav-collapsed'); }); }
+            if (reopenBtn) { reopenBtn.addEventListener('click', function () { body.classList.remove('nav-collapsed'); }); }
+            if (window.innerWidth < 860) { body.classList.add('nav-collapsed'); }
+
+            Array.prototype.slice.call(document.querySelectorAll('.nav-schema-btn')).forEach(function (btn) {
+                btn.addEventListener('click', function () { btn.parentElement.classList.toggle('collapsed'); });
+            });
+
+            var allBtn = document.querySelector('.filter-btn[data-filter="all"]');
+            var items = Array.prototype.slice.call(document.querySelectorAll('.nav-item'));
+            items.forEach(function (item) {
+                item.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    var el = document.getElementById(item.getAttribute('href').slice(1));
+                    if (!el) { return; }
+                    // Reset the type filter so the target card is visible.
+                    if (allBtn && !allBtn.classList.contains('active')) { allBtn.click(); }
+                    items.forEach(function (i) { i.classList.remove('active'); });
+                    item.classList.add('active');
+                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    el.classList.remove('flash');
+                    void el.offsetWidth;
+                    el.classList.add('flash');
+                    setTimeout(function () { el.classList.remove('flash'); }, 1600);
+                    if (window.innerWidth < 860) { body.classList.add('nav-collapsed'); }
+                });
+            });
+        })();
     </script>
 </body>
 </html>
@@ -722,6 +822,17 @@ def render_html(
     # Schema count spans every documented object type, not just tables.
     all_schemas = {t.schema for t in tables} | {v.schema for v in views} | {p.schema for p in procedures}
 
+    # Sidebar navigation tree: one node per schema with its object names.
+    nav = [
+        {
+            "schema": s,
+            "tables": [t.name for t in schemas.get(s, [])],
+            "views": [v.name for v in views_by_schema.get(s, [])],
+            "procs": [p.name for p in procs_by_schema.get(s, [])],
+        }
+        for s in sorted(all_schemas)
+    ]
+
     # autoescape=True so SQL definitions / names / descriptions containing
     # <, >, & (e.g. "@CheckDate <= ...") render as text, not broken markup.
     template = Environment(autoescape=True).from_string(HTML_TEMPLATE)
@@ -731,6 +842,7 @@ def render_html(
         schemas=schemas,
         views_by_schema=views_by_schema,
         procs_by_schema=procs_by_schema,
+        nav=nav,
         er=_build_er(tables),
         total_tables=len(tables),
         total_views=len(views),
