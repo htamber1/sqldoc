@@ -247,3 +247,63 @@ def summarize(findings: list) -> dict:
         "by_regulation": dict(sorted(by_reg.items(), key=lambda kv: -kv[1])),
         "tables_affected": len(tables),
     }
+
+
+# --- PII drift detection ---------------------------------------------------
+# Snapshot findings to JSON and diff two scans over time, like schema change
+# detection but for regulated-data exposure.
+
+PII_SNAPSHOT_VERSION = 1
+
+
+def findings_snapshot(database: str, findings: list) -> dict:
+    return {
+        "version": PII_SNAPSHOT_VERSION,
+        "database": database,
+        "findings": {
+            f"{f.schema}.{f.table}.{f.column}": {"risk": f.risk, "category": f.category}
+            for f in findings
+        },
+    }
+
+
+def diff_findings(old: dict, new: dict) -> dict:
+    o = (old or {}).get("findings", {})
+    n = new.get("findings", {})
+    added = sorted(k for k in n if k not in o)
+    resolved = sorted(k for k in o if k not in n)
+    risk_changed = []
+    for k in sorted(set(o) & set(n)):
+        if o[k].get("risk") != n[k].get("risk"):
+            risk_changed.append({
+                "key": k, "old": o[k].get("risk"), "new": n[k].get("risk"),
+                "category": n[k].get("category"),
+            })
+    diff = {"added": added, "resolved": resolved, "risk_changed": risk_changed, "_new": n}
+    diff["counts"] = {"added": len(added), "resolved": len(resolved), "changed": len(risk_changed)}
+    diff["has_changes"] = bool(added or resolved or risk_changed)
+    return diff
+
+
+def iter_findings_diff_lines(diff: dict):
+    """Yield (kind, text) for terminal rendering. kind in:
+    new / resolved / escalate / deescalate / summary / none."""
+    if not diff["has_changes"]:
+        yield ("none", "No PII drift since the last scan.")
+        return
+    new = diff.get("_new", {})
+    for k in diff["added"]:
+        info = new.get(k, {})
+        yield ("new", f"+ NEW       {info.get('risk', ''):6} {k}  ({info.get('category', '')})")
+    for k in diff["resolved"]:
+        yield ("resolved", f"- RESOLVED  {k}")
+    for ch in diff["risk_changed"]:
+        up = RISK_ORDER.get(ch["new"], 0) > RISK_ORDER.get(ch["old"], 0)
+        yield ("escalate" if up else "deescalate",
+               f"! RISK {'UP  ' if up else 'DOWN'} {ch['key']}: {ch['old']} -> {ch['new']}")
+    c = diff["counts"]
+    yield ("summary", f"PII drift: {c['added']} new, {c['resolved']} resolved, {c['changed']} risk change(s)")
+
+
+def format_findings_diff(diff: dict) -> str:
+    return "\n".join(text for _, text in iter_findings_diff_lines(diff))

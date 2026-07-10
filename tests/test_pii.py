@@ -73,3 +73,33 @@ def test_summary_counts_and_regs():
 def test_finding_never_stores_sampled_values():
     fields = set(Finding.__dataclass_fields__)
     assert not (fields & {"sample", "samples", "values"})
+
+
+# --- PII drift detection ---------------------------------------------------
+
+def _snap(names_risks):
+    from sqldoc.pii import findings_snapshot
+    fs = [Finding("dbo", "T", name, "nvarchar", "Cat", risk, "conf", ["GDPR"], "act")
+          for name, risk in names_risks]
+    return findings_snapshot("DB", fs)
+
+
+def test_findings_diff_detects_new_resolved_and_risk_change():
+    from sqldoc.pii import diff_findings
+    old = _snap([("Email", "MEDIUM"), ("SSN", "HIGH"), ("OldCol", "LOW")])
+    new = _snap([("Email", "MEDIUM"), ("SSN", "LOW"), ("NewCol", "HIGH")])
+    d = diff_findings(old, new)
+    assert d["added"] == ["dbo.T.NewCol"]
+    assert d["resolved"] == ["dbo.T.OldCol"]
+    assert len(d["risk_changed"]) == 1
+    ch = d["risk_changed"][0]
+    assert ch["key"] == "dbo.T.SSN" and ch["old"] == "HIGH" and ch["new"] == "LOW"
+    assert d["has_changes"] is True
+
+
+def test_findings_diff_no_change():
+    from sqldoc.pii import diff_findings, format_findings_diff
+    s = _snap([("Email", "MEDIUM")])
+    d = diff_findings(s, s)
+    assert d["has_changes"] is False
+    assert "No PII drift" in format_findings_diff(d)

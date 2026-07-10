@@ -14,3 +14,5 @@ dist/
 .sqldoc-snapshots/
 # Cached AI descriptions (regenerated as needed).
 .sqldoc-cache/
+# PII-scan finding snapshots for drift detection.
+.sqldoc-pii-snapshots/

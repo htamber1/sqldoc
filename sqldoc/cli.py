@@ -8,7 +8,8 @@ from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
-from sqldoc.pii import scan_tables, confirm_with_sampling, summarize
+from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
+                        findings_snapshot, diff_findings, iter_findings_diff_lines)
 from sqldoc.pii_renderer import render_pii_html
 
 load_dotenv()
@@ -17,7 +18,8 @@ load_dotenv()
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
-    'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample', 'yes',
+    'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
+    'baseline', 'no_baseline', 'yes',
 }
 
 
@@ -28,6 +30,21 @@ def _parse_database(connection_string: str):
     return m.group(1).strip() if m else None
 
 _DIFF_COLORS = {'add': 'green', 'remove': 'red', 'change': 'yellow'}
+# For PII drift the semantics invert vs. code diffs: a NEW exposure is bad (red),
+# a RESOLVED finding is good (green).
+_PII_DIFF_COLORS = {'new': 'red', 'resolved': 'green', 'escalate': 'red', 'deescalate': 'green'}
+
+
+def print_pii_diff(diff, path):
+    """Render a PII-drift diff to the terminal."""
+    click.echo(f"\nPII drift since last scan  ({path}):")
+    for kind, text in iter_findings_diff_lines(diff):
+        if kind == 'summary':
+            click.echo(click.style(text, bold=True))
+        elif kind == 'none':
+            click.echo(click.style(text, dim=True))
+        else:
+            click.echo(click.style(text, fg=_PII_DIFF_COLORS.get(kind)))
 
 
 def _safe_filename(name: str) -> str:
@@ -327,8 +344,10 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--sample', is_flag=True, default=False, help='Read up to 5 values per flagged column and use AI to confirm PII (opt-in; reads row data)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for --sample confirmation')
 @click.option('--model', default=None, help='Model for --sample confirmation (default per mode)')
+@click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
+@click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, yes):
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -345,6 +364,8 @@ def scan(config, server, database, username, password, connection_string, schema
     mode = resolve('mode', mode)
     model = resolve('model', model)
     sample = resolve('sample', sample)
+    baseline = resolve('baseline', baseline)
+    no_baseline = resolve('no_baseline', no_baseline)
     yes = resolve('yes', yes)
 
     if mode not in ('local', 'cloud'):
@@ -402,6 +423,18 @@ def scan(config, server, database, username, password, connection_string, schema
                 click.echo(f"Sampling failed: {e}; continuing with name/type findings.", err=True)
         else:
             click.echo("Skipping data sampling; using name/type findings.")
+
+    # PII drift: diff this scan's findings against the previous baseline, then
+    # overwrite it (mirrors schema change detection, but for regulated data).
+    if not no_baseline:
+        base_path = baseline or os.path.join('.sqldoc-pii-snapshots', _safe_filename(database) + '.json')
+        current = findings_snapshot(database, findings)
+        previous = load_snapshot(base_path)
+        if previous is None:
+            click.echo(f"\nNo previous scan at {base_path} - saving baseline for drift detection.")
+        else:
+            print_pii_diff(diff_findings(previous, current), base_path)
+        save_snapshot(current, base_path)
 
     click.echo("\nRendering report...")
     render_pii_html(database, findings, output, sampled=sample)
