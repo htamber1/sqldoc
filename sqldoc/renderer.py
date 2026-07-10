@@ -138,10 +138,10 @@ HTML_TEMPLATE = """
            bg #0a0a0f · cards #0f172a · electric blue #3b82f6 · gold #f59e0b */
         * { box-sizing: border-box; margin: 0; padding: 0; }
         :root {
-            --bg: #0a0a0f; --card: #0f172a; --card-head: #0b1222;
+            --bg: #0a0a0f; --card: #1e2530; --card-head: #171d26;
             --blue: #3b82f6; --blue-soft: #60a5fa; --gold: #f59e0b; --gold-soft: #fbbf24;
             --text: #e5e7eb; --text-strong: #f8fafc; --muted: #94a3b8; --faint: #64748b;
-            --border: rgba(255,255,255,0.07); --border-strong: rgba(255,255,255,0.12);
+            --border: #2a3340; --border-strong: #3a4658;
         }
         html { scroll-behavior: smooth; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
@@ -152,33 +152,37 @@ HTML_TEMPLATE = """
         ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 6px; border: 2px solid #0a0e18; }
         ::-webkit-scrollbar-thumb:hover { background: #334155; }
 
-        .header { position: relative; background: radial-gradient(1200px 300px at 15% -20%, rgba(59,130,246,0.16), transparent 60%), radial-gradient(900px 300px at 90% -30%, rgba(245,158,11,0.12), transparent 55%), linear-gradient(180deg, #08080d, #0a0a0f); padding: 56px 40px 52px; border-bottom: 1px solid var(--border); }
-        .header::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, var(--blue), var(--gold)); }
+        .header { position: relative; background: radial-gradient(900px 300px at 88% -30%, rgba(245,158,11,0.10), transparent 55%), linear-gradient(180deg, #12161d, #0a0a0f); padding: 56px 40px 52px; border-bottom: 1px solid var(--border); }
+        .header::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, var(--gold), transparent 70%); }
         .header .brand { display: inline-block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
-        .header h1 { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 10px; background: linear-gradient(90deg, #fff 10%, var(--blue-soft) 55%, var(--gold-soft) 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+        .header h1 { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 10px; color: var(--text-strong); }
         .header p { color: var(--muted); font-size: 0.95rem; }
         .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px 20px; }
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 18px; margin-bottom: 44px; }
-        .stat-card { position: relative; background: linear-gradient(180deg, #101a30, var(--card)); border: 1px solid var(--border); border-radius: 14px; padding: 24px; text-align: center; overflow: hidden; transition: border-color 0.15s, transform 0.15s; }
-        .stat-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--blue), var(--gold)); opacity: 0.7; }
+        .stat-card { position: relative; background: linear-gradient(180deg, #242c38, var(--card)); border: 1px solid var(--border); border-radius: 14px; padding: 24px; text-align: center; overflow: hidden; transition: border-color 0.15s, transform 0.15s; }
+        .stat-card::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, rgba(245,158,11,0.55), transparent); }
         .stat-card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
         .stat-card .number { font-size: 2.3rem; font-weight: 800; color: var(--gold); letter-spacing: -0.02em; }
         .stat-card .label { color: var(--muted); font-size: 0.8rem; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.08em; }
-        .search-bar { position: sticky; top: 0; z-index: 20; background: linear-gradient(180deg, var(--bg) 70%, rgba(10,10,15,0.85)); padding: 16px 0; margin-bottom: 8px; }
+        .controls { position: sticky; top: 0; z-index: 20; background: var(--bg); padding: 14px 0 12px; margin-bottom: 14px; border-bottom: 1px solid var(--border); }
         .search-bar input { width: 100%; padding: 13px 18px; font-size: 1rem; background: var(--card); border: 1px solid var(--border-strong); border-radius: 10px; outline: none; color: var(--text); transition: border-color 0.15s, box-shadow 0.15s; }
         .search-bar input::placeholder { color: var(--faint); }
         .search-bar input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
-        .search-count { font-size: 0.8rem; color: var(--muted); margin-top: 8px; min-height: 1em; }
-        .section-title { font-size: 1.55rem; font-weight: 800; letter-spacing: -0.01em; margin: 28px 0 18px; color: var(--blue); display: flex; align-items: center; gap: 12px; }
-        .section-title::before { content: ""; width: 4px; height: 1.3em; border-radius: 3px; background: linear-gradient(180deg, var(--blue), var(--gold)); }
+        .filter-nav { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+        .filter-btn { padding: 7px 18px; font-size: 0.85rem; font-weight: 600; color: var(--muted); background: var(--card); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: color 0.15s, border-color 0.15s, background 0.15s; }
+        .filter-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
+        .filter-btn.active { background: rgba(59,130,246,0.15); color: var(--blue-soft); border-color: var(--blue); }
+        .search-count { font-size: 0.8rem; color: var(--muted); margin-top: 10px; min-height: 1em; }
+        .section-title { font-size: 1.55rem; font-weight: 800; letter-spacing: -0.01em; margin: 28px 0 18px; color: var(--text-strong); display: flex; align-items: center; gap: 12px; }
+        .section-title::before { content: ""; width: 4px; height: 1.3em; border-radius: 3px; background: var(--border-strong); }
         .er-panel { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 44px; overflow: hidden; }
         .er-toolbar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
         .er-toolbar button { border: 1px solid var(--border-strong); background: #131c31; color: var(--text); border-radius: 8px; padding: 5px 14px; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; }
-        .er-toolbar button:hover { background: #1e293b; border-color: var(--blue); color: #fff; }
+        .er-toolbar button:hover { background: #2a3340; border-color: var(--border-strong); color: #fff; }
         .er-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-left: auto; }
         .er-legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--muted); }
         .er-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
-        .er-canvas { overflow: auto; max-height: 640px; background: #070b14; }
+        .er-canvas { overflow: auto; max-height: 640px; background: #0c0f14; }
         #er-svg { transform-origin: 0 0; transition: transform 0.1s ease-out; }
         .schema-group { margin-bottom: 44px; }
         .schema-title { font-size: 1.25rem; font-weight: 700; color: var(--blue); border-bottom: 2px solid rgba(59,130,246,0.5); padding-bottom: 10px; margin-bottom: 22px; }
@@ -188,14 +192,14 @@ HTML_TEMPLATE = """
         .table-name { font-size: 1.15rem; font-weight: 700; color: var(--text-strong); }
         .table-meta { font-size: 0.8rem; color: var(--muted); margin-top: 4px; font-family: 'Consolas', monospace; }
         .table-description { font-size: 0.9rem; color: #cbd5e1; margin-top: 10px; line-height: 1.6; }
-        .row-count { background: rgba(59,130,246,0.14); color: var(--blue-soft); border: 1px solid rgba(59,130,246,0.3); padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
+        .row-count { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid var(--border-strong); padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; white-space: nowrap; }
         table { width: 100%; border-collapse: collapse; }
         th { background: var(--card-head); padding: 11px 16px; text-align: left; font-size: 0.72rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border-strong); }
         td { padding: 12px 16px; font-size: 0.875rem; border-bottom: 1px solid var(--border); vertical-align: top; color: var(--text); }
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255,255,255,0.025); }
         tr.hl td { background: rgba(245,158,11,0.13); }
-        .col-name { font-weight: 600; font-family: 'Consolas', monospace; color: var(--text-strong); }
+        .col-name { font-weight: 600; font-family: 'Consolas', monospace; color: var(--blue-soft); }
         .col-type { color: var(--muted); font-family: 'Consolas', monospace; font-size: 0.8rem; }
         .badge { display: inline-block; padding: 2px 9px; border-radius: 5px; font-size: 0.72rem; font-weight: 600; margin-right: 4px; border: 1px solid transparent; }
         .badge-pk { background: rgba(245,158,11,0.15); color: var(--gold-soft); border-color: rgba(245,158,11,0.4); }
@@ -211,7 +215,7 @@ HTML_TEMPLATE = """
         .index-section { border-top: 1px solid var(--border); }
         .no-params { padding: 14px 16px; color: var(--faint); font-size: 0.85rem; font-style: italic; }
         details.definition { border-top: 1px solid var(--border); }
-        details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700; color: var(--blue); user-select: none; letter-spacing: 0.02em; }
+        details.definition summary { padding: 12px 16px; cursor: pointer; font-size: 0.8rem; font-weight: 700; color: #cbd5e1; user-select: none; letter-spacing: 0.02em; }
         details.definition summary:hover { background: rgba(255,255,255,0.025); }
         details.definition pre { margin: 0; padding: 16px; background: #05070d; color: #cbd5e1; font-size: 0.78rem; line-height: 1.55; overflow-x: auto; font-family: 'Consolas', 'Monaco', monospace; border-top: 1px solid var(--border); }
         .no-results { display: none; text-align: center; color: var(--faint); padding: 40px; font-size: 0.95rem; }
@@ -277,7 +281,7 @@ HTML_TEMPLATE = """
                     {% endfor %}
                     {% for box in er.boxes %}
                     <g>
-                        <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="{{ box.h }}" rx="6" fill="#0f172a" stroke="{{ box.color }}" stroke-width="1.5"></rect>
+                        <rect x="{{ box.x }}" y="{{ box.y }}" width="{{ box.w }}" height="{{ box.h }}" rx="6" fill="#1e2530" stroke="{{ box.color }}" stroke-width="1.5"></rect>
                         <path d="M {{ box.x }} {{ box.y + 6 }} q 0 -6 6 -6 h {{ box.w - 12 }} q 6 0 6 6 v 18 h -{{ box.w }} z" fill="{{ box.color }}"></path>
                         <text x="{{ box.cx }}" y="{{ box.y + 16 }}" text-anchor="middle" fill="white" font-size="12" font-weight="700">{{ box.title }}</text>
                         {% for col in box.columns %}
@@ -292,12 +296,21 @@ HTML_TEMPLATE = """
         </div>
         {% endif %}
 
-        <div class="search-bar">
-            <input type="text" id="search" placeholder="Search tables and columns..." autocomplete="off">
+        <div class="controls">
+            <div class="search-bar">
+                <input type="text" id="search" placeholder="Search tables, views, procedures, and columns..." autocomplete="off">
+            </div>
+            <div class="filter-nav">
+                <button type="button" class="filter-btn active" data-filter="all">All</button>
+                <button type="button" class="filter-btn" data-filter="tables">Tables</button>
+                {% if views_by_schema %}<button type="button" class="filter-btn" data-filter="views">Views</button>{% endif %}
+                {% if procs_by_schema %}<button type="button" class="filter-btn" data-filter="procedures">Procedures</button>{% endif %}
+            </div>
             <div class="search-count" id="search-count"></div>
         </div>
 
         <div id="doc-body">
+        <div class="obj-section" data-section="tables">
         <div class="section-title">Tables</div>
         {% for schema, tables in schemas.items() %}
         <div class="schema-group">
@@ -370,8 +383,10 @@ HTML_TEMPLATE = """
             {% endfor %}
         </div>
         {% endfor %}
+        </div>
 
         {% if views_by_schema %}
+        <div class="obj-section" data-section="views">
         <div class="section-title">Views</div>
         {% for schema, views in views_by_schema.items() %}
         <div class="schema-group">
@@ -416,9 +431,11 @@ HTML_TEMPLATE = """
             {% endfor %}
         </div>
         {% endfor %}
+        </div>
         {% endif %}
 
         {% if procs_by_schema %}
+        <div class="obj-section" data-section="procedures">
         <div class="section-title">Stored Procedures</div>
         {% for schema, procs in procs_by_schema.items() %}
         <div class="schema-group">
@@ -465,6 +482,7 @@ HTML_TEMPLATE = """
             {% endfor %}
         </div>
         {% endfor %}
+        </div>
         {% endif %}
         </div>
         <div class="no-results" id="no-results">No objects match your search.</div>
@@ -484,21 +502,30 @@ HTML_TEMPLATE = """
         }
         function erReset() { erScale = 1; _applyErScale(); }
 
-        // --- Real-time search over tables and columns ---
+        // --- Type filter (All / Tables / Views / Procedures) + real-time search ---
         (function () {
             var input = document.getElementById('search');
-            if (!input) { return; }
             var cards = Array.prototype.slice.call(document.querySelectorAll('.table-card'));
             var groups = Array.prototype.slice.call(document.querySelectorAll('.schema-group'));
+            var sections = Array.prototype.slice.call(document.querySelectorAll('.obj-section'));
+            var filterBtns = Array.prototype.slice.call(document.querySelectorAll('.filter-btn'));
             var counter = document.getElementById('search-count');
             var noResults = document.getElementById('no-results');
             var total = cards.length;
+            var activeFilter = 'all';
 
-            function run() {
-                var q = input.value.toLowerCase().trim();
+            function sectionOf(card) {
+                var s = card.closest('.obj-section');
+                return s ? s.getAttribute('data-section') : '';
+            }
+
+            function apply() {
+                var q = (input ? input.value : '').toLowerCase().trim();
                 var shown = 0;
                 cards.forEach(function (card) {
+                    var passFilter = (activeFilter === 'all' || sectionOf(card) === activeFilter);
                     var rows = Array.prototype.slice.call(card.querySelectorAll('tbody tr'));
+                    if (!passFilter) { card.style.display = 'none'; return; }
                     if (!q) {
                         card.style.display = '';
                         rows.forEach(function (r) { r.style.display = ''; r.classList.remove('hl'); });
@@ -525,16 +552,35 @@ HTML_TEMPLATE = """
                         card.style.display = 'none';
                     }
                 });
+                // Hide schema groups and whole sections that have no visible cards.
                 groups.forEach(function (g) {
                     var any = Array.prototype.slice.call(g.querySelectorAll('.table-card'))
                         .some(function (c) { return c.style.display !== 'none'; });
                     g.style.display = any ? '' : 'none';
                 });
-                counter.textContent = q ? (shown + ' of ' + total + ' objects') : '';
-                noResults.style.display = (q && shown === 0) ? 'block' : 'none';
+                sections.forEach(function (s) {
+                    var any = Array.prototype.slice.call(s.querySelectorAll('.table-card'))
+                        .some(function (c) { return c.style.display !== 'none'; });
+                    s.style.display = any ? '' : 'none';
+                });
+                if (!q && activeFilter === 'all') {
+                    counter.textContent = '';
+                } else if (!q) {
+                    counter.textContent = shown + ' ' + activeFilter;
+                } else {
+                    counter.textContent = shown + ' match' + (shown === 1 ? '' : 'es');
+                }
+                noResults.style.display = (shown === 0) ? 'block' : 'none';
             }
 
-            input.addEventListener('input', run);
+            if (input) { input.addEventListener('input', apply); }
+            filterBtns.forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    activeFilter = btn.getAttribute('data-filter');
+                    filterBtns.forEach(function (b) { b.classList.toggle('active', b === btn); });
+                    apply();
+                });
+            });
         })();
     </script>
 </body>
