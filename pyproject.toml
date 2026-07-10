@@ -27,6 +27,9 @@ dependencies = [
     "requests>=2.31",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8", "pypdf>=4"]
+
 [project.urls]
 Homepage = "https://github.com/htamber1/sqldoc"
 Repository = "https://github.com/htamber1/sqldoc"
@@ -36,3 +39,6 @@ sqldoc = "sqldoc.cli:main"
 
 [tool.setuptools]
 packages = ["sqldoc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
