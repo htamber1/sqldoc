@@ -125,11 +125,14 @@ def _downgrade(risk: str) -> str:
     return {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}[risk]
 
 
-def _match_category(column_name: str, categories: list):
-    """Match a column name against a PII category list. Patterns containing a
-    word boundary (\\b) are matched against the space-separated token string so
-    short tokens (ssn, tin, dob, zip) don't over-match as substrings; other
-    patterns are matched as substrings against the separator-free compact name."""
+def _match_category(column_name: str, categories: list = None):
+    """Match a column name against a PII category list (defaults to the built-in
+    catalog). Patterns containing a word boundary (\\b) are matched against the
+    space-separated token string so short tokens (ssn, tin, dob, zip) don't
+    over-match as substrings; other patterns match the separator-free compact
+    name as substrings."""
+    if categories is None:
+        categories = PII_CATEGORIES
     toks = _tokens(column_name)
     compact = _compact(column_name)
     for cat in categories:
