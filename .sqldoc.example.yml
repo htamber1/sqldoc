@@ -1,0 +1,23 @@
+# sqldoc configuration — copy to .sqldoc.yml and edit.
+#
+# Every key here maps to the CLI option of the same name; an explicitly passed
+# CLI flag always overrides the config value. Keys may use hyphens or
+# underscores (no-ai == no_ai). .sqldoc.yml is gitignored because it can hold a
+# password — prefer leaving the password out and passing it via --password or
+# keeping secrets in .env.
+
+# --- Connection (required, from here or the CLI) ---
+server: localhost
+database: AdventureWorks2022
+username: sa
+# password: SqlDoc123!        # better supplied on the CLI than committed to disk
+
+# --- Output & AI preferences (all optional) ---
+output: documentation.html
+mode: local                   # local (Ollama) or cloud (Anthropic)
+# model: llama3.1:8b          # defaults per mode if omitted
+# schemas: HumanResources,Sales   # comma-separated allowlist; omit for all
+no_ai: false                  # true = schema-only, skip all LLM calls
+concurrency: 8                # parallel AI calls during enrichment (1-64)
+"yes": false                  # true = skip the cloud-mode confirmation prompt
+                              # (quote the key: bare yes: is a YAML boolean)

@@ -29,12 +29,15 @@ never a salary.
 ## What it does
 
 1. **Extracts** schema metadata from the `sys.*` catalog views — tables, columns,
-   data types, primary/foreign keys, row counts, and any existing
+   data types, primary/foreign keys, row counts, indexes, views (with their SQL
+   definitions), stored procedures (with parameters), and any existing
    `MS_Description` extended properties.
-2. **Enriches** it with AI-generated descriptions: a short summary for each table
-   and a one-line description for each column that doesn't already have one.
-3. **Renders** a standalone HTML document — grouped by schema, styled inline, no
-   external assets or dependencies to serve.
+2. **Enriches** it with AI-generated descriptions: a short summary for each table,
+   view, and stored procedure, plus a one-line description for each column that
+   doesn't already have one. Enrichment runs concurrently (see `--concurrency`).
+3. **Renders** a standalone HTML document — grouped by schema, with an ER diagram,
+   real-time search, and collapsible view/procedure definitions, styled inline,
+   no external assets or dependencies to serve.
 
 ## Requirements
 
@@ -106,14 +109,45 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--model` | Model to use. Defaults per mode: `llama3.1:8b` (local), `claude-haiku-4-5` (cloud) |
 | `--schemas` | Comma-separated list of schemas to include (default: all) |
 | `--no-ai` | Skip AI descriptions, output schema only |
+| `--concurrency` | Parallel AI calls during enrichment, 1-64 (default `8`) |
+| `--config` | Path to a config file (default `.sqldoc.yml` if present) |
 | `--yes` / `-y` | Skip the cloud-mode confirmation prompt (for non-interactive/CI use) |
+
+The connection flags are marked required above, but any of them (and every other
+option) can instead be supplied from a config file — see below.
+
+## Config file
+
+Rather than passing the same flags every run, drop a `.sqldoc.yml` in the working
+directory. Every key maps to the CLI option of the same name; an explicitly
+passed CLI flag always overrides the config, which in turn overrides the built-in
+defaults. Copy [`.sqldoc.example.yml`](.sqldoc.example.yml) to get started:
+
+```yaml
+server: localhost
+database: AdventureWorks2022
+username: sa
+mode: local
+concurrency: 8
+# password: better supplied via --password than committed to disk
+```
+
+Then simply:
+
+```bash
+python -m sqldoc.cli --output docs.html          # reads .sqldoc.yml
+python -m sqldoc.cli --mode cloud --output docs.html   # override just one setting
+```
+
+> `.sqldoc.yml` is **gitignored** because it can contain a database password.
+> Keep secrets out of it (use `--password` or `.env`) if you plan to share it.
 
 ## How it works
 
 `sqldoc` is a three-stage pipeline, one module per stage:
 
 - `sqldoc/extractor.py` — queries the `sys.*` catalog views and builds `Table` /
-  `Column` dataclasses.
+  `Column` / `Index` / `View` / `StoredProcedure` dataclasses.
 - `sqldoc/ai.py` — fills in descriptions via Ollama (local) or the Anthropic SDK
-  (cloud).
+  (cloud), running the calls concurrently across a thread pool.
 - `sqldoc/renderer.py` — renders the enriched data to a single HTML file.
