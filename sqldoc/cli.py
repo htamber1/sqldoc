@@ -8,6 +8,8 @@ from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
+from sqldoc.pii import scan_tables, confirm_with_sampling, summarize
+from sqldoc.pii_renderer import render_pii_html
 
 load_dotenv()
 
@@ -15,7 +17,7 @@ load_dotenv()
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
-    'snapshot', 'no_snapshot', 'cache', 'no_cache', 'yes',
+    'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample', 'yes',
 }
 
 
@@ -57,6 +59,37 @@ def resolve_format(fmt, output):
     if fmt:
         return fmt
     return _EXT_FORMAT.get(os.path.splitext(output)[1].lower(), 'html')
+
+
+def _make_resolver(ctx, cfg):
+    """Return a resolve(name, value, param) that prefers an explicit CLI flag,
+    then the config value, then the built-in default."""
+    def resolve(name, value, param=None):
+        if ctx.get_parameter_source(param or name).name == 'COMMANDLINE':
+            return value
+        return cfg.get(name, value)
+    return resolve
+
+
+def _resolve_connection(resolve, server, database, username, password, connection_string):
+    """Merge connection settings and return (conn_str, database, server).
+    A --connection-string takes precedence over the discrete parts."""
+    server = resolve('server', server)
+    database = resolve('database', database)
+    username = resolve('username', username)
+    password = resolve('password', password)
+    connection_string = resolve('connection_string', connection_string)
+    if connection_string:
+        return connection_string, (database or _parse_database(connection_string) or 'database'), server
+    missing = [n for n, v in (('server', server), ('database', database),
+                              ('username', username), ('password', password)) if not v]
+    if missing:
+        raise click.UsageError(
+            "Missing connection settings: " + ", ".join(missing) +
+            ". Provide --server/--database/--username/--password, a "
+            "--connection-string, or a .sqldoc.yml config file."
+        )
+    return build_connection_string(server, database, username, password), database, server
 
 
 def load_config(path: str, explicit: bool) -> dict:
@@ -180,7 +213,7 @@ def main(config, server, database, username, password, connection_string, output
     else:
         privacy = "cloud (Anthropic) - schema metadata sent off-network"
 
-    click.echo(f"\nsqldoc v1.0.0")
+    click.echo(f"\nsqldoc v1.1.0")
     click.echo(f"{'='*40}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -282,5 +315,126 @@ def main(config, server, database, username, password, connection_string, output
 
     click.echo(f"\nDone! Open {output} in your browser to view the documentation.")
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to scan')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='pii-report.html', help='Output HTML report path')
+@click.option('--sample', is_flag=True, default=False, help='Read up to 5 values per flagged column and use AI to confirm PII (opt-in; reads row data)')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for --sample confirmation')
+@click.option('--model', default=None, help='Model for --sample confirmation (default per mode)')
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, yes):
+    """Scan a SQL Server database for likely PII / regulated columns.
+
+    Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
+    writes a compliance HTML report. With --sample, reads up to 5 values per
+    flagged column and uses AI to confirm findings (values are never stored).
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    mode = resolve('mode', mode)
+    model = resolve('model', model)
+    sample = resolve('sample', sample)
+    yes = resolve('yes', yes)
+
+    if mode not in ('local', 'cloud'):
+        raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
+    if model is None:
+        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+
+    click.echo("\nsqldoc v1.1.0  -  PII / compliance scan")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Sampling: {'ON (' + mode + ' AI)' if sample else 'off (metadata only)'}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo("Connecting to SQL Server...")
+    try:
+        tables = extract_metadata(conn_str)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    if schemas:
+        allow = [s.strip() for s in schemas.split(',')]
+        tables = [t for t in tables if t.schema in allow]
+
+    findings = scan_tables(tables)
+    affected = len({(f.schema, f.table) for f in findings})
+    click.echo(f"Flagged {len(findings)} column(s) across {affected} table(s).")
+
+    # Optional AI data sampling reads real values (which may be actual PII).
+    if sample and findings:
+        click.echo(
+            "\nWARNING: --sample reads up to 5 real values from each flagged column\n"
+            "         to let the AI confirm findings. Values are used only for\n"
+            "         confidence scoring and are never stored."
+        )
+        if mode == 'cloud':
+            click.echo(
+                "         In cloud mode these sampled values (possibly real PII) are\n"
+                "         sent to Anthropic. Use --mode local to keep sampling on-network."
+            )
+        if yes:
+            click.echo("Proceeding with data sampling (confirmed via --yes).")
+            do_sample = True
+        else:
+            do_sample = click.confirm("Proceed with data sampling?", default=False)
+        if do_sample:
+            def progress(i, total, f):
+                if i == 1 or i % 10 == 0 or i == total:
+                    click.echo(f"  [{i}/{total}] sampling {f.schema}.{f.table}.{f.column}")
+            try:
+                confirm_with_sampling(findings, conn_str, mode, model, progress=progress)
+            except Exception as e:
+                click.echo(f"Sampling failed: {e}; continuing with name/type findings.", err=True)
+        else:
+            click.echo("Skipping data sampling; using name/type findings.")
+
+    click.echo("\nRendering report...")
+    render_pii_html(database, findings, output, sampled=sample)
+
+    s = summarize(findings)
+    click.echo(
+        click.style(f"\nHIGH: {s['by_risk']['HIGH']}", fg='red', bold=True)
+        + click.style(f"    MEDIUM: {s['by_risk']['MEDIUM']}", fg='yellow')
+        + f"    LOW: {s['by_risk']['LOW']}"
+    )
+    click.echo(f"Open {output} in your browser for the full compliance report.")
+
+
+class DefaultGroup(click.Group):
+    """A group that routes to the `doc` command when invoked with options but no
+    subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
+    default_command = 'doc'
+
+    def parse_args(self, ctx, args):
+        if args and args[0].startswith('-') and args[0] not in ('--help', '-h', '--version'):
+            args = [self.default_command, *args]
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=DefaultGroup)
+@click.version_option("1.1.0", prog_name="sqldoc")
+def cli():
+    """sqldoc — SQL Server documentation + PII / compliance scanner."""
+
+
+cli.add_command(main, name='doc')
+cli.add_command(scan, name='scan')
+
+
 if __name__ == '__main__':
-    main()
+    cli()

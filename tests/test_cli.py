@@ -120,3 +120,40 @@ def test_invalid_concurrency_rejected(patched, tmp_path):
         "--output", str(tmp_path / "d.html"),
     ])
     assert res.exit_code != 0
+
+
+# --- command group + scan --------------------------------------------------
+
+def test_group_lists_subcommands():
+    res = CliRunner().invoke(cli.cli, ["--help"])
+    assert res.exit_code == 0
+    assert "doc" in res.output and "scan" in res.output
+
+
+def test_default_group_routes_bare_options_to_doc(patched, tmp_path):
+    out = tmp_path / "d.html"
+    res = CliRunner().invoke(cli.cli, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert out.exists()
+
+
+def test_scan_command_writes_report(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    people = Table("dbo", "People", 5, columns=[
+        Column("Id", "int", 4, False, True, False, None, None),
+        Column("EmailAddress", "nvarchar", 100, True, False, False, None, None),
+        Column("NationalID", "nvarchar", 20, True, False, False, None, None),
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [people])
+    out = tmp_path / "pii.html"
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "HIGH:" in res.output
+    html = out.read_text(encoding="utf-8")
+    assert "Email Address" in html and "National ID / SSN" in html

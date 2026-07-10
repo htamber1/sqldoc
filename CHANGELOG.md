@@ -4,6 +4,35 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] — 2026-07-10
+
+### Added — PII / compliance scanner (`sqldoc scan`)
+sqldoc becomes a compliance tool as well as a documentation tool. A new
+`sqldoc scan` command identifies columns that likely hold personal or regulated
+data and produces a compliance report.
+
+- **Detection** — a catalog of ~15 PII categories (SSN/National ID, payment
+  card, passport/license, bank account, health, credentials, date of birth,
+  email, phone, postal address, GDPR special category, financial, geolocation,
+  name, online identifier). Matching combines a camelCase-aware **name analysis**
+  with **data-type confirmation** (a string type confirms an email/name match; a
+  contradicting type lowers confidence and risk).
+- **Risk & regulation mapping** — each finding gets a **HIGH / MEDIUM / LOW**
+  rating and maps to the regulation(s) it implicates (**HIPAA / GDPR / PCI-DSS**),
+  with a recommended remediation action.
+- **Optional AI data sampling** (`--sample`) — reads up to 5 values per flagged
+  column and asks the LLM whether they look like real PII, adjusting confidence.
+  **Sampled values are never stored** — only the verdict is kept. Sampling is
+  opt-in and gated by a warning + confirmation (extra warning in cloud mode).
+- **Compliance report** — a self-contained dark-themed HTML report: a risk
+  summary dashboard, a regulation breakdown, a filterable findings table
+  (by risk), recommended actions, and a client-side **Export CSV** button.
+
+### Changed
+- The CLI is now a command group: **`sqldoc doc`** (documentation, the previous
+  behavior) and **`sqldoc scan`** (PII scan). For backward compatibility,
+  `sqldoc --server ...` (no subcommand) still runs `doc`.
+
 ## [1.0.0] — 2026-07-10
 
 First stable release. `sqldoc` connects to a SQL Server database, extracts its

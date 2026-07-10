@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file.
+`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`). The CLI is a command group: **`sqldoc doc`** (documentation) and **`sqldoc scan`** (PII scan); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
 ## Project status & roadmap (as of 2026-07-09)
 
@@ -101,5 +101,7 @@ A linear pipeline, one module per stage, orchestrated by `cli.py`:
    - **`pdf_renderer.py`** `render_pdf()` — `fpdf2` multi-page PDF; imported lazily so the other formats don't require it; Latin-1 text sanitization.
 
 4. **`snapshot.py`** — orthogonal to rendering. `build_snapshot()` serializes the schema **structure** (not descriptions/rows) to JSON; `diff_snapshots()` + `iter_diff_lines()` produce the git-diff-style change report that `cli.py` prints (colored) and then re-saves the snapshot. Runs after schema-filtering, before enrichment, so it works with `--no-ai`.
+
+5. **`pii.py` + `pii_renderer.py`** — the `sqldoc scan` path (independent of the doc pipeline; reuses `extract_metadata`). `pii.py` holds the `PII_CATEGORIES` catalog (name patterns → severity + regulations + action), a camelCase-aware matcher (`\b` patterns match tokenized names, others match the compact name), `scan_tables()` → `Finding`s with risk/confidence, and `confirm_with_sampling()` (opt-in `--sample`: reads ≤5 values per column, AI-confirms, **never stores samples**). `pii_renderer.render_pii_html()` writes the compliance report (dashboard, risk filter, CSV export via `tojson`). If you add a PII category, edit only `PII_CATEGORIES`.
 
 The dataclasses flow through unchanged: extractor builds them → ai enriches them → renderers read them. If you add a **field**, touch the extractor, `ai.py` (if it needs a description), **all three renderers**, and `snapshot.py` (if it's a structural field worth diffing). If you add a new **object type**, also thread it through `cli.py` (extract → schema-filter → snapshot → enrich → render).

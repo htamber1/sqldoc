@@ -86,11 +86,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## Usage
 
-Once installed, run the `sqldoc` command:
+sqldoc has two subcommands — **`sqldoc doc`** (generate documentation) and
+**`sqldoc scan`** (scan for PII / compliance). For backward compatibility,
+`sqldoc` with options but no subcommand runs `doc`:
 
 ```bash
-sqldoc --server <host> --database <db> --username <user> --password <pw> \
+sqldoc doc --server <host> --database <db> --username <user> --password <pw> \
     --output docs.html
+# equivalently: sqldoc --server <host> ... --output docs.html
 ```
 
 You can also run it as a module without installing (`python -m sqldoc.cli ...`).
@@ -222,6 +225,35 @@ all reported. The first run just saves a baseline. Disable with `--no-snapshot`,
 or point somewhere specific with `--snapshot path.json`. Snapshots are
 gitignored by default; commit them intentionally if you want cross-commit or CI
 change tracking.
+
+## PII / compliance scanning
+
+`sqldoc scan` turns sqldoc into a compliance tool. It identifies columns that
+likely hold personal or regulated data and writes a self-contained HTML
+compliance report — a risk dashboard, per-column **HIGH / MEDIUM / LOW** ratings,
+the regulation each finding maps to (**HIPAA / GDPR / PCI-DSS**), recommended
+actions, and a CSV export.
+
+```bash
+# Name + data-type analysis only — reads no row data:
+sqldoc scan --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --output pii-report.html
+```
+
+Detection matches column names (SSN, national ID, credit card, email, phone,
+date of birth, passport, address, credentials, …) and confirms with the data
+type. Add **`--sample`** to read up to 5 values per flagged column and have the
+AI confirm whether they look like real PII:
+
+```bash
+sqldoc scan --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --sample --mode local --output pii-report.html
+```
+
+> `--sample` reads real values (which may be actual PII) purely to score
+> confidence — **sampled values are never stored**, only the verdict. It is
+> opt-in and prompts for confirmation; in cloud mode the samples are sent to the
+> API, so prefer `--mode local` for sampling.
 
 ## How it works
 
