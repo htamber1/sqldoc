@@ -21,24 +21,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Local (Ollama, `llama3.1:8b`)** — `--schemas HumanResources` (6 tables): 6/6 table descriptions + 40/40 column descriptions populated and coherent; ~38s wall-clock (serial, one blocking call per table/column, as documented).
 - **Cloud (Anthropic, default `claude-haiku-4-5`)** — `--schemas dbo` (3 tables) with `--yes`: 3/3 table + 21/21 column descriptions, coherent; ~7s. Privacy banner, warning, and `--yes` bypass all fired as designed.
 
+### Phase 2 — delivered & validated (2026-07-10)
+- **Views, stored procedures, indexes** — `extractor.py` gained `View`, `StoredProcedure`, `Parameter`, `Index` dataclasses and `extract_views()`/`extract_procedures()`; indexes (key vs included columns) attach to each `Table`. Rendered as their own schema-grouped sections with collapsible SQL definitions, parameter tables, and per-table index tables; stats + search span all object types. Validated against `AdventureWorks2022` (71 tables / 20 views / 10 procs).
+- **Concurrent AI enrichment** — `enrich_tables/views/procedures` build a flat list of independent per-object work units and run them through a `ThreadPoolExecutor` (shared, lazily-created Anthropic client; `--concurrency`, default 8). Measured 1m49s → 22s on a cloud run over one schema. AI prompts for views/procs are **metadata-only** (names + columns/params, never the SQL definition) — the cloud data boundary is unchanged; definitions are extracted and rendered **locally only**.
+- **Config file** — `.sqldoc.yml` (or `--config PATH`) supplies any option; precedence is CLI flag > config > default. Connection flags are no longer Click-required (validated post-merge). Gitignored (may hold a password); ships `.sqldoc.example.yml`.
+- **Renderer hardening** — switched to an autoescaping Jinja `Environment` so SQL definitions containing `<`/`>`/`&` render as text instead of corrupting the HTML.
+
 ### Pending / unvalidated
-- **ER diagram browser QA** — auto-layout can produce crossing arrows on dense schemas (71 tables is a lot). Not yet eyeballed in a browser. Visual polish is explicitly deferred.
+- **ER diagram browser QA** — auto-layout can produce crossing arrows on dense schemas (71 tables is a lot). Not yet eyeballed in a browser. Visual polish is explicitly deferred. The new Views/Procedures sections and index tables have also only been validated structurally (regex over the HTML), not eyeballed in a browser.
 - No automated test suite (see Tests below — the `test_*.py` scripts are ad-hoc, not pytest).
 
 ### Roadmap
 **Phase 1 — visual parity/lead vs. Redgate SQL Doc (DONE).** ER diagram + real-time search. Both shipped and validated (`--no-ai`).
 
-**Phase 2 — deeper coverage + AI quality (PROPOSED, not yet agreed).**
-- Extract more object types: views, stored procedures, indexes, constraints, computed columns, triggers.
-- `ai.py` performance/robustness: concurrency or batching for `enrich_tables` (currently serial, one blocking call per table/column — the slow path), retry/backoff, optional description caching.
-- ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
+**Phase 2 — deeper coverage + AI quality (largely DONE, see above).** Remaining/deferred: more object types (constraints, computed columns, triggers), `ai.py` retry/backoff + optional description caching, ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
 
 **Phase 3 — output formats + distribution (PROPOSED, not yet agreed).**
 - Export formats beyond HTML: Markdown, JSON, PDF.
-- Connection UX: config file / connection-string / `.env`-driven credentials; `--dry-run` cloud cost estimate.
+- Connection UX: connection-string / `.env`-driven credentials; `--dry-run` cloud cost estimate. (Config file — done in Phase 2.)
 - Packaging: `pyproject.toml` + console entry point (`sqldoc` command); replace ad-hoc `test_*.py` with a real pytest suite.
 
-> Phases 2–3 are a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
+> Phase 3 is a proposed direction synthesized from discussion, **not** confirmed scope — refine with the user before building.
 
 ## Running
 
@@ -52,7 +55,9 @@ Key options (see `sqldoc/cli.py`):
 - `--mode local|cloud` — `local` (default) calls Ollama at `http://localhost:11434`; `cloud` calls the Anthropic API.
 - `--model` — model name. **Default is `None` and resolved per-mode** in `main()`: `llama3.1:8b` for local, `claude-haiku-4-5` for cloud. This split exists so the local Ollama tag never leaks into a cloud API call. Explicitly passing `--model` overrides for whichever backend is active; it is threaded all the way through to `_call_anthropic(prompt, model)` / `_call_ollama(prompt, model)`.
 - `--no-ai` — skip all LLM calls, emit schema-only docs. Use this to iterate on extraction/rendering without a running LLM (also the fastest smoke test of the CLI plumbing).
-- `--schemas` — comma-separated schema allowlist; filtering happens in `cli.py` *after* full extraction.
+- `--schemas` — comma-separated schema allowlist; filtering happens in `cli.py` *after* full extraction, and applies to tables, views, and procedures alike.
+- `--concurrency` — parallel AI calls during enrichment (1-64, default 8). Threaded to all three `enrich_*` functions, which run their per-object calls through a `ThreadPoolExecutor`.
+- `--config` — path to a `.sqldoc.yml` (default `.sqldoc.yml` in cwd if present). Any option can be set there; an explicit CLI flag overrides the config, which overrides the built-in default. Connection flags are optional when supplied via config.
 - `--yes` / `-y` — bypass the cloud confirmation prompt (below) for non-interactive/CI runs.
 
 **Privacy posture — local-first by design.** Local mode is the default; nothing leaves the network unless `--mode cloud` is explicitly chosen. The banner prints a `Privacy:` line stating the egress posture every run. `--mode cloud` additionally prints a warning and blocks on an interactive `click.confirm` (defaults to "no") before any network call — `--yes` skips only the prompt, not the warning. Note the data boundary: **only schema metadata** (table/column names, types, keys, row counts, existing `MS_Description` text) is ever sent to Anthropic — the extractor queries only `sys.*` catalog views and never reads table row data.
@@ -61,7 +66,7 @@ Key options (see `sqldoc/cli.py`):
 
 ## Dependencies
 
-Pinned in `requirements.txt`: `click`, `pyodbc`, `anthropic`, `jinja2`, `requests`, `python-dotenv` (also installed in the checked-in `venv/`). Extraction requires the **ODBC Driver 18 for SQL Server** to be installed on the host (see the `DRIVER=` string in `extractor.py`) — this is a system package, not a pip dependency.
+Pinned in `requirements.txt`: `click`, `pyodbc`, `anthropic`, `jinja2`, `requests`, `python-dotenv`, `PyYAML` (also installed in the checked-in `venv/`). Extraction requires the **ODBC Driver 18 for SQL Server** to be installed on the host (see the `DRIVER=` string in `extractor.py`) — this is a system package, not a pip dependency.
 
 ## Tests
 
@@ -71,10 +76,10 @@ Pinned in `requirements.txt`: `click`, `pyodbc`, `anthropic`, `jinja2`, `request
 
 A linear pipeline, one module per stage, orchestrated by `cli.py`:
 
-1. **`extractor.py`** — the only DB-facing code. Defines the `Table` and `Column` dataclasses that are the shared currency of the whole pipeline. `extract_metadata()` queries `sys.*` catalog views: one query for tables + row counts, then a per-table query joining `sys.columns` with PK/FK/`extended_properties` (`MS_Description`) info. Any real `MS_Description` on a column is captured into `Column.description` here — the AI stage only fills columns where this is empty.
+1. **`extractor.py`** — the only DB-facing code. Defines the shared-currency dataclasses: `Table`, `Column`, `Index` (attached to a `Table`), `View`, `Parameter`, `StoredProcedure`. `extract_metadata()` queries `sys.*` catalog views: tables + row counts, a per-table `sys.columns` join for PK/FK/`extended_properties` (`MS_Description`), and a per-table `sys.indexes`/`sys.index_columns` query (grouping key vs included columns). `extract_views()` and `extract_procedures()` add views (with `sys.sql_modules.definition`) and procedures (with `sys.parameters`). Any real `MS_Description` is captured here — the AI stage only fills descriptions left empty.
 
-2. **`ai.py`** — `enrich_tables()` mutates the `Table`/`Column` objects in place, setting `.description`. Two backends behind a `mode` switch: `_call_ollama` (HTTP to localhost) and `_call_anthropic` (SDK, default model `claude-haiku-4-5`). Both take the resolved `model` string threaded down from the CLI. It generates a table-level description for every table, and a column-level description only for columns lacking one. This stage does one blocking LLM call per table plus one per undocumented column — it is the slow part and scales linearly with schema size, which is why cloud mode defaults to the cheap/fast Haiku model.
+2. **`ai.py`** — `enrich_tables()`/`enrich_views()`/`enrich_procedures()` mutate the objects in place, setting `.description`. Two backends behind a `mode` switch: `_call_ollama` (HTTP to localhost) and `_call_anthropic` (SDK, shared lazily-created client, default model `claude-haiku-4-5`). Each `enrich_*` builds a flat list of independent per-object work units and runs them through a `ThreadPoolExecutor` (`--concurrency`, default 8) — each unit writes only its own object's `.description`, so there is no cross-thread shared state. View/proc prompts are **metadata-only** (names + columns/params, never the SQL definition) to keep the cloud data boundary unchanged.
 
-3. **`renderer.py`** — `render_html()` groups tables by schema and renders the single `HTML_TEMPLATE` Jinja string (all CSS inlined) to one standalone file. No external assets.
+3. **`renderer.py`** — `render_html(database, tables, output, views, procedures)` groups each object type by schema and renders the single `HTML_TEMPLATE` via an **autoescaping** Jinja `Environment` (all CSS inlined) to one standalone file. No external assets. Autoescaping matters: view/proc definitions contain `<`/`>`/`&`.
 
-The dataclasses flow through unchanged: extractor builds them → ai enriches them → renderer reads them. If you add a field, touch all three stages.
+The dataclasses flow through unchanged: extractor builds them → ai enriches them → renderer reads them. If you add a field, touch all three stages. If you add a new **object type**, also thread it through `cli.py` (extract → schema-filter → enrich → render).
