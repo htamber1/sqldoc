@@ -5,3 +5,6 @@ __pycache__/
 *.html
 # May contain DB credentials; commit .sqldoc.example.yml instead.
 .sqldoc.yml
+# Generated schema snapshots for change detection (commit intentionally if you
+# want cross-commit / CI diffing).
+.sqldoc-snapshots/

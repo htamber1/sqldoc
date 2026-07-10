@@ -125,6 +125,8 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--schemas` | Comma-separated list of schemas to include (default: all) |
 | `--no-ai` | Skip AI descriptions, output schema only |
 | `--concurrency` | Parallel AI calls during enrichment, 1-64 (default `8`) |
+| `--snapshot` | JSON schema-snapshot path for change detection (default `.sqldoc-snapshots/<database>.json`) |
+| `--no-snapshot` | Disable schema snapshot + change detection for this run |
 | `--config` | Path to a config file (default `.sqldoc.yml` if present) |
 | `--yes` / `-y` | Skip the cloud-mode confirmation prompt (for non-interactive/CI use) |
 
@@ -156,6 +158,32 @@ python -m sqldoc.cli --mode cloud --output docs.html   # override just one setti
 
 > `.sqldoc.yml` is **gitignored** because it can contain a database password.
 > Keep secrets out of it (use `--password` or `.env`) if you plan to share it.
+
+## Schema change detection
+
+Every run writes a JSON snapshot of the schema's *structure* (object names,
+column types, keys, indexes, parameters — never descriptions or row data) to
+`.sqldoc-snapshots/<database>.json`. On the next run, sqldoc diffs the live
+schema against that snapshot and prints what changed, like a git diff for your
+database:
+
+```text
+Schema changes since last run  (.sqldoc-snapshots/AdventureWorks2022.json):
++ table    Sales.Promotion  (6 columns)
+- table    dbo.LegacyAudit
+~ table    HumanResources.Employee
+    + column   PreferredName
+    - column   MiddleName
+    ~ column   MaritalStatus: type int -> nchar
++ view     Sales.vActiveCustomers
+Schema changes: 1 table(s) added, 1 table(s) removed, 1 table(s) modified, 1 view/proc change(s)
+```
+
+New/dropped tables, new/dropped columns, and type/nullability/key changes are
+all reported. The first run just saves a baseline. Disable with `--no-snapshot`,
+or point somewhere specific with `--snapshot path.json`. Snapshots are
+gitignored by default; commit them intentionally if you want cross-commit or CI
+change tracking.
 
 ## How it works
 

@@ -36,10 +36,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Phase 2 — deeper coverage + AI quality (first wave DONE, see above).**
 
-_Agreed next (2026-07-10), building now:_
-- **PDF export** — a print/PDF-friendly rendering of the documentation.
-- **Markdown export** — for GitHub wikis (per-object or single-file `.md`).
-- **Schema change detection** — diff two runs and highlight what changed (added/removed/altered tables, columns, indexes, views, procs). Flagship enterprise feature (Dataedo charges premium for this).
+_Second wave — DONE & validated (2026-07-10):_
+- **Markdown export** (`markdown_renderer.py`) — single-file `.md` for GitHub wikis: stats, schema-grouped TOC with anchor links, column/index tables, view/proc SQL definitions in `<details>` + fenced ```sql. Pipes/newlines escaped in cells.
+- **PDF export** (`pdf_renderer.py`, `fpdf2`) — multi-page A4 with title/stats, schema-grouped Tables/Views/Procedures, bordered tables, monospace definitions, footer page numbers. Pure-Python (no system libs); lazily imported; Latin-1 text sanitization. Validated to a 54-page PDF.
+- **Schema change detection** (`snapshot.py`) — each run writes a structural JSON snapshot to `.sqldoc-snapshots/<database>.json` and diffs the next run against it, printing a git-diff-style report (added/dropped tables, added/dropped columns, type/nullability/pk changes, view/proc add/remove). `--snapshot PATH` / `--no-snapshot`. Snapshots capture structure only (no descriptions, no row data). Gitignored by default.
+- **Format selection** — `--format html|markdown|pdf`, else inferred from the `--output` extension; all three renderers share the `(database, tables, output, views, procedures)` signature. cli dispatches; PDF import is lazy so html/markdown work without `fpdf2`.
 
 _Decisions:_
 - **SQL definitions stay out of AI calls for now.** View/proc definitions are extracted + rendered locally but never sent to the model, holding the cloud data boundary at "names/types/keys/row counts." A future **`--include-definitions`** opt-in flag will let users trade the wider boundary for richer AI descriptions that read the definition body; it must update the `Privacy:` banner + cloud warning to state that definitions are being sent, and stay off by default.
@@ -89,6 +90,11 @@ A linear pipeline, one module per stage, orchestrated by `cli.py`:
 
 2. **`ai.py`** — `enrich_tables()`/`enrich_views()`/`enrich_procedures()` mutate the objects in place, setting `.description`. Two backends behind a `mode` switch: `_call_ollama` (HTTP to localhost) and `_call_anthropic` (SDK, shared lazily-created client, default model `claude-haiku-4-5`). Each `enrich_*` builds a flat list of independent per-object work units and runs them through a `ThreadPoolExecutor` (`--concurrency`, default 8) — each unit writes only its own object's `.description`, so there is no cross-thread shared state. View/proc prompts are **metadata-only** (names + columns/params, never the SQL definition) to keep the cloud data boundary unchanged.
 
-3. **`renderer.py`** — `render_html(database, tables, output, views, procedures)` groups each object type by schema and renders the single `HTML_TEMPLATE` via an **autoescaping** Jinja `Environment` (all CSS inlined) to one standalone file. No external assets. Autoescaping matters: view/proc definitions contain `<`/`>`/`&`.
+3. **Renderers (one per format, same signature `(database, tables, output, views, procedures)`)** — `cli.py` picks one from `--format`/extension:
+   - **`renderer.py`** `render_html()` — groups each object type by schema and renders the single `HTML_TEMPLATE` via an **autoescaping** Jinja `Environment` (all CSS inlined) to one standalone file. Autoescaping matters: view/proc definitions contain `<`/`>`/`&`.
+   - **`markdown_renderer.py`** `render_markdown()` — single `.md` for GitHub wikis (TOC + anchor links, escaped table cells, fenced SQL).
+   - **`pdf_renderer.py`** `render_pdf()` — `fpdf2` multi-page PDF; imported lazily so the other formats don't require it; Latin-1 text sanitization.
 
-The dataclasses flow through unchanged: extractor builds them → ai enriches them → renderer reads them. If you add a field, touch all three stages. If you add a new **object type**, also thread it through `cli.py` (extract → schema-filter → enrich → render).
+4. **`snapshot.py`** — orthogonal to rendering. `build_snapshot()` serializes the schema **structure** (not descriptions/rows) to JSON; `diff_snapshots()` + `iter_diff_lines()` produce the git-diff-style change report that `cli.py` prints (colored) and then re-saves the snapshot. Runs after schema-filtering, before enrichment, so it works with `--no-ai`.
+
+The dataclasses flow through unchanged: extractor builds them → ai enriches them → renderers read them. If you add a **field**, touch the extractor, `ai.py` (if it needs a description), **all three renderers**, and `snapshot.py` (if it's a structural field worth diffing). If you add a new **object type**, also thread it through `cli.py` (extract → schema-filter → snapshot → enrich → render).

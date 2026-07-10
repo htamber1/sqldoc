@@ -6,14 +6,34 @@ from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
+from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
 
 load_dotenv()
 
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'output',
-    'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format', 'yes',
+    'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
+    'snapshot', 'no_snapshot', 'yes',
 }
+
+_DIFF_COLORS = {'add': 'green', 'remove': 'red', 'change': 'yellow'}
+
+
+def _safe_filename(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+
+
+def print_diff(diff, path):
+    """Render a snapshot diff to the terminal, git-diff style."""
+    click.echo(f"\nSchema changes since last run  ({path}):")
+    for kind, text in iter_diff_lines(diff):
+        if kind == 'summary':
+            click.echo(click.style(text, bold=True))
+        elif kind == 'none':
+            click.echo(click.style(text, dim=True))
+        else:
+            click.echo(click.style(text, fg=_DIFF_COLORS.get(kind)))
 
 # Output file extension -> format, used when --format is not given explicitly.
 _EXT_FORMAT = {
@@ -74,8 +94,10 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
+@click.option('--snapshot', default=None, help='JSON schema-snapshot path for change detection (default: .sqldoc-snapshots/<database>.json)')
+@click.option('--no-snapshot', is_flag=True, default=False, help='Disable schema snapshot + change detection for this run')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, yes):
+def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -101,6 +123,8 @@ def main(config, server, database, username, password, output, output_format, mo
     schemas = resolve('schemas', schemas)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
+    snapshot = resolve('snapshot', snapshot)
+    no_snapshot = resolve('no_snapshot', no_snapshot)
     yes = resolve('yes', yes)
 
     # Validate merged values (config can supply out-of-range/invalid values that
@@ -185,6 +209,19 @@ def main(config, server, database, username, password, output, output_format, mo
             f"Filtered to {len(tables)} tables, {len(views)} views, {len(procedures)} procedures "
             f"in schemas: {', '.join(schema_list)}"
         )
+
+    # Schema change detection: diff this run's structure against the previous
+    # snapshot, then overwrite it. Runs on the extracted (schema-filtered)
+    # structure and is independent of AI descriptions, so it works with --no-ai.
+    if not no_snapshot:
+        snap_path = snapshot or os.path.join('.sqldoc-snapshots', _safe_filename(database) + '.json')
+        current = build_snapshot(database, tables, views, procedures)
+        previous = load_snapshot(snap_path)
+        if previous is None:
+            click.echo(f"\nNo previous snapshot at {snap_path} - saving baseline for future change detection.")
+        else:
+            print_diff(diff_snapshots(previous, current), snap_path)
+        save_snapshot(current, snap_path)
 
     # Generate AI descriptions
     if not no_ai:
