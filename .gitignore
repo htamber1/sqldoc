@@ -8,3 +8,5 @@ __pycache__/
 # Generated schema snapshots for change detection (commit intentionally if you
 # want cross-commit / CI diffing).
 .sqldoc-snapshots/
+# Cached AI descriptions (regenerated as needed).
+.sqldoc-cache/

@@ -46,7 +46,9 @@ _Second wave — DONE & validated (2026-07-10):_
 _Decisions:_
 - **SQL definitions stay out of AI calls for now.** View/proc definitions are extracted + rendered locally but never sent to the model, holding the cloud data boundary at "names/types/keys/row counts." A future **`--include-definitions`** opt-in flag will let users trade the wider boundary for richer AI descriptions that read the definition body; it must update the `Privacy:` banner + cloud warning to state that definitions are being sent, and stay off by default.
 
-_Deferred:_ more object types (constraints, computed columns, triggers), `ai.py` retry/backoff + optional description caching, ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle), dark mode.
+_Third wave — DONE (2026-07-10):_ **triggers + computed columns** (extractor + all 3 renderers); **`ai.py` retry/backoff** (exp. backoff + jitter, `MAX_ATTEMPTS`) around both LLM backends; **description cache** (`--cache`/`--no-cache`, `.sqldoc-cache/<database>.json`) keyed by `(model, kind, structural signature)` so unchanged objects are reused instead of regenerated. Dark mode shipped earlier.
+
+_Deferred:_ remaining object types (constraints), ER layout polish (fewer columns / key-columns-only / connected-tables-only toggle).
 
 **Phase 3 — distribution (PROPOSED, not yet agreed).**
 - JSON export; connection UX (connection-string / `.env`-driven credentials); `--dry-run` cloud cost estimate. (Config file — done in Phase 2.)

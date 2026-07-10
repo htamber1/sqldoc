@@ -1,4 +1,8 @@
 import os
+import time
+import json
+import random
+import hashlib
 import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor
@@ -6,6 +10,68 @@ from anthropic import Anthropic
 from sqldoc.extractor import Table, View, StoredProcedure
 
 DEFAULT_CONCURRENCY = 8
+MAX_ATTEMPTS = 4          # 1 try + 3 retries
+CACHE_VERSION = 1
+
+
+def _retry(fn, what: str):
+    """Call fn(), retrying transient failures with exponential backoff + jitter."""
+    delay = 1.0
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            wait = delay + random.uniform(0, 0.4)
+            print(f"    retry {attempt}/{MAX_ATTEMPTS - 1} for {what}: {type(e).__name__}: {e} (waiting {wait:.1f}s)")
+            time.sleep(wait)
+            delay *= 2
+
+
+# --- Description cache -----------------------------------------------------
+# Descriptions are keyed by (model, kind, structural signature). If an object's
+# structure is unchanged since the last run, its description is reused instead of
+# calling the LLM again — saving cost and making incremental runs fast.
+
+def _sig_table(t) -> str:
+    cols = "|".join(f"{c.name}:{c.data_type}:{int(c.is_primary_key)}{int(c.is_foreign_key)}" for c in t.columns)
+    return f"{t.schema}.{t.name}|{cols}"
+
+def _sig_view(v) -> str:
+    cols = "|".join(f"{c.name}:{c.data_type}" for c in v.columns)
+    return f"{v.schema}.{v.name}|{cols}"
+
+def _sig_proc(p) -> str:
+    params = "|".join(f"{pm.name}:{pm.data_type}:{int(pm.is_output)}" for pm in p.parameters)
+    return f"{p.schema}.{p.name}|{params}"
+
+def _sig_col(container: str, col) -> str:
+    return f"{container}.{col.name}:{col.data_type}"
+
+def _key(model: str, kind: str, sig: str) -> str:
+    return hashlib.sha1(f"{model}\x1f{kind}\x1f{sig}".encode("utf-8")).hexdigest()
+
+def load_cache(path: str) -> dict:
+    if not path or not os.path.exists(path):
+        return {"version": CACHE_VERSION, "entries": {}}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+        data = {"version": CACHE_VERSION, "entries": {}}
+    return data
+
+def save_cache(cache: dict, path: str):
+    if cache is None or not path:
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, sort_keys=True)
 
 # One shared Anthropic client, created lazily. The SDK client is thread-safe and
 # reuses its connection pool, so sharing it across worker threads is both correct
@@ -94,24 +160,26 @@ Respond with only the description, no preamble."""
         return _call_anthropic(prompt, model)
 
 def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
-    response = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "stream": False
-        }
-    )
-    return response.json()["response"].strip()
+    def do():
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
+        response.raise_for_status()
+        return response.json()["response"].strip()
+    return _retry(do, f"ollama:{model}")
 
 def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5") -> str:
-    client = _get_anthropic_client()
-    message = client.messages.create(
-        model=model,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return message.content[0].text
+    def do():
+        client = _get_anthropic_client()
+        message = client.messages.create(
+            model=model,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text
+    return _retry(do, f"anthropic:{model}")
 
 def _run_tasks(tasks: list, concurrency: int, label: str):
     """Run independent, zero-argument LLM-call tasks across a thread pool.
@@ -144,31 +212,62 @@ def _run_tasks(tasks: list, concurrency: int, label: str):
         list(pool.map(worker, tasks))
 
 
+def _cache_or_task(cache, key, target, genfn, tasks, stats):
+    """If a cached description exists for key, apply it and count a hit; else
+    queue a task that generates the description and writes it back to cache."""
+    cached = cache["entries"].get(key) if cache is not None else None
+    if cached is not None:
+        target.description = cached
+        stats["hits"] += 1
+        return
+    def task():
+        val = genfn()
+        target.description = val
+        if cache is not None:
+            cache["entries"][key] = val
+    tasks.append(task)
+
+def _report(label, tasks, stats, cache):
+    if cache is not None:
+        print(f"  {label}: {stats['hits']} reused from cache, {len(tasks)} generated")
+
+
 def enrich_tables(tables: list[Table], mode: str = "local", model: str = "llama3.1:8b",
-                  concurrency: int = DEFAULT_CONCURRENCY) -> list[Table]:
-    tasks = []
+                  concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[Table]:
+    tasks, stats = [], {"hits": 0}
     for table in tables:
-        tasks.append(lambda t=table: setattr(t, "description", generate_table_description(t, mode, model)))
+        _cache_or_task(cache, _key(model, "table", _sig_table(table)), table,
+                       (lambda t=table: generate_table_description(t, mode, model)), tasks, stats)
         for col in table.columns:
-            if not col.description:
-                tasks.append(lambda tn=table.name, c=col: setattr(c, "description", generate_column_description(tn, c, mode, model)))
+            if col.description:
+                continue
+            _cache_or_task(cache, _key(model, "column", _sig_col(table.name, col)), col,
+                           (lambda tn=table.name, c=col: generate_column_description(tn, c, mode, model)), tasks, stats)
     _run_tasks(tasks, concurrency, "table")
+    _report("tables", tasks, stats, cache)
     return tables
 
 def enrich_views(views: list[View], mode: str = "local", model: str = "llama3.1:8b",
-                 concurrency: int = DEFAULT_CONCURRENCY) -> list[View]:
-    tasks = []
+                 concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[View]:
+    tasks, stats = [], {"hits": 0}
     for view in views:
-        tasks.append(lambda v=view: setattr(v, "description", generate_view_description(v, mode, model)))
+        _cache_or_task(cache, _key(model, "view", _sig_view(view)), view,
+                       (lambda v=view: generate_view_description(v, mode, model)), tasks, stats)
         for col in view.columns:
-            if not col.description:
-                tasks.append(lambda vn=view.name, c=col: setattr(c, "description", generate_column_description(vn, c, mode, model)))
+            if col.description:
+                continue
+            _cache_or_task(cache, _key(model, "column", _sig_col(view.name, col)), col,
+                           (lambda vn=view.name, c=col: generate_column_description(vn, c, mode, model)), tasks, stats)
     _run_tasks(tasks, concurrency, "view")
+    _report("views", tasks, stats, cache)
     return views
 
 def enrich_procedures(procedures: list[StoredProcedure], mode: str = "local", model: str = "llama3.1:8b",
-                      concurrency: int = DEFAULT_CONCURRENCY) -> list[StoredProcedure]:
-    tasks = [lambda p=proc: setattr(p, "description", generate_procedure_description(p, mode, model))
-             for proc in procedures]
+                      concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[StoredProcedure]:
+    tasks, stats = [], {"hits": 0}
+    for proc in procedures:
+        _cache_or_task(cache, _key(model, "proc", _sig_proc(proc)), proc,
+                       (lambda p=proc: generate_procedure_description(p, mode, model)), tasks, stats)
     _run_tasks(tasks, concurrency, "procedure")
+    _report("procedures", tasks, stats, cache)
     return procedures

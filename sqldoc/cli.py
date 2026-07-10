@@ -3,7 +3,7 @@ import os
 import yaml
 from dotenv import load_dotenv
 from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
-from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures
+from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
@@ -14,7 +14,7 @@ load_dotenv()
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
-    'snapshot', 'no_snapshot', 'yes',
+    'snapshot', 'no_snapshot', 'cache', 'no_cache', 'yes',
 }
 
 _DIFF_COLORS = {'add': 'green', 'remove': 'red', 'change': 'yellow'}
@@ -96,8 +96,10 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
 @click.option('--snapshot', default=None, help='JSON schema-snapshot path for change detection (default: .sqldoc-snapshots/<database>.json)')
 @click.option('--no-snapshot', is_flag=True, default=False, help='Disable schema snapshot + change detection for this run')
+@click.option('--cache', default=None, help='AI description cache path (default: .sqldoc-cache/<database>.json)')
+@click.option('--no-cache', is_flag=True, default=False, help='Disable the AI description cache (always regenerate)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, yes):
+def main(config, server, database, username, password, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, cache, no_cache, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -125,6 +127,8 @@ def main(config, server, database, username, password, output, output_format, mo
     concurrency = resolve('concurrency', concurrency)
     snapshot = resolve('snapshot', snapshot)
     no_snapshot = resolve('no_snapshot', no_snapshot)
+    cache = resolve('cache', cache)
+    no_cache = resolve('no_cache', no_cache)
     yes = resolve('yes', yes)
 
     # Validate merged values (config can supply out-of-range/invalid values that
@@ -225,15 +229,26 @@ def main(config, server, database, username, password, output, output_format, mo
 
     # Generate AI descriptions
     if not no_ai:
+        # Description cache: reuse descriptions for objects whose structure is
+        # unchanged since the last run (huge speed/cost win on incremental runs).
+        cache_obj = None
+        cache_path = None
+        if not no_cache:
+            cache_path = cache or os.path.join('.sqldoc-cache', _safe_filename(database) + '.json')
+            cache_obj = load_cache(cache_path)
+
         click.echo(f"\nGenerating AI descriptions using {mode} mode ({concurrency} parallel)...")
         try:
-            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency)
-            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency)
-            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency)
+            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
+            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
+            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
         except Exception as e:
             click.echo(f"\nAI generation failed: {e}", err=True)
             click.echo("Try --no-ai to generate schema-only documentation")
             raise click.Abort()
+
+        if cache_obj is not None:
+            save_cache(cache_obj, cache_path)
     else:
         click.echo("Skipping AI descriptions (--no-ai flag set)")
 

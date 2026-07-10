@@ -34,7 +34,9 @@ never a salary.
    `MS_Description` extended properties.
 2. **Enriches** it with AI-generated descriptions: a short summary for each table,
    view, and stored procedure, plus a one-line description for each column that
-   doesn't already have one. Enrichment runs concurrently (see `--concurrency`).
+   doesn't already have one. Enrichment runs concurrently (see `--concurrency`),
+   retries transient failures with exponential backoff, and caches descriptions
+   so re-running only regenerates objects whose structure changed.
 3. **Renders** a standalone HTML document — grouped by schema, with an ER diagram,
    real-time search, and collapsible view/procedure definitions, styled inline,
    no external assets or dependencies to serve.
@@ -145,6 +147,8 @@ python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
 | `--concurrency` | Parallel AI calls during enrichment, 1-64 (default `8`) |
 | `--snapshot` | JSON schema-snapshot path for change detection (default `.sqldoc-snapshots/<database>.json`) |
 | `--no-snapshot` | Disable schema snapshot + change detection for this run |
+| `--cache` | AI description cache path (default `.sqldoc-cache/<database>.json`) |
+| `--no-cache` | Disable the AI description cache (always regenerate) |
 | `--config` | Path to a config file (default `.sqldoc.yml` if present) |
 | `--yes` / `-y` | Skip the cloud-mode confirmation prompt (for non-interactive/CI use) |
 
