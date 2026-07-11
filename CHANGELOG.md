@@ -4,6 +4,25 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added — `sqldoc insights` (AI-powered schema insights)
+A sixth command combining heuristic and AI analysis (metadata only — never row
+data); dark HTML report + `--json`:
+- **NL-to-SQL** — `--ask "plain English question"` (repeatable) returns a
+  schema-grounded T-SQL query.
+- **Anomaly detection** (heuristic, always on) — tables with no primary key,
+  generic column names, missing audit columns, and name/type mismatches (a
+  `*Date` stored as `varchar`, a `*Amount` as text, an `Is*`/`*Flag` not `bit`),
+  plus very wide tables.
+- **Business glossary** — one AI-inferred business term + definition per table,
+  rendered as a searchable glossary (`--no-glossary` to skip).
+- **Relationship inference** — likely foreign keys between tables with no
+  constraint, from column-name + PK-type matching, with a confidence score and
+  a ready-to-run `ALTER TABLE … ADD CONSTRAINT`.
+`--no-ai` still runs the heuristic anomaly + relationship analysis; cloud mode
+warns + confirms (only schema metadata and your questions are sent).
+
 ## [1.3.0] — 2026-07-11
 
 sqldoc grows from a two-command tool into a five-command database platform.

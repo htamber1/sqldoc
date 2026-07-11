@@ -22,6 +22,8 @@ from sqldoc.quality import collect_quality, summarize as quality_summarize
 from sqldoc.quality_renderer import render_quality_html, build_quality_json
 from sqldoc.intel import collect_intel, summarize as intel_summarize
 from sqldoc.intel_renderer import render_intel_html, build_intel_json
+from sqldoc.insights import collect_insights, summarize as insights_summarize
+from sqldoc.insights_renderer import render_insights_html, build_insights_json
 
 load_dotenv()
 
@@ -34,7 +36,7 @@ CONFIG_KEYS = {
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
     'confidence_threshold', 'fail_on', 'yes',
     'top', 'min_fragmentation', 'min_pages',
-    'top_values', 'no_duplicates',
+    'top_values', 'no_duplicates', 'no_glossary',
 }
 
 
@@ -800,6 +802,118 @@ def intel(config, server, database, username, password, connection_string, schem
     click.echo(f"Open {output} in your browser for the full report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to analyze')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='insights-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
+@click.option('--ask', 'ask', multiple=True, help='A plain-English question to turn into a T-SQL query (repeatable)')
+@click.option('--no-glossary', 'no_glossary', is_flag=True, default=False, help='Skip the AI business-glossary generation (one AI call per table)')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
+@click.option('--model', default=None, help='Model to use (default per mode)')
+@click.option('--no-ai', is_flag=True, default=False, help='Skip AI parts (NL-to-SQL + glossary); still runs anomaly + relationship analysis')
+@click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls for glossary generation (default: 8)')
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
+def insights(config, server, database, username, password, connection_string, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes):
+    """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
+
+    Turns plain-English questions into T-SQL, flags architectural anomalies,
+    infers likely foreign keys, and builds an AI business glossary. Only schema
+    metadata (names/types/keys) is ever sent to the AI — never row data. Use
+    --no-ai to run just the heuristic anomaly + relationship analysis.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    no_glossary = resolve('no_glossary', no_glossary, param='no_glossary')
+    mode = resolve('mode', mode)
+    model = resolve('model', model)
+    no_ai = resolve('no_ai', no_ai)
+    concurrency = resolve('concurrency', concurrency)
+    yes = resolve('yes', yes)
+
+    if mode not in ('local', 'cloud'):
+        raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
+    if model is None:
+        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+    use_ai = not no_ai
+
+    if use_ai:
+        posture = "local (Ollama) - schema metadata only" if mode == "local" else "cloud (Anthropic) - schema metadata sent off-network"
+    else:
+        posture = "No AI - heuristic analysis only, nothing leaves this machine"
+
+    click.echo(f"\nsqldoc v{__version__}  -  AI schema insights")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Mode:     {'No AI' if no_ai else mode}")
+    click.echo(f"Privacy:  {posture}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    # Cloud egress guard (same posture as `doc`): only schema metadata is sent.
+    if use_ai and mode == "cloud":
+        click.echo(
+            "WARNING: Cloud mode sends schema metadata (table/column names, data\n"
+            "         types, keys) and your questions to Anthropic's API. No table\n"
+            "         row data is read or sent. Use --mode local to stay on-network."
+        )
+        if yes:
+            click.echo("Proceeding with cloud mode (confirmed via --yes).")
+        elif not click.confirm("Proceed with cloud mode?", default=False):
+            click.echo("Aborted. Re-run with --mode local to stay on-network.")
+            raise click.Abort()
+
+    click.echo("Connecting to SQL Server...")
+    try:
+        tables = extract_metadata(conn_str)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    if schemas:
+        allow = [s.strip() for s in schemas.split(',')]
+        tables = [t for t in tables if t.schema in allow]
+
+    if use_ai and (ask or not no_glossary):
+        click.echo(f"Running AI analysis ({mode} mode)...")
+    report = collect_insights(database, tables, questions=list(ask), use_ai=use_ai,
+                              glossary=not no_glossary, mode=mode, model=model,
+                              concurrency=concurrency)
+
+    for c, msg in report.errors:
+        click.echo(click.style(f"  ! {c}: {msg}", fg='yellow'), err=True)
+
+    s = insights_summarize(report)
+    click.echo(
+        click.style(f"Anomalies: {s['anomalies']}", fg='red')
+        + click.style(f"    Suggested FKs: {s['relationships']}", fg='blue')
+        + click.style(f"    Glossary terms: {s['glossary_terms']}", fg='magenta')
+        + f"    Queries: {s['queries']}"
+    )
+
+    click.echo("\nRendering report...")
+    render_insights_html(database, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_insights_json(database, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable report written to {json_out}")
+    click.echo(f"Open {output} in your browser for the full insights report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -822,6 +936,7 @@ cli.add_command(scan, name='scan')
 cli.add_command(health, name='health')
 cli.add_command(quality, name='quality')
 cli.add_command(intel, name='intel')
+cli.add_command(insights, name='insights')
 
 
 if __name__ == '__main__':
