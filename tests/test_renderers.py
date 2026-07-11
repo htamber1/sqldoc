@@ -62,6 +62,24 @@ def test_html_escapes_sql_and_svg_wellformed(tmp_path):
     ET.fromstring(svg.group(0))                 # raises if malformed
 
 
+def test_html_constraints(tmp_path, sample_tables, sample_views, sample_procs):
+    h = _html(tmp_path, sample_tables, sample_views, sample_procs)
+    assert ">Constraints (" in h
+    assert "CK_Orders_Status" in h and "UQ_Orders_Customer" in h
+    assert "badge-default" in h                    # Status column default badge
+    assert "ON DELETE CASCADE" in h                # FK action on CustomerID
+
+
+def test_markdown_constraints(tmp_path, sample_tables, sample_views, sample_procs):
+    out = tmp_path / "doc.md"
+    render_markdown("TestDB", sample_tables, str(out), views=sample_views, procedures=sample_procs)
+    md = out.read_text(encoding="utf-8")
+    assert "**Constraints**" in md
+    assert "CK_Orders_Status" in md and "UQ_Orders_Customer" in md
+    assert "ON DELETE CASCADE" in md
+    assert "default ((0))" in md
+
+
 def test_markdown_output(tmp_path, sample_tables, sample_views, sample_procs):
     out = tmp_path / "doc.md"
     render_markdown("TestDB", sample_tables, str(out), views=sample_views, procedures=sample_procs)

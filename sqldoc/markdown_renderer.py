@@ -19,6 +19,16 @@ def _anchor(heading: str) -> str:
     return slug
 
 
+def _fk_actions(col) -> str:
+    """Render non-default referential actions, e.g. ' ON DELETE CASCADE'."""
+    bits = []
+    if getattr(col, "fk_on_delete", None) and col.fk_on_delete != "NO_ACTION":
+        bits.append(f"ON DELETE {col.fk_on_delete.replace('_', ' ')}")
+    if getattr(col, "fk_on_update", None) and col.fk_on_update != "NO_ACTION":
+        bits.append(f"ON UPDATE {col.fk_on_update.replace('_', ' ')}")
+    return (" " + ", ".join(bits)) if bits else ""
+
+
 def _attributes(col) -> str:
     parts = []
     if col.is_primary_key:
@@ -26,9 +36,11 @@ def _attributes(col) -> str:
     if col.is_foreign_key:
         parts.append("FK")
         if col.references_table:
-            parts.append(f"→ {col.references_table}.{col.references_column}")
+            parts.append(f"→ {col.references_table}.{col.references_column}{_fk_actions(col)}")
     if col.is_computed:
         parts.append("computed")
+    if getattr(col, "default_definition", None):
+        parts.append(f"default {col.default_definition}")
     if col.is_nullable:
         parts.append("nullable")
     return ", ".join(parts)
@@ -111,6 +123,17 @@ def render_markdown(database, tables, output_path, views=None, procedures=None):
                 if idx.included_columns:
                     cols += f" (incl: {', '.join(idx.included_columns)})"
                 L.append(f"| {_cell(name)} | {_cell(idx.type_desc)} | {_cell(cols)} |")
+            L.append("")
+        checks = getattr(table, "check_constraints", [])
+        uniques = getattr(table, "unique_constraints", [])
+        if checks or uniques:
+            L.append("**Constraints**")
+            L.append("")
+            for uq in uniques:
+                L.append(f"- UNIQUE **{_cell(uq.name)}** — ({', '.join(uq.columns)})")
+            for chk in checks:
+                scope = f" on {chk.column}" if chk.column else ""
+                L.append(f"- CHECK **{_cell(chk.name)}**{scope} — `{_cell(chk.definition)}`")
             L.append("")
         if table.triggers:
             L.append("**Triggers**")

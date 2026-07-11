@@ -59,8 +59,9 @@ def test_enrich_uses_cache(monkeypatch):
     t1 = build_tables()
     ai.enrich_tables(t1, mode="local", concurrency=1, cache=cache)
     cold = counter["n"]
-    # 2 table descriptions + 3 undocumented columns (Orders.Id is pre-documented)
-    assert cold == 5
+    # 2 table descriptions + 4 undocumented columns (Orders.Id is pre-documented;
+    # Orders also has CustomerID/LineTotal/Status, Archive has Id)
+    assert cold == 6
     assert all(c.description for t in t1 for c in t.columns)
 
     # Second run over fresh objects with the same cache: everything reused.

@@ -15,6 +15,9 @@ class Column:
     description: Optional[str] = None
     is_computed: bool = False
     computed_definition: Optional[str] = None
+    default_definition: Optional[str] = None      # DEFAULT constraint expression, e.g. "((0))"
+    fk_on_delete: Optional[str] = None            # NO_ACTION / CASCADE / SET_NULL / SET_DEFAULT
+    fk_on_update: Optional[str] = None
 
 @dataclass
 class Index:
@@ -34,6 +37,17 @@ class Trigger:
     definition: Optional[str] = None
 
 @dataclass
+class CheckConstraint:
+    name: str
+    definition: str                 # the CHECK expression, e.g. "([Qty]>(0))"
+    column: Optional[str] = None    # owning column, or None for a table-level check
+
+@dataclass
+class UniqueConstraint:
+    name: str
+    columns: list[str] = field(default_factory=list)
+
+@dataclass
 class Table:
     schema: str
     name: str
@@ -41,6 +55,8 @@ class Table:
     columns: list[Column] = field(default_factory=list)
     indexes: list[Index] = field(default_factory=list)
     triggers: list[Trigger] = field(default_factory=list)
+    check_constraints: list[CheckConstraint] = field(default_factory=list)
+    unique_constraints: list[UniqueConstraint] = field(default_factory=list)
     description: Optional[str] = None
 
 @dataclass
@@ -140,7 +156,10 @@ def extract_metadata(connection_string: str) -> list[Table]:
                 rc.name AS references_column,
                 ep.value AS description,
                 c.is_computed,
-                cc.definition AS computed_definition
+                cc.definition AS computed_definition,
+                dc.definition AS default_definition,
+                fko.delete_referential_action_desc AS fk_on_delete,
+                fko.update_referential_action_desc AS fk_on_update
             FROM sys.columns c
             INNER JOIN sys.types tp ON c.user_type_id = tp.user_type_id
             INNER JOIN sys.tables t ON c.object_id = t.object_id
@@ -152,10 +171,12 @@ def extract_metadata(connection_string: str) -> list[Table]:
                 WHERE i.is_primary_key = 1
             ) pk ON c.object_id = pk.object_id AND c.column_id = pk.column_id
             LEFT JOIN sys.foreign_key_columns fk ON c.object_id = fk.parent_object_id AND c.column_id = fk.parent_column_id
+            LEFT JOIN sys.foreign_keys fko ON fk.constraint_object_id = fko.object_id
             LEFT JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
             LEFT JOIN sys.columns rc ON fk.referenced_object_id = rc.object_id AND fk.referenced_column_id = rc.column_id
             LEFT JOIN sys.extended_properties ep ON ep.major_id = c.object_id AND ep.minor_id = c.column_id AND ep.name = 'MS_Description'
             LEFT JOIN sys.computed_columns cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+            LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
             WHERE t.name = ? AND s.name = ?
             ORDER BY c.column_id
         """, table_name, schema_name)
@@ -179,6 +200,9 @@ def extract_metadata(connection_string: str) -> list[Table]:
                 description=str(row.description) if row.description else None,
                 is_computed=bool(row.is_computed),
                 computed_definition=str(row.computed_definition) if row.computed_definition else None,
+                default_definition=str(row.default_definition) if row.default_definition else None,
+                fk_on_delete=str(row.fk_on_delete) if row.fk_on_delete else None,
+                fk_on_update=str(row.fk_on_update) if row.fk_on_update else None,
             ))
 
         # Indexes on this table. One row per (index, column); grouped below.
@@ -216,6 +240,50 @@ def extract_metadata(connection_string: str) -> list[Table]:
             else:
                 idx.key_columns.append(row.column_name)
 
+        # CHECK constraints. parent_column_id = 0 means a table-level check;
+        # otherwise it belongs to the named column.
+        cursor.execute("""
+            SELECT
+                chk.name AS check_name,
+                chk.definition AS check_definition,
+                col.name AS column_name
+            FROM sys.check_constraints chk
+            INNER JOIN sys.tables t ON chk.parent_object_id = t.object_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            LEFT JOIN sys.columns col ON col.object_id = chk.parent_object_id AND col.column_id = chk.parent_column_id
+            WHERE t.name = ? AND s.name = ?
+            ORDER BY chk.name
+        """, table_name, schema_name)
+        check_constraints = [
+            CheckConstraint(name=row.check_name,
+                            definition=str(row.check_definition) if row.check_definition else "",
+                            column=row.column_name)
+            for row in cursor.fetchall()
+        ]
+
+        # UNIQUE constraints (type 'UQ' in sys.key_constraints, backed by a
+        # unique index whose columns we read from sys.index_columns). One row per
+        # (constraint, column); grouped below.
+        cursor.execute("""
+            SELECT
+                kc.name AS uq_name,
+                col.name AS column_name
+            FROM sys.key_constraints kc
+            INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+            INNER JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
+            INNER JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+            WHERE kc.type = 'UQ' AND t.name = ? AND s.name = ?
+            ORDER BY kc.name, ic.key_ordinal
+        """, table_name, schema_name)
+        uniques_by_name = {}
+        for row in cursor.fetchall():
+            uq = uniques_by_name.get(row.uq_name)
+            if uq is None:
+                uq = UniqueConstraint(name=row.uq_name)
+                uniques_by_name[row.uq_name] = uq
+            uq.columns.append(row.column_name)
+
         tables.append(Table(
             schema=schema_name,
             name=table_name,
@@ -223,6 +291,8 @@ def extract_metadata(connection_string: str) -> list[Table]:
             columns=columns,
             indexes=list(indexes_by_name.values()),
             triggers=triggers_by_table.get((schema_name, table_name), []),
+            check_constraints=check_constraints,
+            unique_constraints=list(uniques_by_name.values()),
         ))
 
     conn.close()

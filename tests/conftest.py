@@ -3,6 +3,7 @@ import pytest
 
 from sqldoc.extractor import (
     Table, Column, Index, Trigger, View, Parameter, StoredProcedure,
+    CheckConstraint, UniqueConstraint,
 )
 
 
@@ -17,13 +18,18 @@ def build_tables():
         row_count=1596,
         columns=[
             Column("Id", "int", 4, False, True, False, None, None, description="Order id"),
-            Column("CustomerID", "int", 4, True, False, True, "Customer", "Id"),
+            Column("CustomerID", "int", 4, True, False, True, "Customer", "Id",
+                   fk_on_delete="CASCADE", fk_on_update="NO_ACTION"),
             Column("LineTotal", "money", 8, True, False, False, None, None,
                    is_computed=True, computed_definition="([Qty]*[Price])"),
+            Column("Status", "int", 4, False, False, False, None, None,
+                   default_definition="((0))"),
         ],
         indexes=[Index("PK_Orders", "CLUSTERED", True, True, ["Id"], [])],
         triggers=[Trigger("trOrders", False, False, ["INSERT", "UPDATE"],
                           "CREATE TRIGGER [Sales].[trOrders] ON [Sales].[Orders] AFTER INSERT AS BEGIN SET NOCOUNT ON; END;")],
+        check_constraints=[CheckConstraint("CK_Orders_Status", "([Status]>=(0))", "Status")],
+        unique_constraints=[UniqueConstraint("UQ_Orders_Customer", ["CustomerID"])],
     )
     archive = Table(
         schema="Sales",
@@ -101,6 +107,10 @@ class FakeCursor:
             self._last = "columns"
         elif "index_name" in sql:
             self._last = "indexes"
+        elif "check_definition" in sql:
+            self._last = "checks"
+        elif "uq_name" in sql:
+            self._last = "uniques"
         elif "sys.views v" in sql and "view_name" in sql:
             self._last = "views"
         elif "proc_name" in sql:
@@ -140,15 +150,30 @@ def fake_table_rows():
             FakeRow(column_name="Id", data_type="int", max_length=4, is_nullable=0,
                     is_primary_key=1, is_foreign_key=0, references_table=None,
                     references_column=None, description="Order id",
-                    is_computed=0, computed_definition=None),
+                    is_computed=0, computed_definition=None, default_definition=None,
+                    fk_on_delete=None, fk_on_update=None),
             FakeRow(column_name="CustomerID", data_type="int", max_length=4, is_nullable=1,
                     is_primary_key=0, is_foreign_key=1, references_table="Customer",
                     references_column="Id", description=None,
-                    is_computed=0, computed_definition=None),
+                    is_computed=0, computed_definition=None, default_definition=None,
+                    fk_on_delete="CASCADE", fk_on_update="NO_ACTION"),
             FakeRow(column_name="LineTotal", data_type="money", max_length=8, is_nullable=1,
                     is_primary_key=0, is_foreign_key=0, references_table=None,
                     references_column=None, description=None,
-                    is_computed=1, computed_definition="([Qty]*[Price])"),
+                    is_computed=1, computed_definition="([Qty]*[Price])", default_definition=None,
+                    fk_on_delete=None, fk_on_update=None),
+            FakeRow(column_name="Status", data_type="int", max_length=4, is_nullable=0,
+                    is_primary_key=0, is_foreign_key=0, references_table=None,
+                    references_column=None, description=None,
+                    is_computed=0, computed_definition=None, default_definition="((0))",
+                    fk_on_delete=None, fk_on_update=None),
+        ],
+        "checks": [
+            FakeRow(check_name="CK_Orders_Status", check_definition="([Status]>=(0))",
+                    column_name="Status"),
+        ],
+        "uniques": [
+            FakeRow(uq_name="UQ_Orders_Customer", column_name="CustomerID"),
         ],
         "indexes": [
             FakeRow(index_name="PK_Orders", type_desc="CLUSTERED", is_unique=1,

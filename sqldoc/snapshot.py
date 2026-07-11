@@ -20,6 +20,12 @@ def build_snapshot(database, tables, views=None, procedures=None) -> dict:
             shape["pk"] = True
         if c.is_foreign_key and c.references_table:
             shape["references"] = f"{c.references_table}.{c.references_column}"
+            if getattr(c, "fk_on_delete", None):
+                shape["on_delete"] = c.fk_on_delete
+            if getattr(c, "fk_on_update", None):
+                shape["on_update"] = c.fk_on_update
+        if getattr(c, "default_definition", None):
+            shape["default"] = c.default_definition
         return shape
 
     tables_out = {}
@@ -37,6 +43,8 @@ def build_snapshot(database, tables, views=None, procedures=None) -> dict:
             "row_count": t.row_count,
             "columns": {c.name: col_shape(c) for c in t.columns},
             "indexes": indexes,
+            "checks": {chk.name: chk.definition for chk in getattr(t, "check_constraints", [])},
+            "uniques": {uq.name: list(uq.columns) for uq in getattr(t, "unique_constraints", [])},
         }
 
     views_out = {
@@ -87,6 +95,12 @@ def _diff_columns(old_cols: dict, new_cols: dict) -> dict:
             deltas.append(("nullable", o.get("nullable"), n.get("nullable")))
         if bool(o.get("pk")) != bool(n.get("pk")):
             deltas.append(("pk", bool(o.get("pk")), bool(n.get("pk"))))
+        if o.get("default") != n.get("default"):
+            deltas.append(("default", o.get("default"), n.get("default")))
+        if o.get("on_delete") != n.get("on_delete"):
+            deltas.append(("on_delete", o.get("on_delete"), n.get("on_delete")))
+        if o.get("on_update") != n.get("on_update"):
+            deltas.append(("on_update", o.get("on_update"), n.get("on_update")))
         if deltas:
             changed.append({"name": name, "deltas": deltas,
                             "new_type": n.get("type"), "old_type": o.get("type")})
@@ -99,11 +113,24 @@ def diff_snapshots(old: dict, new: dict) -> dict:
     tables_added = sorted(name for name in new_t if name not in old_t)
     tables_removed = sorted(name for name in old_t if name not in new_t)
 
+    def _presence_pair(old_map, new_map):
+        return (sorted(k for k in new_map if k not in old_map),
+                sorted(k for k in old_map if k not in new_map))
+
     tables_modified = []
     for name in sorted(set(old_t) & set(new_t)):
         cd = _diff_columns(old_t[name].get("columns", {}), new_t[name].get("columns", {}))
-        if cd["added"] or cd["removed"] or cd["changed"]:
-            tables_modified.append({"name": name, **cd})
+        checks_added, checks_removed = _presence_pair(
+            old_t[name].get("checks", {}), new_t[name].get("checks", {}))
+        uniques_added, uniques_removed = _presence_pair(
+            old_t[name].get("uniques", {}), new_t[name].get("uniques", {}))
+        if (cd["added"] or cd["removed"] or cd["changed"]
+                or checks_added or checks_removed or uniques_added or uniques_removed):
+            tables_modified.append({
+                "name": name, **cd,
+                "checks_added": checks_added, "checks_removed": checks_removed,
+                "uniques_added": uniques_added, "uniques_removed": uniques_removed,
+            })
 
     def presence(kind):
         o, n = old.get(kind, {}), new.get(kind, {})
@@ -161,6 +188,14 @@ def iter_diff_lines(diff: dict):
         for ch in mod["changed"]:
             for field, old_v, new_v in ch["deltas"]:
                 yield ("change", f"    ~ column   {ch['name']}: {field} {old_v} -> {new_v}")
+        for c in mod.get("checks_added", []):
+            yield ("add", f"    + check    {c}")
+        for c in mod.get("checks_removed", []):
+            yield ("remove", f"    - check    {c}")
+        for u in mod.get("uniques_added", []):
+            yield ("add", f"    + unique   {u}")
+        for u in mod.get("uniques_removed", []):
+            yield ("remove", f"    - unique   {u}")
 
     for name in diff["views_added"]:
         yield ("add", f"+ view     {name}")

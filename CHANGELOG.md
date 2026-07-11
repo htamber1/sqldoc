@@ -12,6 +12,13 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
   extracted model — tables, columns, indexes, triggers, views, procedures, and
   AI descriptions — as a single JSON document. `sqldoc scan --json PATH` writes
   the compliance summary plus every finding as JSON (mirrors `--sarif`).
+- **Constraints** — the extractor now captures **CHECK** and **UNIQUE**
+  constraints (per table), column **DEFAULT** expressions, and **FK referential
+  actions** (`ON DELETE` / `ON UPDATE`: CASCADE / SET NULL / SET DEFAULT). These
+  render in all four formats (HTML gets a per-table *Constraints* section plus
+  default/action detail on columns; Markdown/PDF get equivalents; JSON includes
+  them automatically) and participate in schema change detection (`--snapshot`
+  reports added/removed checks & uniques and changed defaults/FK actions).
 
 ## [1.2.0] — 2026-07-10
 

@@ -16,11 +16,16 @@ def test_build_json_full_model():
     # full model incl. nested columns/indexes/triggers
     orders = next(t for t in data["tables"] if t["name"] == "Orders")
     assert orders["row_count"] == 1596
-    assert {c["name"] for c in orders["columns"]} == {"Id", "CustomerID", "LineTotal"}
+    assert {c["name"] for c in orders["columns"]} == {"Id", "CustomerID", "LineTotal", "Status"}
     lt = next(c for c in orders["columns"] if c["name"] == "LineTotal")
     assert lt["is_computed"] is True
     assert orders["indexes"][0]["name"] == "PK_Orders"
     assert orders["triggers"][0]["name"] == "trOrders"
+    # constraints flow through asdict automatically
+    assert orders["check_constraints"][0]["name"] == "CK_Orders_Status"
+    assert orders["unique_constraints"][0]["columns"] == ["CustomerID"]
+    cust = next(c for c in orders["columns"] if c["name"] == "CustomerID")
+    assert cust["fk_on_delete"] == "CASCADE"
 
 
 def test_render_json_roundtrips(tmp_path):

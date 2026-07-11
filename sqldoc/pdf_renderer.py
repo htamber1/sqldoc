@@ -34,9 +34,16 @@ def _attributes(col) -> str:
     if col.is_foreign_key:
         parts.append("FK")
         if col.references_table:
-            parts.append(f"-> {col.references_table}.{col.references_column}")
+            ref = f"-> {col.references_table}.{col.references_column}"
+            if getattr(col, "fk_on_delete", None) and col.fk_on_delete != "NO_ACTION":
+                ref += f" ON DELETE {col.fk_on_delete.replace('_', ' ')}"
+            if getattr(col, "fk_on_update", None) and col.fk_on_update != "NO_ACTION":
+                ref += f" ON UPDATE {col.fk_on_update.replace('_', ' ')}"
+            parts.append(ref)
     if col.is_computed:
         parts.append("computed")
+    if getattr(col, "default_definition", None):
+        parts.append(f"default {col.default_definition}")
     if col.is_nullable:
         parts.append("nullable")
     return ", ".join(parts)
@@ -180,6 +187,16 @@ def render_pdf(database, tables, output_path, views=None, procedures=None):
                         cols += f" (incl: {', '.join(idx.included_columns)})"
                     idx_rows.append([name, idx.type_desc, cols])
                 _table(pdf, ["Index", "Type", "Columns"], idx_rows, widths=(38, 24, 38))
+            checks = getattr(table, "check_constraints", [])
+            uniques = getattr(table, "unique_constraints", [])
+            if checks or uniques:
+                con_rows = []
+                for uq in uniques:
+                    con_rows.append([uq.name, "UNIQUE", "(" + ", ".join(uq.columns) + ")"])
+                for chk in checks:
+                    con_rows.append([chk.name, "CHECK" + (f" [{chk.column}]" if chk.column else ""),
+                                     chk.definition])
+                _table(pdf, ["Constraint", "Type", "Definition"], con_rows, widths=(34, 24, 42))
             if table.triggers:
                 trg_rows = []
                 for tg in table.triggers:

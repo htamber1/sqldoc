@@ -268,6 +268,8 @@ HTML_TEMPLATE = """
         .badge-out { background: rgba(217,70,239,0.15); color: #e879f9; border-color: rgba(217,70,239,0.35); }
         .badge-computed { background: rgba(168,85,247,0.15); color: #c084fc; border-color: rgba(168,85,247,0.35); }
         .badge-disabled { background: rgba(220,38,38,0.15); color: #f87171; border-color: rgba(220,38,38,0.35); }
+        .badge-default { background: rgba(20,184,166,0.15); color: #2dd4bf; border-color: rgba(20,184,166,0.35); }
+        .badge-check { background: rgba(234,179,8,0.13); color: #eab308; border-color: rgba(234,179,8,0.35); }
         .computed-expr { color: var(--muted); font-family: 'Consolas', monospace; font-size: 0.78rem; margin-top: 4px; }
         .trigger-row { padding: 10px 16px; }
         .trigger-row + .trigger-row { border-top: 1px solid var(--border); }
@@ -482,15 +484,19 @@ HTML_TEMPLATE = """
                                 {% if col.is_primary_key %}<span class="badge badge-pk">PK</span>{% endif %}
                                 {% if col.is_foreign_key %}<span class="badge badge-fk">FK</span>{% endif %}
                                 {% if col.is_computed %}<span class="badge badge-computed">computed</span>{% endif %}
+                                {% if col.default_definition %}<span class="badge badge-default">default</span>{% endif %}
                                 {% if col.is_nullable %}<span class="badge badge-nullable">nullable</span>{% endif %}
                             </td>
                             <td class="col-description">
                                 {{ col.description or "" }}
                                 {% if col.is_foreign_key and col.references_table %}
-                                <div style="color:#6b7280;font-size:0.8rem;margin-top:4px;">→ {{ col.references_table }}.{{ col.references_column }}</div>
+                                <div style="color:#6b7280;font-size:0.8rem;margin-top:4px;">→ {{ col.references_table }}.{{ col.references_column }}{% if col.fk_on_delete and col.fk_on_delete != 'NO_ACTION' %} · ON DELETE {{ col.fk_on_delete.replace('_', ' ') }}{% endif %}{% if col.fk_on_update and col.fk_on_update != 'NO_ACTION' %} · ON UPDATE {{ col.fk_on_update.replace('_', ' ') }}{% endif %}</div>
                                 {% endif %}
                                 {% if col.is_computed and col.computed_definition %}
                                 <div class="computed-expr">= {{ col.computed_definition }}</div>
+                                {% endif %}
+                                {% if col.default_definition %}
+                                <div class="computed-expr">default {{ col.default_definition }}</div>
                                 {% endif %}
                             </td>
                         </tr>
@@ -512,6 +518,32 @@ HTML_TEMPLATE = """
                                 </td>
                                 <td class="col-type">{{ idx.type_desc }}</td>
                                 <td class="col-description">{{ idx.key_columns|join(', ') }}{% if idx.included_columns %} <span style="color:#6b7280;">(incl: {{ idx.included_columns|join(', ') }})</span>{% endif %}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+                {% if table.check_constraints or table.unique_constraints %}
+                <div class="index-section">
+                    <div class="subsection-title">Constraints ({{ (table.check_constraints|length) + (table.unique_constraints|length) }})</div>
+                    <table>
+                        <thead>
+                            <tr><th>Name</th><th>Type</th><th>Definition</th></tr>
+                        </thead>
+                        <tbody>
+                            {% for uq in table.unique_constraints %}
+                            <tr>
+                                <td class="col-name">{{ uq.name }}</td>
+                                <td><span class="badge badge-uq">UNIQUE</span></td>
+                                <td class="col-description">({{ uq.columns|join(', ') }})</td>
+                            </tr>
+                            {% endfor %}
+                            {% for chk in table.check_constraints %}
+                            <tr>
+                                <td class="col-name">{{ chk.name }}</td>
+                                <td><span class="badge badge-check">CHECK</span>{% if chk.column %} <span style="color:#6b7280;font-size:0.8rem;">{{ chk.column }}</span>{% endif %}</td>
+                                <td class="col-description"><code>{{ chk.definition }}</code></td>
                             </tr>
                             {% endfor %}
                         </tbody>
