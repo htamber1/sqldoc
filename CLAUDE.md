@@ -31,7 +31,7 @@ Shippable seven-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan
 
 ### Release / distribution state
 1. **CI is live** — `.github/workflows/main.yml` runs on the remote. The old redundant `ci.yml` was deleted (2026-07-11) now that `main.yml` covers it.
-2. **PyPI** — `sqldoc` **1.4.0 published to PyPI** (2026-07-11) from `~/.pypirc` (`__token__`). `pip install sqldoc` works. README (the PyPI long description) was rewritten for the seven-command platform + a comparison vs Redgate SQL Doc / Dataedo. **Open item:** no `LICENSE` yet — README states all-rights-reserved pending a decision; the package was published without a license classifier. Add a `LICENSE` + `license`/classifier in `pyproject.toml` before the next release if going genuinely open-source (this conflicts with the paid-tier plan in `pricing-strategy.md` — decide the model).
+2. **PyPI** — published from `~/.pypirc` (`__token__`); `pip install sqldoc` works. **1.4.0** (2026-07-11) shipped the seven-command platform; **1.4.1** (2026-07-11) added the **MIT License** (`LICENSE`, `license = {text = "MIT"}` + OSI classifier in `pyproject.toml`, README badge). README (the PyPI long description) covers the seven commands + a comparison vs Redgate SQL Doc / Dataedo. NOTE: MIT makes the project genuinely open-source, which **supersedes the license-key/entitlement paid-tier plan** in `pricing-strategy.md` — anyone can fork/remove gating; a viable model is now hosted/support/dual-license, not code gating. Reconcile `pricing-strategy.md` with the MIT decision.
 3. **GitHub Releases** — create Release pages for `v1.2.0` / `v1.3.0` / `v1.4.0` from the CHANGELOG (paste-ready notes were provided in chat). The annotated tags already exist.
 
 ### Shipped in v1.3.0 / v1.4.0

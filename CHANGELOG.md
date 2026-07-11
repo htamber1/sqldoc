@@ -4,6 +4,14 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] — 2026-07-11
+
+### Added
+- **MIT License** — `sqldoc` is now formally open source under the MIT License
+  (© 2026 Harsh Tamboli). Added a `LICENSE` file, wired `license = {text = "MIT"}`
+  and the OSI MIT classifier into `pyproject.toml`, and added a license badge to
+  the README. No code changes — a licensing/metadata release.
+
 ## [1.4.0] — 2026-07-11
 
 Two AI/compliance capability areas land as new commands, taking sqldoc to seven

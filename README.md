@@ -3,6 +3,7 @@
 [![CI](https://github.com/htamber1/sqldoc/actions/workflows/main.yml/badge.svg)](https://github.com/htamber1/sqldoc/actions/workflows/main.yml)
 [![PyPI](https://img.shields.io/pypi/v/sqldoc.svg)](https://pypi.org/project/sqldoc/)
 [![Python](https://img.shields.io/pypi/pyversions/sqldoc.svg)](https://pypi.org/project/sqldoc/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **A seven-command database platform for SQL Server** — documentation, PII/compliance
 scanning, health analysis, data-quality profiling, schema intelligence, AI insights,
@@ -226,7 +227,7 @@ publicly documented capabilities — verify current features against each vendor
 
 | Capability | **sqldoc** | Redgate SQL Doc | Dataedo |
 | --- | --- | --- | --- |
-| Price | Free (source on GitHub) | Paid (per-user) | Paid (per-user / repo) |
+| Price | Free / open source (MIT) | Paid (per-user) | Paid (per-user / repo) |
 | Interface | CLI — scriptable, CI-friendly | Desktop GUI + CLI | Desktop app + web repo |
 | Databases | SQL Server | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
 | Self-contained HTML docs | ✓ | ✓ (HTML / CHM / Word / Markdown) | ✓ (web catalog) |
@@ -268,6 +269,6 @@ Run the test suite (mocked — no live SQL Server or Ollama required) with
 
 ## License
 
-No open-source license has been declared yet, so all rights are reserved by the
-author pending a licensing decision. If you want to use, modify, or redistribute
-sqldoc, please contact the author or watch this repository for a `LICENSE` file.
+Released under the [MIT License](LICENSE) — © 2026 Harsh Tamboli. You are free to
+use, modify, and redistribute sqldoc, including commercially, provided the license
+and copyright notice are preserved.
