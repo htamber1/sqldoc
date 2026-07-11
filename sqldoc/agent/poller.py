@@ -15,6 +15,8 @@ everything in the AgentStore:
 The whole pass is wrapped so a failure is recorded as a failed run and never
 propagates — the daemon keeps polling.
 """
+import contextlib
+import io
 import os
 import tempfile
 
@@ -41,7 +43,9 @@ def _render_doc(name, tables, views, procedures) -> str:
     fd, path = tempfile.mkstemp(suffix=".html")
     os.close(fd)
     try:
-        render_html(name, tables, path, views=views, procedures=procedures)
+        # render_html prints a "written to <tempfile>" line; keep it out of the log.
+        with contextlib.redirect_stdout(io.StringIO()):
+            render_html(name, tables, path, views=views, procedures=procedures)
         with open(path, encoding="utf-8") as f:
             return f.read()
     finally:

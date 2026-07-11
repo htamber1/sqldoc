@@ -40,6 +40,7 @@ CONFIG_KEYS = {
     'confidence_threshold', 'fail_on', 'yes',
     'top', 'min_fragmentation', 'min_pages',
     'top_values', 'no_duplicates', 'no_glossary',
+    'agent',
 }
 
 
@@ -1106,6 +1107,11 @@ cli.add_command(quality, name='quality')
 cli.add_command(intel, name='intel')
 cli.add_command(insights, name='insights')
 cli.add_command(comply, name='comply')
+
+# The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
+# module is otherwise defined) to attach it without a circular import.
+from sqldoc.agent.cli import agent as _agent_group  # noqa: E402
+cli.add_command(_agent_group, name='agent')
 
 
 if __name__ == '__main__':
