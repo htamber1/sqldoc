@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status (v1.4.1, as of 2026-07-11)
 
-Shipped, **MIT-licensed, and live on PyPI** (`pip install sqldoc`) — a seven-command CLI: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI insights), **`sqldoc comply`** (compliance expansion). Four release tags **v1.0.0 → v1.4.1** pushed to `github.com/htamber1/sqldoc` (latest **v1.4.1**, MIT license). **188 pytest tests** passing (mocked — no live SQL Server/Ollama). **CI is live** on GitHub (`.github/workflows/main.yml`). **In progress toward v1.5.0 (uncommitted on `main`): the multi-database adapter _foundation_ is landed** — see "Next session" below. Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump.
+Shipped, **MIT-licensed, and live on PyPI** (`pip install sqldoc`) — a seven-command CLI: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI insights), **`sqldoc comply`** (compliance expansion). Release tags **v1.0.0 → v1.5.0** pushed to `github.com/htamber1/sqldoc` (latest **v1.5.0**, MIT license). **209 pytest tests** passing (mocked — no live database/Ollama). **CI is live** on GitHub (`.github/workflows/main.yml`). **v1.5.0 shipped multi-database support** — a `DatabaseAdapter` layer with **SQL Server, PostgreSQL, MySQL, and Azure SQL** adapters; `doc`/`scan`/`intel`/`insights` run on all four (`health`/`quality`/`comply` access-audit remain SQL-Server/Azure only). See "Multi-database (v1.5.0, shipped)" below. Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump.
 
 ### What's built (all shipped + tested)
 **`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
@@ -39,10 +39,23 @@ Shipped, **MIT-licensed, and live on PyPI** (`pip install sqldoc`) — a seven-c
 - **v1.4.0** — **`sqldoc insights`** (NL-to-SQL via `--ask`, heuristic anomaly detection, AI business glossary, relationship inference) and **`sqldoc comply`** (per-regulation HIPAA/GDPR/PCI-DSS reports + controls, data-lineage tracking, access audit over `sys.database_permissions`).
 - **v1.4.1** — MIT License (`LICENSE`, `pyproject` metadata, README badge). No code changes.
 
-### Next session — multi-database adapter architecture (the big one)
-**Goal:** support **PostgreSQL, MySQL, and Azure SQL** alongside SQL Server, with all seven commands working through a common adapter interface. This is the highest-leverage next feature (it 4×'s the addressable market and directly answers the Dataedo "20+ databases" gap in the README comparison).
+### Multi-database (v1.5.0, shipped)
+**Delivered:** **PostgreSQL, MySQL, and Azure SQL** alongside SQL Server, through a common `DatabaseAdapter` interface. `doc`/`scan`/`intel`/`insights` run on all four dialects; `health`/`quality`/`comply` access-audit stay SQL-Server/Azure-only (their DMV/aggregate/`sys.database_permissions` SQL isn't ported — the commands refuse other dialects via a `Capabilities` guard with a clear message). Shipped as v1.5.0 (bumped, CHANGELOG, tagged, pushed, PyPI).
 
-**FOUNDATION DONE (uncommitted on `main`, behavior-preserving, all 188 tests green):**
+**What shipped:**
+- **`adapters/base.py`** — shared dataclasses (dialect-neutral currency), `Capabilities` (per-dialect feature flags), `DatabaseAdapter` ABC (`extract_metadata`/`views`/`procedures` + `build_connection_string` + injectable `connect()`).
+- **`adapters/sqlserver.py`** — `SqlServerAdapter` (T-SQL moved verbatim; full capabilities). **`adapters/postgres.py`** — `PostgresAdapter` (`information_schema` + `pg_catalog` via `psycopg2`; trigger bitmask decode; INCLUDE-column split via `indnkeyatts`). **`adapters/mysql.py`** — `MySQLAdapter` (`information_schema` via `mysql-connector-python`; `DATABASE()`-scoped; CHECK needs MySQL 8.0.16+). **Postgres/MySQL drivers are optional deps** (`sqldoc[postgres]`/`[mysql]`/`[all]`), imported lazily inside `_default_connect` with a clear "install X" ImportError.
+- **`adapters/__init__.py`** — `DIALECTS` registry, `detect_dialect()`, `get_adapter()`. `azuresql` → `SqlServerAdapter`.
+- **`cli.py`** — `--dialect` on all 7 commands; `open_adapter()` resolves + routes; `doc`/`scan`/`intel`/`insights` extract via the adapter; `health`/`quality`/`comply` guard on `capabilities`. The module-level `cli.extract_metadata/views/procedures` are a thin patchable **seam** delegating to the adapter (keeps all CLI tests stable).
+- **Tests** — `test_adapters.py`, `test_postgres_adapter.py`, `test_mysql_adapter.py` (token-routed fakes; no live DB). 209 total.
+
+**Not yet ported (next candidates):** dialect-specific SQL for `health`/`quality`/`comply` access-audit on Postgres/MySQL (would flip those `Capabilities` flags on); a dedicated `AzureSqlAdapter` subclass that degrades server-scoped DMVs; live-DB validation of the Postgres/MySQL catalog SQL (only mock-tested so far — **the catalog queries have not run against a real Postgres/MySQL yet**).
+
+---
+
+<details><summary>Original v1.5.0 foundation plan (delivered above)</summary>
+
+**FOUNDATION (behavior-preserving, was staged before the adapters landed):**
 - **`sqldoc/adapters/` package created.** `base.py` holds the shared dataclasses (moved here as the dialect-neutral currency — `Table`/`Column`/…), a **`Capabilities`** dataclass (per-dialect feature advertisement: `health`/`quality`/`access_audit` default **off**, dialect-neutral pieces default on), and the **`DatabaseAdapter` ABC** (`extract_metadata`/`extract_views`/`extract_procedures` + `build_connection_string` + an **injectable `connect()`** seam).
 - **`sqlserver.py` = `SqlServerAdapter`** — today's extractor **metadata T-SQL moved verbatim** into methods; `capabilities = Capabilities(quality=True, health=True, access_audit=True)` (full).
 - **`adapters/__init__.py`** — `DIALECTS` registry, `detect_dialect()` (by scheme/driver/`*.database.windows.net`), `get_adapter(cs, dialect)` raising `UnsupportedDialectError` for planned dialects. `azuresql` **maps to `SqlServerAdapter`** (same T-SQL) so existing Azure-via-connection-string users don't regress; `postgres`/`mysql` registered as `None` (planned).
@@ -63,7 +76,11 @@ Testing: extend the fake-DB harness so `tests/conftest.py` can emulate each dial
 
 Rollout: land as a minor bump (**v1.5.0**) once SQL Server + at least Postgres pass; MySQL/Azure can follow. Update the README comparison ("Databases" row) and the privacy section (the `sys.*`-only claim becomes dialect-specific).
 
+</details>
+
 ### Also pending (non-code)
+- **GitHub Release page for `v1.5.0`** (paste-ready notes are the CHANGELOG `[1.5.0]` entry) — and still the older `v1.2.0`/`v1.3.0` pages.
+- **Live-DB validation of the Postgres/MySQL adapters** — the catalog SQL is mock-tested only; run `doc`/`scan`/`intel`/`insights` against a real Postgres and MySQL before promoting multi-DB in go-to-market.
 - **Reconcile `pricing-strategy.md` with the MIT decision** — the four-tier license-key/entitlement plan no longer fits an MIT-licensed project (anyone can fork and strip gating). Rework toward hosted SaaS / paid support / dual-license / sponsorware, or explicitly commit to fully-free + a services model. This blocks any monetization messaging.
 - **GitHub Release pages for `v1.2.0` and `v1.3.0`** (v1.4.0/v1.4.1 done) — paste-ready notes are in chat history.
 - **Go-to-market planning** — with MIT + PyPI live, decide launch surface (Show HN / r/SQLServer / r/dataengineering / LinkedIn), a landing page or GitHub Pages demo (host a sample HTML report per command), and positioning vs Redgate SQL Doc (free + AI + compliance) and Dataedo (CLI + SQL-Server-deep + privacy-first). The multi-DB work above is a prerequisite for a broad "database documentation tool" pitch.

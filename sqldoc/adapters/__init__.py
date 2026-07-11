@@ -12,6 +12,8 @@ running T-SQL against the wrong engine.
 """
 from sqldoc.adapters.base import DatabaseAdapter, Capabilities
 from sqldoc.adapters.sqlserver import SqlServerAdapter
+from sqldoc.adapters.postgres import PostgresAdapter
+from sqldoc.adapters.mysql import MySQLAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -20,12 +22,14 @@ class UnsupportedDialectError(Exception):
 
 # Registry: dialect name -> adapter class (None == recognized but not built).
 # Azure SQL reuses the SQL Server adapter (identical T-SQL); a dedicated adapter
-# with graceful DMV degradation for Azure SQL Database is planned for v1.5.0.
+# with graceful DMV degradation for Azure SQL Database can follow. The postgres
+# and mysql drivers are optional dependencies imported lazily by their adapters,
+# so importing this registry never requires them to be installed.
 DIALECTS: dict = {
     "sqlserver": SqlServerAdapter,
     "azuresql": SqlServerAdapter,
-    "postgres": None,
-    "mysql": None,
+    "postgres": PostgresAdapter,
+    "mysql": MySQLAdapter,
 }
 
 # What --dialect accepts, ordered supported-first for help text / error messages.
@@ -75,6 +79,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
+    "PostgresAdapter", "MySQLAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

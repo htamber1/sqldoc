@@ -5,7 +5,7 @@ import pytest
 
 from sqldoc.adapters import (
     get_adapter, detect_dialect, UnsupportedDialectError,
-    SqlServerAdapter, DatabaseAdapter, Capabilities,
+    SqlServerAdapter, PostgresAdapter, MySQLAdapter, DatabaseAdapter, Capabilities,
     DIALECTS, SUPPORTED_DIALECTS, PLANNED_DIALECTS, DIALECT_CHOICES,
 )
 from conftest import FakeConnection
@@ -34,16 +34,18 @@ def test_azuresql_host_beats_sqlserver_driver():
 
 # --- registry --------------------------------------------------------------
 
-def test_supported_and_planned_partition():
-    assert set(SUPPORTED_DIALECTS) == {"sqlserver", "azuresql"}
-    assert set(PLANNED_DIALECTS) == {"postgres", "mysql"}
+def test_all_four_dialects_supported():
+    assert set(SUPPORTED_DIALECTS) == {"sqlserver", "azuresql", "postgres", "mysql"}
+    assert PLANNED_DIALECTS == []
     assert set(DIALECT_CHOICES) == set(DIALECTS)
 
 
-def test_azuresql_reuses_sqlserver_adapter():
-    # Azure SQL speaks the same T-SQL, so today it maps to the SQL Server adapter
+def test_registry_maps_to_expected_adapters():
+    # Azure SQL speaks the same T-SQL, so it maps to the SQL Server adapter
     # (a regression guard: existing Azure-via-connection-string users keep working).
     assert DIALECTS["azuresql"] is SqlServerAdapter
+    assert DIALECTS["postgres"] is PostgresAdapter
+    assert DIALECTS["mysql"] is MySQLAdapter
 
 
 # --- get_adapter -----------------------------------------------------------
@@ -65,11 +67,16 @@ def test_get_adapter_azuresql():
     assert isinstance(a, SqlServerAdapter)
 
 
-@pytest.mark.parametrize("dialect", ["postgres", "mysql"])
-def test_get_adapter_planned_dialect_raises(dialect):
-    with pytest.raises(UnsupportedDialectError) as ei:
-        get_adapter("whatever", dialect=dialect)
-    assert "planned for v1.5.0" in str(ei.value)
+def test_get_adapter_postgres():
+    a = get_adapter("postgresql://u:p@h/db")
+    assert isinstance(a, PostgresAdapter)
+    assert a.dialect == "postgres"
+
+
+def test_get_adapter_mysql():
+    a = get_adapter("mysql://u:p@h/db")
+    assert isinstance(a, MySQLAdapter)
+    assert a.dialect == "mysql"
 
 
 def test_get_adapter_unknown_dialect_raises():

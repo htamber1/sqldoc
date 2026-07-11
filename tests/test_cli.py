@@ -79,32 +79,59 @@ def test_dialect_sqlserver_proceeds(patched, tmp_path):
     assert out.exists()
 
 
-def test_dialect_planned_rejected(patched, tmp_path):
+def test_dialect_postgres_routes_to_adapter(patched, tmp_path, monkeypatch):
+    # --dialect postgres is a supported dialect: the doc command proceeds
+    # (extraction is patched) rather than erroring as unsupported.
+    seen = {}
+    real_open = cli.open_adapter
+    def spy(resolve, conn_str, dialect):
+        a = real_open(resolve, conn_str, dialect)
+        seen['dialect'] = a.dialect
+        return a
+    monkeypatch.setattr(cli, "open_adapter", spy)
+    out = tmp_path / "d.html"
     res = CliRunner().invoke(cli.main, [
         "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
         "--dialect", "postgres",
-        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(out),
     ])
-    assert res.exit_code != 0
-    assert "not supported yet" in res.output
+    assert res.exit_code == 0, res.output
+    assert seen['dialect'] == "postgres"
 
 
-def test_dialect_autodetected_from_connection_string_rejected(patched, tmp_path):
+def test_dialect_autodetected_from_connection_string(patched, tmp_path, monkeypatch):
+    # A postgres URL auto-detects to the postgres adapter (no --dialect needed).
+    seen = {}
+    real_open = cli.open_adapter
+    monkeypatch.setattr(cli, "open_adapter",
+                        lambda r, c, d: (lambda a: (seen.update(dialect=a.dialect), a)[1])(real_open(r, c, d)))
     res = CliRunner().invoke(cli.main, [
         "--connection-string", "postgresql://u:p@host/db",
         "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
     ])
-    assert res.exit_code != 0
-    assert "postgres" in res.output and "not supported yet" in res.output
+    assert res.exit_code == 0, res.output
+    assert seen['dialect'] == "postgres"
 
 
-def test_scan_dialect_planned_rejected(monkeypatch, tmp_path):
-    res = CliRunner().invoke(cli.scan, [
-        "--connection-string", "mysql://u:p@host/db",
-        "--output", str(tmp_path / "s.html"),
+def test_unknown_dialect_rejected_by_choice(patched, tmp_path):
+    # Click.Choice rejects a dialect that isn't in the registry.
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--dialect", "oracle",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
     ])
     assert res.exit_code != 0
-    assert "not supported yet" in res.output
+    assert "oracle" in res.output.lower() or "invalid" in res.output.lower()
+
+
+def test_health_rejected_on_postgres(monkeypatch, tmp_path):
+    # health's DMV SQL is SQL-Server-only; postgres must be refused cleanly.
+    res = CliRunner().invoke(cli.health, [
+        "--connection-string", "postgresql://u:p@host/db",
+        "--output", str(tmp_path / "h.html"),
+    ])
+    assert res.exit_code != 0
+    assert "not available on dialect 'postgres'" in res.output
 
 
 def test_format_inferred_from_extension(patched, tmp_path):

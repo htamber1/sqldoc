@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldoc"
-version = "1.4.1"
-description = "SQL Server database documentation generator + PII/compliance scanner, with optional AI-written descriptions."
+version = "1.5.0"
+description = "Multi-database documentation generator + PII/compliance scanner for SQL Server, PostgreSQL, MySQL and Azure SQL, with optional AI-written descriptions."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Harsh Tamboli" }]
-keywords = ["sql-server", "documentation", "database", "schema", "er-diagram"]
+keywords = ["sql-server", "postgresql", "mysql", "azure-sql", "documentation", "database", "schema", "er-diagram"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -30,6 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Database drivers are optional: SQL Server (pyodbc) is a core dependency; the
+# postgres/mysql drivers install only when you target those engines.
+postgres = ["psycopg2-binary>=2.9"]
+mysql = ["mysql-connector-python>=8.0"]
+all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0"]
 test = ["pytest>=8", "pypdf>=4"]
 
 [project.urls]

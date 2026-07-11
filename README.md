@@ -5,15 +5,21 @@
 [![Python](https://img.shields.io/pypi/pyversions/sqldoc.svg)](https://pypi.org/project/sqldoc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A seven-command database platform for SQL Server** — documentation, PII/compliance
-scanning, health analysis, data-quality profiling, schema intelligence, AI insights,
-and compliance reporting. One CLI, self-contained HTML reports, and machine-readable
-`--json` for every command.
+**A seven-command database platform** for **SQL Server, PostgreSQL, MySQL, and
+Azure SQL** — documentation, PII/compliance scanning, health analysis,
+data-quality profiling, schema intelligence, AI insights, and compliance
+reporting. One CLI, self-contained HTML reports, and machine-readable `--json`
+for every command.
 
-`sqldoc` connects to a SQL Server database, reads its schema (and, for a couple of
+`sqldoc` connects to your database, reads its schema (and, for a couple of
 commands, aggregate statistics — never row data), optionally uses an LLM to write
 plain-English descriptions, and produces reports you can open in any browser or feed
-to another tool.
+to another tool. Documentation, PII scanning, schema intelligence, and AI insights
+run on **SQL Server, PostgreSQL, MySQL, and Azure SQL** via a common adapter layer;
+pick the engine with `--dialect` or let it auto-detect from the connection string.
+The database drivers for Postgres/MySQL are optional installs
+(`pip install sqldoc[postgres]` / `sqldoc[mysql]` / `sqldoc[all]`) — SQL Server
+users need nothing extra.
 
 ## Quick start
 
@@ -79,8 +85,17 @@ never a salary.
 From PyPI:
 
 ```bash
-pip install sqldoc
+pip install sqldoc              # SQL Server / Azure SQL (via pyodbc)
+pip install sqldoc[postgres]    # + PostgreSQL (psycopg2)
+pip install sqldoc[mysql]       # + MySQL (mysql-connector-python)
+pip install sqldoc[all]         # + both
 ```
+
+The dialect is auto-detected from the connection string (`postgresql://`,
+`mysql://`, `*.database.windows.net`) or set explicitly with
+`--dialect {sqlserver,azuresql,postgres,mysql}`. `doc`, `scan`, `intel`, and
+`insights` run on all four engines; `health`, `quality`, and the `comply` access
+audit are SQL Server / Azure SQL only for now.
 
 From source (editable/development install):
 
@@ -222,14 +237,14 @@ pii_allowlist:
 ## How does it compare?
 
 sqldoc overlaps with commercial documentation and data-catalog tools but takes a
-free, CLI-first, SQL-Server-focused, privacy-first angle. The table below is based on
+free, CLI-first, multi-database, privacy-first angle. The table below is based on
 publicly documented capabilities — verify current features against each vendor.
 
 | Capability | **sqldoc** | Redgate SQL Doc | Dataedo |
 | --- | --- | --- | --- |
 | Price | Free / open source (MIT) | Paid (per-user) | Paid (per-user / repo) |
 | Interface | CLI — scriptable, CI-friendly | Desktop GUI + CLI | Desktop app + web repo |
-| Databases | SQL Server | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
+| Databases | SQL Server, PostgreSQL, MySQL, Azure SQL | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
 | Self-contained HTML docs | ✓ | ✓ (HTML / CHM / Word / Markdown) | ✓ (web catalog) |
 | AI-written descriptions | ✓ (local Ollama **or** cloud) | ✗ | Partial (AI assist) |
 | Runs fully offline / on-prem | ✓ (local mode, no data egress) | ✓ | ✓ (on-prem repo) |

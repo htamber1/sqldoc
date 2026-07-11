@@ -4,6 +4,49 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] — 2026-07-11
+
+Multi-database support. sqldoc is no longer SQL-Server-only: a new adapter
+layer lets **`doc`, `scan`, `intel`, and `insights`** run against **PostgreSQL**
+and **MySQL** (and **Azure SQL**, which reuses the SQL Server path), documenting
+tables, columns, keys, indexes, triggers, constraints, views, and
+functions/procedures through each engine's catalog. The dialect-neutral
+extraction dataclasses are unchanged, so every renderer and analysis stays the
+same regardless of source database.
+
+### Added
+- **`adapters/` package + `DatabaseAdapter` ABC** — the shared dataclasses moved
+  here as the dialect-neutral "currency", plus a `Capabilities` advertisement of
+  which commands each dialect can serve.
+- **`PostgresAdapter`** (`information_schema` + `pg_catalog` via **`psycopg2`**,
+  an optional dependency: `pip install sqldoc[postgres]`) — tables/columns with
+  PK/FK/generated columns, structured indexes (key vs INCLUDE), triggers (with
+  bitmask event decoding), CHECK/UNIQUE constraints, views, and
+  functions/procedures with parameters.
+- **`MySQLAdapter`** (`information_schema` via **`mysql-connector-python`**, an
+  optional dependency: `pip install sqldoc[mysql]`) — the same object surface,
+  `DATABASE()`-scoped; CHECK constraints on MySQL 8.0.16+.
+- **`--dialect {sqlserver,azuresql,postgres,mysql}`** on every command, plus a
+  `dialect` config key. Auto-detected from the connection string
+  (`postgresql://`, `mysql://`, `*.database.windows.net`) when not given.
+- **Optional-dependency extras** — `sqldoc[postgres]`, `sqldoc[mysql]`,
+  `sqldoc[all]`. SQL Server users install nothing extra; a missing driver raises
+  a clear, actionable error naming the package to install.
+
+### Changed
+- **`extractor.py` is now a thin back-compat shim** over `adapters.sqlserver`
+  (the SQL Server T-SQL moved there verbatim). All existing
+  `from sqldoc.extractor import ...` imports keep working unchanged.
+- **`doc`/`scan`/`intel`/`insights` extraction routes through the resolved
+  adapter**, so `--dialect` genuinely drives the right catalog queries.
+
+### Notes / limitations
+- **`health`, `quality`, and the `comply` access audit** remain **SQL Server /
+  Azure SQL only** this release (they use DMV / aggregate / `sys.database_permissions`
+  SQL that has no ported equivalent yet); they refuse other dialects with a clear
+  message. `comply` regulation + lineage reporting works on all dialects.
+- 209 tests pass (mocked — no live database required for any dialect).
+
 ## [1.4.1] — 2026-07-11
 
 ### Added

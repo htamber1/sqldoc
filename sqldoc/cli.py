@@ -4,7 +4,7 @@ import yaml
 from dotenv import load_dotenv
 import re
 from sqldoc import __version__
-from sqldoc.extractor import extract_metadata, extract_views, extract_procedures, build_connection_string
+from sqldoc.extractor import build_connection_string
 from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError, DIALECT_CHOICES
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
@@ -41,6 +41,21 @@ CONFIG_KEYS = {
     'top', 'min_fragmentation', 'min_pages',
     'top_values', 'no_duplicates', 'no_glossary',
 }
+
+
+def extract_metadata(adapter):
+    """Extraction seam: real runs delegate to the resolved DatabaseAdapter (so
+    --dialect drives the right catalog queries); tests monkeypatch these to
+    inject fixture schema without a live database."""
+    return adapter.extract_metadata()
+
+
+def extract_views(adapter):
+    return adapter.extract_views()
+
+
+def extract_procedures(adapter):
+    return adapter.extract_procedures()
 
 
 def _parse_database(connection_string: str):
@@ -109,24 +124,35 @@ def _make_resolver(ctx, cfg):
     return resolve
 
 
-def resolve_dialect(resolve, conn_str, dialect):
+def open_adapter(resolve, conn_str, dialect):
     """Resolve --dialect (explicit flag > config > auto-detect from the
-    connection string) and validate that an adapter exists for it, so an
-    unsupported/planned dialect fails loud instead of running the wrong SQL.
-    Returns the resolved dialect name."""
+    connection string) and return the concrete DatabaseAdapter. Extraction
+    (doc/scan/intel/insights) flows through the returned adapter, so pointing
+    --dialect at postgres/mysql actually drives the right catalog queries. An
+    unsupported dialect raises a clean UsageError."""
     dialect = resolve('dialect', dialect)
     try:
-        get_adapter(conn_str, dialect)   # constructed lazily; this only validates
+        return get_adapter(conn_str, dialect)
     except UnsupportedDialectError as e:
         raise click.UsageError(str(e))
-    return (dialect or detect_dialect(conn_str)).lower()
+
+
+def _require_capability(adapter, flag, command):
+    """Guard a command whose dialect-specific SQL is only implemented for some
+    dialects (health/quality DMV+aggregate SQL, comply access audit). Renders a
+    clean error rather than running SQL Server SQL against another engine."""
+    if not getattr(adapter.capabilities, flag, False):
+        raise click.UsageError(
+            f"'sqldoc {command}' is not available on dialect '{adapter.dialect}' "
+            f"({adapter.display_name}). It is currently supported on SQL Server / "
+            f"Azure SQL only."
+        )
 
 
 def _resolve_connection(resolve, server, database, username, password, connection_string,
                         dialect=None):
     """Merge connection settings and return (conn_str, database, server).
-    A --connection-string takes precedence over the discrete parts. `dialect`,
-    when given, is resolved and validated (raising on an unsupported dialect)."""
+    A --connection-string takes precedence over the discrete parts."""
     server = resolve('server', server)
     database = resolve('database', database)
     username = resolve('username', username)
@@ -144,7 +170,6 @@ def _resolve_connection(resolve, server, database, username, password, connectio
                 "--connection-string, or a .sqldoc.yml config file."
             )
         conn_str = build_connection_string(server, database, username, password)
-    resolve_dialect(resolve, conn_str, dialect)
     return conn_str, database, server
 
 
@@ -252,8 +277,8 @@ def main(config, server, database, username, password, connection_string, dialec
             )
         conn_str = build_connection_string(server, database, username, password)
 
-    # Resolve + validate the dialect (rejects unsupported/planned dialects).
-    resolve_dialect(resolve, conn_str, dialect)
+    # Resolve the dialect and open the matching adapter (rejects unsupported).
+    adapter = open_adapter(resolve, conn_str, dialect)
 
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
@@ -313,11 +338,11 @@ def main(config, server, database, username, password, connection_string, dialec
             raise click.Abort()
 
     # Extract metadata
-    click.echo("Connecting to SQL Server...")
+    click.echo(f"Connecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
-        views = extract_views(conn_str)
-        procedures = extract_procedures(conn_str)
+        tables = extract_metadata(adapter)
+        views = extract_views(adapter)
+        procedures = extract_procedures(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -428,6 +453,7 @@ def scan(config, server, database, username, password, connection_string, dialec
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     mode = resolve('mode', mode)
     model = resolve('model', model)
@@ -470,9 +496,9 @@ def scan(config, server, database, username, password, connection_string, dialec
     click.echo(f"Output:   {output}")
     click.echo(f"{'='*44}\n")
 
-    click.echo("Connecting to SQL Server...")
+    click.echo(f"Connecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
+        tables = extract_metadata(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -613,6 +639,8 @@ def health(config, server, database, username, password, connection_string, dial
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'health', 'health')
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -689,6 +717,8 @@ def quality(config, server, database, username, password, connection_string, dia
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'quality', 'quality')
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -712,9 +742,9 @@ def quality(config, server, database, username, password, connection_string, dia
         click.echo("Aborted.")
         raise click.Abort()
 
-    click.echo("\nConnecting to SQL Server...")
+    click.echo(f"\nConnecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
+        tables = extract_metadata(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -779,6 +809,7 @@ def intel(config, server, database, username, password, connection_string, diale
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -790,11 +821,11 @@ def intel(config, server, database, username, password, connection_string, diale
     click.echo(f"Output:   {output}")
     click.echo(f"{'='*44}\n")
 
-    click.echo("Connecting to SQL Server...")
+    click.echo(f"Connecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
-        views = extract_views(conn_str)
-        procedures = extract_procedures(conn_str)
+        tables = extract_metadata(adapter)
+        views = extract_views(adapter)
+        procedures = extract_procedures(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -869,6 +900,7 @@ def insights(config, server, database, username, password, connection_string, di
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -912,9 +944,9 @@ def insights(config, server, database, username, password, connection_string, di
             click.echo("Aborted. Re-run with --mode local to stay on-network.")
             raise click.Abort()
 
-    click.echo("Connecting to SQL Server...")
+    click.echo(f"Connecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
+        tables = extract_metadata(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -978,6 +1010,7 @@ def comply(config, server, database, username, password, connection_string, dial
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -997,11 +1030,11 @@ def comply(config, server, database, username, password, connection_string, dial
     click.echo(f"Output:   {output}")
     click.echo(f"{'='*44}\n")
 
-    click.echo("Connecting to SQL Server...")
+    click.echo(f"Connecting to {adapter.display_name}...")
     try:
-        tables = extract_metadata(conn_str)
-        views = extract_views(conn_str)
-        procedures = extract_procedures(conn_str)
+        tables = extract_metadata(adapter)
+        views = extract_views(adapter)
+        procedures = extract_procedures(adapter)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -1018,8 +1051,15 @@ def comply(config, server, database, username, password, connection_string, dial
         if suppressed:
             click.echo(f"Suppressed {suppressed} finding(s) via the allowlist.")
 
+    # The access audit reads SQL Server object grants; skip it (with a note) on
+    # dialects that don't support it, and when --no-access-audit is given.
+    do_access_audit = adapter.capabilities.access_audit and not no_access_audit
+    if not no_access_audit and not adapter.capabilities.access_audit:
+        click.echo(click.style(
+            f"  ! access audit skipped: not available on {adapter.display_name}; "
+            f"reporting regulations + lineage only.", fg='yellow'), err=True)
     report = collect_compliance(database, tables, findings, views=views, procedures=procedures,
-                                connection_string=None if no_access_audit else conn_str)
+                                connection_string=conn_str if do_access_audit else None)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
