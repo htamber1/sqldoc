@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS docs (
     html       TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pii_snapshots (
+    db_name   TEXT PRIMARY KEY,
+    snap_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     db_name     TEXT NOT NULL,
@@ -117,6 +122,20 @@ class AgentStore:
                 "ON CONFLICT(db_name) DO UPDATE SET cache_json=excluded.cache_json, "
                 "updated_at=excluded.updated_at",
                 (db_name, json.dumps(cache), _now()))
+
+    def get_pii_snapshot(self, db_name: str):
+        with self._conn() as c:
+            row = c.execute("SELECT snap_json FROM pii_snapshots WHERE db_name=?",
+                            (db_name,)).fetchone()
+        return json.loads(row["snap_json"]) if row else None
+
+    def save_pii_snapshot(self, db_name: str, snap: dict):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO pii_snapshots(db_name, snap_json, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(db_name) DO UPDATE SET snap_json=excluded.snap_json, "
+                "updated_at=excluded.updated_at",
+                (db_name, json.dumps(snap), _now()))
 
     # --- docs --------------------------------------------------------------
 
