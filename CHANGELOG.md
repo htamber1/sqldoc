@@ -4,7 +4,15 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.4.0] — 2026-07-11
+
+Two AI/compliance capability areas land as new commands, taking sqldoc to seven
+commands. **`sqldoc insights`** brings AI-powered analysis (natural-language-to-
+SQL, schema anomaly detection, an auto-generated business glossary, and
+relationship inference), and **`sqldoc comply`** expands compliance with
+per-regulation HIPAA/GDPR/PCI-DSS reports, data-lineage tracking, and access
+auditing. Both follow the established pattern: a dark HTML report plus
+machine-readable `--json`.
 
 ### Added — `sqldoc comply` (compliance expansion)
 A seventh command building on the PII scanner (schema + catalog metadata only —

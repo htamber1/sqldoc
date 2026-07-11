@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based), a **data-quality profiler** (`sqldoc quality`, aggregate reads), and a **schema intelligence** analyzer (`sqldoc intel`, metadata-only). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), and **`sqldoc intel`** (schema intelligence); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
+`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. It has grown into a **seven-command** platform. The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance scan), **`sqldoc health`** (DMV performance/health), **`sqldoc quality`** (aggregate data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI-powered: NL-to-SQL, anomalies, glossary, relationship inference), and **`sqldoc comply`** (HIPAA/GDPR/PCI-DSS reports, data lineage, access audit); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
-## Project status (v1.3.0, as of 2026-07-11)
+## Project status (v1.4.0, as of 2026-07-11)
 
-Shippable five-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence). Tags **v1.0.0 / v1.1.0 / v1.2.0 / v1.3.0** pushed to `github.com/htamber1/sqldoc`. **140 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump.
+Shippable seven-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI insights), **`sqldoc comply`** (compliance expansion). Tags **v1.0.0 → v1.4.0** pushed to `github.com/htamber1/sqldoc`. **162 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump. **CI is live** (`.github/workflows/main.yml`, added on the remote 2026-07-11).
 
 ### What's built (all shipped + tested)
 **`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
@@ -27,25 +27,21 @@ Shippable five-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan`
 
 **JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json` / `quality --json` / `intel --json`.
 
-**Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite + `tests/conftest.py` fake-pyodbc; GitHub Actions CI (`.github/workflows/ci.yml`); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
+**Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite (**162 tests**) + `tests/conftest.py` fake-pyodbc (token-routed cursor: extractor + DMV/quality/permission queries; per-command `fake_*_rows` fixtures); GitHub Actions CI (`.github/workflows/main.yml` on the remote); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
 
 ### Outstanding manual steps (need the user's credentials — see PUBLISHING.md)
-1. **Push `.github/workflows/ci.yml`** — the git PAT lacks the `workflow` scope, so the file is on disk (untracked, never committed) but not pushed. Add the scope + push, or paste via the GitHub web UI. Contains a `test` job (pytest) + a guarded `pii-gate` job.
-2. **Publish to PyPI** — builds + `twine check` pass, name `sqldoc` is free. Follow `PUBLISHING.md`. Decide first: (a) a license, (b) public PyPI vs. the paid tiers. Bumped to **1.3.0** — rebuild the sdist/wheel before uploading.
-3. **GitHub Release pages** for the four tags (optional; the tags themselves exist). The `v1.3.0` tag was created with annotated release notes (see the tag message) — turn it into a GitHub Release when convenient.
+1. **CI is live** — the remote now has `.github/workflows/main.yml` ("Add CI workflow for testing and PII compliance", added 2026-07-11). A local untracked `.github/workflows/ci.yml` (the older, never-committed version) still sits on disk; it is now redundant with `main.yml` — delete it or leave it untracked. No action needed unless consolidating.
+2. **Publish to PyPI** — builds + `twine check` pass, name `sqldoc` is free. Follow `PUBLISHING.md`. Decide first: (a) a license, (b) public PyPI vs. the paid tiers. At **1.4.0** — rebuild the sdist/wheel before uploading.
+3. **GitHub Release pages** for the tags (optional; the tags themselves exist). Each `vX.Y.0` tag carries annotated release notes — turn them into GitHub Releases when convenient.
 
-### Shipped in v1.3.0
-- **JSON export** — `sqldoc doc --format json` + `scan/health/quality/intel --json` (machine-readable output for programmatic consumers).
-- **Constraints** — check/unique/default + FK referential actions extracted, rendered (all four formats), and diffed in snapshots.
-- **Scan depth** — 6 new PII categories (~21 total), numeric confidence score + `--confidence-threshold`, per-column `pii_allowlist:`.
-- **`--include-definitions`** — opt-in; sends view/proc/trigger SQL to the AI; widened `Privacy:` banner + cloud warning; body-aware cache.
-- **`sqldoc health`** (DMV analysis), **`sqldoc quality`** (aggregate data profiling), **`sqldoc intel`** (naming / orphaned-FK / impact / migration generation).
+### Shipped in v1.3.0 / v1.4.0
+- **v1.3.0** — JSON export (`doc --format json` + `--json` on the analysis commands); constraints (check/unique/default + FK actions); scan depth (6 new PII categories, `--confidence-threshold`, `pii_allowlist:`); `--include-definitions`; and the `health`, `quality`, `intel` commands.
+- **v1.4.0** — **`sqldoc insights`** (NL-to-SQL via `--ask`, heuristic anomaly detection, AI business glossary, relationship inference) and **`sqldoc comply`** (per-regulation HIPAA/GDPR/PCI-DSS reports + controls, data-lineage tracking, access audit over `sys.database_permissions`).
 
 ### Next session — planned features
-Two new capability areas (each likely its own command or a group of subcommands, following the `health`/`quality`/`intel` pattern: a `*.py` analysis module + `*_renderer.py` (HTML + `build_*_json`) + a CLI command + fake-pyodbc-backed tests):
-- **AI-Powered Insights** — natural-language-to-SQL query builder (schema-grounded prompt → SQL, metadata-only); **schema anomaly detection** (AI review of the extracted model for smells); **business glossary auto-generator** (term extraction from names + descriptions); **relationship inference** for tables without explicit FKs (extend `intel`'s orphaned-FK heuristic with AI + column-profile signals). Respect the local-first / cloud-confirm boundary; metadata-only unless `--include-definitions`.
-- **Compliance Expansion** — detailed **HIPAA / GDPR / PCI-DSS** compliance reports (per-regulation control mapping built on `scan`'s findings); **data lineage tracking** (column-level flow via view/proc definition parsing, building on `intel`'s impact graph); **access audit reports** (`sys.database_permissions` / `sys.database_principals` — who can touch which regulated columns).
 - **Entitlement layer** (unblocks paid tiers + public PyPI): license-key gating for the paid commands, audit logs, air-gapped-mode validation.
+- **Deepen `insights`** — schema anomaly detection is currently heuristic; add an optional AI review pass over the model for subtler smells; enrich relationship inference with data-profile signals (join `quality`'s cardinality/overlap stats).
+- **Deepen `comply`** — column-level lineage (not just table-level); expand `extract_permissions` to resolve role membership + server-level rights; per-regulation CSV/PDF export.
 - Smaller: **ER layout toggles** (key-columns-only / connected-only); **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
 
 ### Standing decisions
