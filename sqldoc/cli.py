@@ -24,6 +24,8 @@ from sqldoc.intel import collect_intel, summarize as intel_summarize
 from sqldoc.intel_renderer import render_intel_html, build_intel_json
 from sqldoc.insights import collect_insights, summarize as insights_summarize
 from sqldoc.insights_renderer import render_insights_html, build_insights_json
+from sqldoc.comply import collect_compliance, summarize as comply_summarize
+from sqldoc.comply_renderer import render_comply_html, build_comply_json
 
 load_dotenv()
 
@@ -914,6 +916,96 @@ def insights(config, server, database, username, password, connection_string, sc
     click.echo(f"Open {output} in your browser for the full insights report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to analyze')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='compliance-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
+@click.option('--no-access-audit', 'no_access_audit', is_flag=True, default=False,
+              help='Skip reading sys.database_permissions (use if the account lacks VIEW DEFINITION)')
+def comply(config, server, database, username, password, connection_string, schemas, output, json_out, no_access_audit):
+    """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
+
+    Groups the PII scan findings by regulation (with the controls each requires),
+    traces data lineage through view/procedure definitions, and cross-references
+    object grants (sys.database_permissions) against tables holding regulated
+    data. Reads schema + catalog metadata only — never table row data.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    try:
+        custom_cats = load_custom_categories(cfg.get('pii_patterns'))
+    except ValueError as e:
+        raise click.UsageError(f"Invalid pii_patterns in config: {e}")
+    allowlist = cfg.get('pii_allowlist') or []
+    if not isinstance(allowlist, list):
+        raise click.UsageError("pii_allowlist in config must be a list of column patterns.")
+
+    click.echo(f"\nsqldoc v{__version__}  -  Compliance report")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo("Connecting to SQL Server...")
+    try:
+        tables = extract_metadata(conn_str)
+        views = extract_views(conn_str)
+        procedures = extract_procedures(conn_str)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    if schemas:
+        allow = [s.strip() for s in schemas.split(',')]
+        tables = [t for t in tables if t.schema in allow]
+        views = [v for v in views if v.schema in allow]
+        procedures = [p for p in procedures if p.schema in allow]
+
+    findings = scan_tables(tables, extra_categories=custom_cats)
+    if allowlist:
+        findings, suppressed = apply_allowlist(findings, allowlist)
+        if suppressed:
+            click.echo(f"Suppressed {suppressed} finding(s) via the allowlist.")
+
+    report = collect_compliance(database, tables, findings, views=views, procedures=procedures,
+                                connection_string=None if no_access_audit else conn_str)
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
+    s = comply_summarize(report)
+    click.echo(
+        click.style(f"HIPAA: {s['hipaa']}", fg='red')
+        + click.style(f"    GDPR: {s['gdpr']}", fg='yellow')
+        + click.style(f"    PCI-DSS: {s['pci_dss']}", fg='blue')
+        + f"    Lineage flows: {s['lineage_flows']}    Access alerts: {s['access_alerts']}"
+    )
+
+    click.echo("\nRendering report...")
+    render_comply_html(database, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_comply_json(database, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable report written to {json_out}")
+    click.echo(f"Open {output} in your browser for the full compliance report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -937,6 +1029,7 @@ cli.add_command(health, name='health')
 cli.add_command(quality, name='quality')
 cli.add_command(intel, name='intel')
 cli.add_command(insights, name='insights')
+cli.add_command(comply, name='comply')
 
 
 if __name__ == '__main__':

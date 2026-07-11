@@ -6,6 +6,20 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 
 ## [Unreleased]
 
+### Added — `sqldoc comply` (compliance expansion)
+A seventh command building on the PII scanner (schema + catalog metadata only —
+no row data); dark HTML report + `--json`:
+- **Per-regulation reports** — findings grouped by **HIPAA / GDPR / PCI-DSS**,
+  each showing the exact regulated columns and the controls that regulation
+  typically requires (an in-scope / no-findings verdict per regime).
+- **Data lineage** — traces flows through view/procedure SQL: a view reads its
+  source tables; a procedure's `INSERT … SELECT` is a directional
+  table-to-table write.
+- **Access audit** — object-level grants from `sys.database_permissions`
+  cross-referenced with the PII findings ("which principals can read regulated
+  columns"); DENY grants excluded, degrades gracefully without VIEW DEFINITION
+  (`--no-access-audit` to skip). Honours `pii_patterns:` / `pii_allowlist:`.
+
 ### Added — `sqldoc insights` (AI-powered schema insights)
 A sixth command combining heuristic and AI analysis (metadata only — never row
 data); dark HTML report + `--json`:

@@ -109,6 +109,8 @@ class FakeCursor:
             self._last = "missing"
         elif "dm_db_index_physical_stats" in sql:
             self._last = "frag"
+        elif "database_permissions" in sql:
+            self._last = "perms"
         elif "dup_rows" in sql:
             self._last = "qdup"
         elif "non_null" in sql:
@@ -150,6 +152,24 @@ class FakeConnection:
 
     def close(self):
         pass
+
+
+@pytest.fixture
+def fake_permission_rows():
+    """Rows sys.database_permissions would return (object-level grants)."""
+    return {
+        "perms": [
+            FakeRow(principal_name="app_reader", principal_type="SQL_USER",
+                    permission_name="SELECT", state_desc="GRANT",
+                    schema_name="dbo", object_name="People", object_type="USER_TABLE"),
+            FakeRow(principal_name="analyst", principal_type="SQL_USER",
+                    permission_name="SELECT", state_desc="DENY",
+                    schema_name="dbo", object_name="People", object_type="USER_TABLE"),
+            FakeRow(principal_name="app_reader", principal_type="SQL_USER",
+                    permission_name="SELECT", state_desc="GRANT",
+                    schema_name="dbo", object_name="Products", object_type="USER_TABLE"),
+        ],
+    }
 
 
 @pytest.fixture
