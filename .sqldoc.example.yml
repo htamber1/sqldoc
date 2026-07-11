@@ -55,3 +55,37 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   - dbo.Config.ContactEmail       # this specific column is a support inbox, not PII
 #   - "*.TestSSN"                    # any column named TestSSN
 #   - dbo.Staging.*                  # everything in a staging table
+
+# --- Background monitoring agent for `sqldoc agent` (optional) ---
+# `sqldoc agent start` launches a persistent daemon that polls each database
+# below, diffs the schema, re-documents only changed objects (reusing the AI
+# cache), tracks health + PII trends, serves a live dashboard, and alerts on
+# changes. State lives in ~/.sqldoc/agent.db.  Commands: start / stop / status /
+# logs (-f to follow).
+# agent:
+#   interval_minutes: 30          # how often to poll each database
+#   dashboard_port: 8080          # http://127.0.0.1:8080
+#   mode: local                   # default AI mode for enrichment
+#   no_ai: false                  # true = skip AI docs (schema-only monitoring)
+#   concurrency: 8
+#   databases:                    # monitor as many as you like, simultaneously
+#     - name: prod-sqlserver
+#       server: localhost
+#       database: AdventureWorks2022
+#       username: sa
+#       password: "***"
+#     - name: analytics-postgres
+#       connection_string: "postgresql://user:pw@warehouse:5432/analytics"
+#     - name: local-sqlite
+#       connection_string: "./app.db"
+#       no_ai: true
+#   notifications:
+#     slack_webhook: "https://hooks.slack.com/services/T00/B00/XXXX"
+#     email:
+#       smtp_host: smtp.example.com
+#       smtp_port: 587
+#       username: alerts@example.com
+#       password: "***"
+#       from: sqldoc@example.com
+#       to: [dba@example.com]
+#     on: [schema_change, new_pii, health_degradation]   # which events to send

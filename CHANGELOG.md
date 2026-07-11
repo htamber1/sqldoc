@@ -4,6 +4,41 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] — 2026-07-11
+
+**`sqldoc agent` — a persistent background monitoring daemon.** Turns sqldoc from
+a run-it-yourself CLI into a living database monitoring system: it polls your
+databases on an interval, keeps documentation always-current, tracks schema
+changes / health / PII risk over time, serves a local dashboard, and alerts you
+when things change.
+
+### Added — `sqldoc agent`
+- **`sqldoc agent start`** launches a background daemon (detached process; PID +
+  log under `~/.sqldoc/`). `--foreground` runs it inline. **`stop`** shuts it down
+  gracefully (stop-flag file, terminate fallback). **`status`** shows what's
+  monitored, last run times, PII score, and health issues. **`logs [-n N] [-f]`**
+  tails the agent log.
+- **Configurable polling** (default every 30 min) per database. Each poll
+  extracts the schema, diffs it against the last snapshot, and **re-generates AI
+  documentation only for changed objects** by reusing the per-database
+  description cache. Handles **multiple databases simultaneously** (one poller
+  thread each) across any supported dialect.
+- **Local web dashboard** on `http://127.0.0.1:8080` (stdlib http.server, no new
+  dependency): an overview of every database (PII risk score, health issues,
+  table counts, last run), a per-database page with the schema-change timeline
+  and health/PII trend sparklines, the always-current documentation at
+  `/db/<name>/doc`, and a JSON API.
+- **Notifications** via Slack incoming-webhooks and email (SMTP) for schema
+  changes, new PII findings, and health degradation — with an `on` allowlist.
+  Each channel is isolated so a failing webhook never interrupts monitoring.
+- **State** lives in a local SQLite database (`~/.sqldoc/agent.db`): snapshots,
+  per-database AI caches, rendered docs, run history, a change/alert timeline,
+  and a metrics time-series. Configuration goes in the `.sqldoc.yml` `agent:`
+  section (see `.sqldoc.example.yml`).
+- Built as a proper threading service (dashboard thread + per-database poller
+  threads, `stop_event`-driven shutdown). 47 new tests, including a real
+  end-to-end run against a temporary SQLite database.
+
 ## [1.6.1] — 2026-07-11
 
 Oracle support and cross-dialect compliance. A seventh engine — **Oracle

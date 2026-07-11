@@ -5,17 +5,18 @@
 [![Python](https://img.shields.io/pypi/pyversions/sqldoc.svg)](https://pypi.org/project/sqldoc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A seven-command database platform** for **SQL Server, PostgreSQL, MySQL,
-SQLite, Snowflake, Oracle, and Azure SQL** — documentation, PII/compliance
+**A database documentation & compliance platform** for **SQL Server, PostgreSQL,
+MySQL, SQLite, Snowflake, Oracle, and Azure SQL** — documentation, PII/compliance
 scanning, health analysis, data-quality profiling, schema intelligence, AI
-insights, and compliance reporting. One CLI, self-contained HTML reports, and
+insights, compliance reporting, and a **background monitoring agent** with a live
+dashboard and Slack/email alerts. One CLI, self-contained HTML reports, and
 machine-readable `--json` for every command.
 
 `sqldoc` connects to your database, reads its schema (and, for a couple of
 commands, aggregate statistics — never row data), optionally uses an LLM to write
 plain-English descriptions, and produces reports you can open in any browser or feed
 to another tool. Documentation, PII scanning, schema intelligence, and AI insights
-run on **all six engines** via a common adapter layer; `health` and `quality` run on
+run on **all seven engines** via a common adapter layer; `health` and `quality` run on
 SQL Server, PostgreSQL, and MySQL. Pick the engine with `--dialect` or let it
 auto-detect from the connection string. SQLite uses the Python stdlib and SQL Server
 ships in the core install; the Postgres/MySQL/Snowflake drivers are optional
@@ -34,6 +35,11 @@ sqldoc doc --server localhost --database AdventureWorks2022 \
 # Scan for PII / regulated columns:
 sqldoc scan --server localhost --database AdventureWorks2022 \
     --username sa --password '***' --output pii-report.html
+
+# Or run it as a live monitoring agent (config in .sqldoc.yml, dashboard on :8080):
+sqldoc agent start          # background daemon: polls, diffs, docs, alerts
+sqldoc agent status         # what's monitored + last run times
+sqldoc agent logs -f        # follow the log;  sqldoc agent stop  to shut down
 ```
 
 Extraction needs the **Microsoft ODBC Driver 18 for SQL Server** on the host
@@ -240,6 +246,37 @@ pii_allowlist:
 
 > `.sqldoc.yml` is **gitignored** because it can contain a password. Keep secrets out
 > of it (use `--password` or `.env`) if you plan to share it.
+
+## Live monitoring — `sqldoc agent`
+
+Instead of running sqldoc by hand, run it as a persistent background agent that
+keeps a living view of your databases:
+
+```bash
+sqldoc agent start          # spawn the background daemon (or --foreground)
+sqldoc agent status         # what's monitored, last run, PII score, health
+sqldoc agent logs -f        # tail the log
+sqldoc agent stop           # graceful shutdown
+```
+
+Configure it under an `agent:` section in `.sqldoc.yml` (see
+`.sqldoc.example.yml`) — one or more databases across any supported dialect, a
+poll interval, a dashboard port, and optional Slack/email alerts. On each poll
+the agent:
+
+- extracts the schema and **diffs it** against the last snapshot;
+- **re-generates AI documentation only for changed objects** (reusing the
+  per-database description cache), so incremental runs are cheap;
+- tracks **health** and a **PII risk score** over time;
+- serves an always-current **dashboard** at `http://127.0.0.1:8080` — overview
+  cards, a per-database schema-change timeline, trend sparklines, and the full
+  generated docs;
+- sends **notifications** (Slack webhook / email) on schema changes, new PII
+  findings, and health degradation.
+
+State lives in a local SQLite database (`~/.sqldoc/agent.db`); nothing about the
+monitoring itself leaves your machine (AI descriptions follow the same
+local-first boundary as the rest of sqldoc).
 
 ## How does it compare?
 
