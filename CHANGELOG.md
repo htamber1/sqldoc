@@ -6,6 +6,20 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 
 ## [Unreleased]
 
+### Added — `sqldoc intel` (schema intelligence)
+A fifth command that analyzes the extracted schema (no row data):
+- **Naming conventions** — infers the dominant identifier style (Pascal / snake
+  / camel / UPPER) for tables and columns and flags outliers, plus a
+  primary-key naming check.
+- **Orphaned FKs** — columns named like a foreign key (`CustomerID`) that a
+  table exists for, but which carry no FK constraint (implied, unenforced).
+- **Impact analysis** — for each table, what depends on it (FKs pointing at it +
+  views/procedures/triggers whose SQL references it): "what breaks if you drop
+  this".
+- **Migration generation** — with `--baseline <snapshot.json>`, a review-ready
+  DDL script from the schema diff (`--migration-out` to save the `.sql`).
+Dark HTML report + `--json`.
+
 ### Added — `sqldoc quality` (data-quality profiling)
 A fourth command that profiles the data itself, in **aggregate only** (COUNT /
 COUNT DISTINCT / MIN / MAX / GROUP BY — nothing leaves the machine, no AI):

@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based) and a **data-quality profiler** (`sqldoc quality`, aggregate reads). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), **`sqldoc health`** (DMV health), and **`sqldoc quality`** (data profiling); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
+`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based), a **data-quality profiler** (`sqldoc quality`, aggregate reads), and a **schema intelligence** analyzer (`sqldoc intel`, metadata-only). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), and **`sqldoc intel`** (schema intelligence); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
 ## Project status (v1.2.0, as of 2026-07-10)
 
-Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan`** (PII/compliance). Tags **v1.0.0 / v1.1.0 / v1.2.0** pushed to `github.com/htamber1/sqldoc`. **79 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`).
+Shippable five-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence). Tags **v1.0.0 / v1.1.0 / v1.2.0** pushed to `github.com/htamber1/sqldoc` (post-1.2 features on `main`, unreleased). **140 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`).
 
 ### What's built (all shipped + tested)
 **`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
@@ -19,7 +19,9 @@ Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan
 
 **`sqldoc quality`** — `quality.py` (aggregate-only data profiling: per-column null rate, distinct/cardinality, min/max, blank-string count, most-frequent values `--top-values`; full-row duplicate detection via GROUP BY, `--no-duplicates` to skip; each column/table isolated in try/except; **reads row data in aggregate** — never row dumps, nothing leaves the machine) → `quality_renderer.py` (dark HTML with flag filters + `build_quality_json` for `--json`). Prints a local-only notice + confirm prompt (`--yes`).
 
-**JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json` / `quality --json`.
+**`sqldoc intel`** — `intel.py` (metadata-only schema intelligence: naming-convention analyzer via a dominant-style vote per identifier class + PK naming; orphaned-FK detector — `<Table>ID`-shaped columns without a constraint where the table exists; impact analysis — inbound FK graph + word-boundary search of view/proc/trigger definitions for "what breaks if you drop this table"; migration generator from a baseline snapshot diff via `generate_migration`, `--baseline` + `--migration-out`) → `intel_renderer.py` (dark HTML + `build_intel_json` for `--json`).
+
+**JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json` / `quality --json` / `intel --json`.
 
 **Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite + `tests/conftest.py` fake-pyodbc; GitHub Actions CI (`.github/workflows/ci.yml`); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
 
@@ -28,12 +30,17 @@ Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan
 2. **Publish to PyPI** — builds + `twine check` pass, name `sqldoc` is free. Follow `PUBLISHING.md`. Decide first: (a) a license, (b) public PyPI vs. the paid tiers.
 3. **GitHub Release pages** for the three tags (optional; the tags themselves exist).
 
+### Recently shipped (post-1.2.0, on `main`, unreleased)
+- **JSON export** — `sqldoc doc --format json` + `scan/health/quality/intel --json` (machine-readable output for programmatic consumers).
+- **Constraints** — check/unique/default + FK referential actions extracted, rendered (all four formats), and diffed in snapshots.
+- **Scan depth** — 6 new PII categories, numeric confidence score + `--confidence-threshold`, per-column `pii_allowlist:`.
+- **`--include-definitions`** — opt-in; sends view/proc/trigger SQL to the AI; widened `Privacy:` banner + cloud warning; body-aware cache.
+- **`sqldoc health`** (DMV analysis), **`sqldoc quality`** (aggregate data profiling), **`sqldoc intel`** (naming / orphaned-FK / impact / migration generation).
+
 ### Next session — planned features
 - **Entitlement layer** (unblocks paid tiers + public PyPI): license-key gating for `scan`, audit logs, air-gapped-mode validation.
-- **JSON export** — `--format json` (doc) + machine-readable findings (scan) for programmatic consumers.
-- **Constraints** (check/unique/default, FK actions) — the last object type not yet extracted; **ER layout toggles** (key-columns-only / connected-only).
-- **`--include-definitions`** opt-in — send view/proc/trigger bodies to the AI for richer descriptions (must update the `Privacy:` banner + cloud warning; off by default).
-- **Scan depth** — more PII categories + false-positive tuning; a confidence-threshold flag; per-column suppression/allowlist so known-safe columns don't re-alert.
+- **Tag & release a new version** covering the post-1.2.0 work above (bump `__version__` + the hardcoded `v1.2.0` banner strings; move CHANGELOG `[Unreleased]` to a version). Consider `1.3.0`.
+- **ER layout toggles** (key-columns-only / connected-only).
 - **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
 
 ### Standing decisions

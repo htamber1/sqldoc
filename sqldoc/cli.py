@@ -19,6 +19,8 @@ from sqldoc.health import collect_health, summarize as health_summarize
 from sqldoc.health_renderer import render_health_html, build_health_json
 from sqldoc.quality import collect_quality, summarize as quality_summarize
 from sqldoc.quality_renderer import render_quality_html, build_quality_json
+from sqldoc.intel import collect_intel, summarize as intel_summarize
+from sqldoc.intel_renderer import render_intel_html, build_intel_json
 
 load_dotenv()
 
@@ -714,6 +716,89 @@ def quality(config, server, database, username, password, connection_string, sch
     click.echo(f"Open {output} in your browser for the full data-quality report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to analyze')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='intel-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
+@click.option('--baseline', default=None, help='A prior schema snapshot (JSON) to diff against; enables migration-script generation')
+@click.option('--migration-out', 'migration_out', default=None, help='Write the generated migration DDL to this .sql path (requires --baseline)')
+def intel(config, server, database, username, password, connection_string, schemas, output, json_out, baseline, migration_out):
+    """Schema intelligence: naming, orphaned FKs, impact analysis, migrations.
+
+    Analyzes the extracted schema (no row data): flags inconsistent naming and
+    implied-but-unenforced foreign keys, maps what depends on each table, and —
+    with --baseline <snapshot.json> — generates a review-ready migration script
+    from the differences.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    click.echo("\nsqldoc v1.2.0  -  Schema intelligence")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo("Connecting to SQL Server...")
+    try:
+        tables = extract_metadata(conn_str)
+        views = extract_views(conn_str)
+        procedures = extract_procedures(conn_str)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    if schemas:
+        allow = [s.strip() for s in schemas.split(',')]
+        tables = [t for t in tables if t.schema in allow]
+        views = [v for v in views if v.schema in allow]
+        procedures = [p for p in procedures if p.schema in allow]
+
+    baseline_snapshot = None
+    if baseline:
+        baseline_snapshot = load_snapshot(baseline)
+        if baseline_snapshot is None:
+            click.echo(f"Baseline snapshot not found at {baseline}; skipping migration generation.", err=True)
+
+    report = collect_intel(database, tables, views=views, procedures=procedures,
+                           baseline_snapshot=baseline_snapshot)
+
+    s = intel_summarize(report)
+    click.echo(
+        click.style(f"Naming issues: {s['naming_issues']}", fg='yellow')
+        + click.style(f"    Orphaned FKs: {s['orphan_fks']}", fg='red')
+        + click.style(f"    High-impact tables: {s['high_impact_tables']}", fg='magenta')
+        + (f"    Migration: generated" if s['has_migration'] else "")
+    )
+
+    click.echo("\nRendering report...")
+    render_intel_html(database, report, output)
+    if migration_out and report.migration_sql:
+        with open(migration_out, "w", encoding="utf-8") as f:
+            f.write(report.migration_sql)
+        click.echo(f"Migration script written to {migration_out}")
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_intel_json(database, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable report written to {json_out}")
+    click.echo(f"Open {output} in your browser for the full report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -735,6 +820,7 @@ cli.add_command(main, name='doc')
 cli.add_command(scan, name='scan')
 cli.add_command(health, name='health')
 cli.add_command(quality, name='quality')
+cli.add_command(intel, name='intel')
 
 
 if __name__ == '__main__':
