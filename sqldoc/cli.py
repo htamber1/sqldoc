@@ -3,6 +3,7 @@ import os
 import yaml
 from dotenv import load_dotenv
 import re
+from sqldoc import __version__
 from sqldoc.extractor import extract_metadata, extract_views, extract_procedures, build_connection_string
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
@@ -251,7 +252,7 @@ def main(config, server, database, username, password, connection_string, output
     else:
         privacy = f"cloud (Anthropic) - {payload} sent off-network"
 
-    click.echo(f"\nsqldoc v1.2.0")
+    click.echo(f"\nsqldoc v{__version__}")
     click.echo(f"{'='*40}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -431,7 +432,7 @@ def scan(config, server, database, username, password, connection_string, schema
     except (TypeError, ValueError):
         raise click.UsageError(f"Invalid confidence_threshold '{confidence_threshold}' (must be 0.0-1.0).")
 
-    click.echo("\nsqldoc v1.2.0  -  PII / compliance scan")
+    click.echo(f"\nsqldoc v{__version__}  -  PII / compliance scan")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -587,7 +588,7 @@ def health(config, server, database, username, password, connection_string, sche
     min_fragmentation = resolve('min_fragmentation', min_fragmentation, param='min_fragmentation')
     min_pages = resolve('min_pages', min_pages, param='min_pages')
 
-    click.echo("\nsqldoc v1.2.0  -  Database health analysis")
+    click.echo(f"\nsqldoc v{__version__}  -  Database health analysis")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -661,7 +662,7 @@ def quality(config, server, database, username, password, connection_string, sch
     no_duplicates = resolve('no_duplicates', no_duplicates, param='no_duplicates')
     yes = resolve('yes', yes)
 
-    click.echo("\nsqldoc v1.2.0  -  Data quality profiling")
+    click.echo(f"\nsqldoc v{__version__}  -  Data quality profiling")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -746,7 +747,7 @@ def intel(config, server, database, username, password, connection_string, schem
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
 
-    click.echo("\nsqldoc v1.2.0  -  Schema intelligence")
+    click.echo(f"\nsqldoc v{__version__}  -  Schema intelligence")
     click.echo(f"{'='*44}")
     click.echo(f"Server:   {server if server else '(connection string)'}")
     click.echo(f"Database: {database}")
@@ -811,7 +812,7 @@ class DefaultGroup(click.Group):
 
 
 @click.group(cls=DefaultGroup)
-@click.version_option("1.2.0", prog_name="sqldoc")
+@click.version_option(__version__, prog_name="sqldoc")
 def cli():
     """sqldoc — SQL Server documentation + PII / compliance scanner."""
 

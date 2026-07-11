@@ -21,7 +21,8 @@ def _version() -> str:
         from importlib.metadata import version
         return version("sqldoc")
     except Exception:
-        return "1.1.0"
+        from sqldoc import __version__
+        return __version__
 
 
 def build_sarif(database: str, findings: list) -> dict:

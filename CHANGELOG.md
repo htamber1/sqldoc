@@ -4,7 +4,15 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.3.0] — 2026-07-11
+
+sqldoc grows from a two-command tool into a five-command database platform.
+Three new analysis commands — **`sqldoc health`** (DMV performance/health),
+**`sqldoc quality`** (aggregate data profiling), and **`sqldoc intel`** (schema
+intelligence) — join **`doc`** and **`scan`**, each with a dark-themed HTML
+report and machine-readable `--json`. Alongside them: JSON export for
+documentation, full constraint extraction, a deeper PII scanner, and an opt-in
+to feed SQL definitions to the AI.
 
 ### Added — `sqldoc intel` (schema intelligence)
 A fifth command that analyzes the extracted schema (no row data):
