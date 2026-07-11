@@ -7,7 +7,7 @@ whether sampled values actually look like PII. Sampled values are used only for
 confidence scoring and are never stored or returned.
 """
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 from sqldoc.extractor import get_connection
 import sqldoc.ai as ai
@@ -264,6 +264,21 @@ def confirm_with_sampling(findings: list, connection_string: str, mode: str, mod
     finally:
         conn.close()
     return findings
+
+
+def findings_json(database: str, findings: list, sampled: bool = False) -> dict:
+    """Machine-readable scan result: full findings + summary, for programmatic
+    consumers (dashboards, data-catalog ingestion, CI parsing). Includes every
+    Finding field; sampled values are never part of a Finding, so none leak."""
+    from sqldoc import __version__
+    return {
+        "schema_version": 1,
+        "sqldoc_version": __version__,
+        "database": database,
+        "sampled": bool(sampled),
+        "summary": summarize(findings),
+        "findings": [asdict(f) for f in findings],
+    }
 
 
 def summarize(findings: list) -> dict:

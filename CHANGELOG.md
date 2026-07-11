@@ -4,6 +4,15 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **JSON export** — machine-readable output for programmatic consumers.
+  `sqldoc doc --format json` (or an `.json` output extension) emits the full
+  extracted model — tables, columns, indexes, triggers, views, procedures, and
+  AI descriptions — as a single JSON document. `sqldoc scan --json PATH` writes
+  the compliance summary plus every finding as JSON (mirrors `--sarif`).
+
 ## [1.2.0] — 2026-07-10
 
 Compliance scanner hardening for enterprise/CI workflows.

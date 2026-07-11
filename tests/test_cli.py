@@ -78,6 +78,19 @@ def test_format_inferred_from_extension(patched, tmp_path):
     assert out.read_text(encoding="utf-8").startswith("# DB")
 
 
+def test_doc_json_format(patched, tmp_path):
+    import json
+    out = tmp_path / "doc.json"
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-ai", "--no-snapshot", "--no-cache", "--format", "json", "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["database"] == "DB"
+    assert any(t["name"] == "Orders" for t in data["tables"])
+
+
 def test_missing_connection_settings_errors():
     res = CliRunner().invoke(cli.main, ["--no-ai", "--no-snapshot", "--no-cache"])
     assert res.exit_code != 0
@@ -157,6 +170,24 @@ def test_scan_command_writes_report(monkeypatch, tmp_path):
     assert "HIGH:" in res.output
     html = out.read_text(encoding="utf-8")
     assert "Email Address" in html and "National ID / SSN" in html
+
+
+def test_scan_json_output(monkeypatch, tmp_path):
+    import json
+    from sqldoc.extractor import Table, Column
+    t = Table("dbo", "People", 2, columns=[
+        Column("NationalID", "nvarchar", 20, True, False, False, None, None),
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [t])
+    jout = tmp_path / "findings.json"
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-baseline", "--json", str(jout), "--output", str(tmp_path / "p.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    data = json.loads(jout.read_text(encoding="utf-8"))
+    assert data["summary"]["by_risk"]["HIGH"] == 1
+    assert data["findings"][0]["category"] == "National ID / SSN"
 
 
 def test_scan_fail_on_high_exits_nonzero(monkeypatch, tmp_path):

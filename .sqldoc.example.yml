@@ -14,6 +14,8 @@ username: sa
 
 # --- Output & AI preferences (all optional) ---
 output: documentation.html
+# format: html                # html / markdown / pdf / json (default: inferred
+                              # from the output extension, else html)
 mode: local                   # local (Ollama) or cloud (Anthropic)
 # model: llama3.1:8b          # defaults per mode if omitted
 # schemas: HumanResources,Sales   # comma-separated allowlist; omit for all

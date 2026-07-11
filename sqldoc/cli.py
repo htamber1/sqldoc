@@ -7,10 +7,11 @@ from sqldoc.extractor import extract_metadata, extract_views, extract_procedures
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
+from sqldoc.json_renderer import render_json
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
 from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
                         findings_snapshot, diff_findings, iter_findings_diff_lines,
-                        load_custom_categories)
+                        load_custom_categories, findings_json)
 from sqldoc.pii_renderer import render_pii_html
 from sqldoc.sarif import render_sarif
 
@@ -21,7 +22,7 @@ CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
-    'baseline', 'no_baseline', 'sarif', 'pii_patterns', 'fail_on', 'yes',
+    'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'fail_on', 'yes',
 }
 
 
@@ -69,6 +70,7 @@ _EXT_FORMAT = {
     '.html': 'html', '.htm': 'html',
     '.md': 'markdown', '.markdown': 'markdown',
     '.pdf': 'pdf',
+    '.json': 'json',
 }
 
 
@@ -149,7 +151,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to --server/--database/--username/--password)')
 @click.option('--output', default='documentation.html', help='Output file path')
-@click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf']), help='Output format (default: inferred from --output extension, else html)')
+@click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf', 'json']), help='Output format (default: inferred from --output extension, else html)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
 @click.option('--model', default=None, help='Model to use (default: llama3.1:8b for local, claude-haiku-4-5 for cloud)')
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
@@ -214,8 +216,8 @@ def main(config, server, database, username, password, connection_string, output
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
     if not isinstance(concurrency, int) or not (1 <= concurrency <= 64):
         raise click.UsageError(f"Invalid concurrency '{concurrency}' (must be an integer 1-64).")
-    if output_format not in (None, 'html', 'markdown', 'pdf'):
-        raise click.UsageError(f"Invalid format '{output_format}' (must be html, markdown, or pdf).")
+    if output_format not in (None, 'html', 'markdown', 'pdf', 'json'):
+        raise click.UsageError(f"Invalid format '{output_format}' (must be html, markdown, pdf, or json).")
 
     output_format = resolve_format(output_format, output)
 
@@ -329,6 +331,8 @@ def main(config, server, database, username, password, connection_string, output
     elif output_format == 'pdf':
         from sqldoc.pdf_renderer import render_pdf
         render_pdf(database, tables, output, views=views, procedures=procedures)
+    elif output_format == 'json':
+        render_json(database, tables, output, views=views, procedures=procedures)
     else:
         render_html(database, tables, output, views=views, procedures=procedures)
 
@@ -349,10 +353,11 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable findings (summary + all findings) as JSON to this path')
 @click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high', 'new-high']), default='none',
               help='Exit non-zero to gate CI: high = any HIGH finding; new-high = a new HIGH finding vs the baseline')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, fail_on, yes):
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, fail_on, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -372,6 +377,7 @@ def scan(config, server, database, username, password, connection_string, schema
     baseline = resolve('baseline', baseline)
     no_baseline = resolve('no_baseline', no_baseline)
     sarif = resolve('sarif', sarif)
+    json_out = resolve('json', json_out, param='json_out')
     fail_on = resolve('fail_on', fail_on, param='fail_on')
     yes = resolve('yes', yes)
 
@@ -457,6 +463,11 @@ def scan(config, server, database, username, password, connection_string, schema
     render_pii_html(database, findings, output, sampled=sample)
     if sarif:
         render_sarif(database, findings, sarif)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(findings_json(database, findings, sampled=sample), f, indent=2, default=str)
+        click.echo(f"Machine-readable findings written to {json_out}")
 
     s = summarize(findings)
     click.echo(
