@@ -29,10 +29,10 @@ Shippable seven-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan
 
 **Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite (**162 tests**) + `tests/conftest.py` fake-pyodbc (token-routed cursor: extractor + DMV/quality/permission queries; per-command `fake_*_rows` fixtures); GitHub Actions CI (`.github/workflows/main.yml` on the remote); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
 
-### Outstanding manual steps (need the user's credentials — see PUBLISHING.md)
-1. **CI is live** — the remote now has `.github/workflows/main.yml` ("Add CI workflow for testing and PII compliance", added 2026-07-11). A local untracked `.github/workflows/ci.yml` (the older, never-committed version) still sits on disk; it is now redundant with `main.yml` — delete it or leave it untracked. No action needed unless consolidating.
-2. **Publish to PyPI** — builds + `twine check` pass, name `sqldoc` is free. Follow `PUBLISHING.md`. Decide first: (a) a license, (b) public PyPI vs. the paid tiers. At **1.4.0** — rebuild the sdist/wheel before uploading.
-3. **GitHub Release pages** for the tags (optional; the tags themselves exist). Each `vX.Y.0` tag carries annotated release notes — turn them into GitHub Releases when convenient.
+### Release / distribution state
+1. **CI is live** — `.github/workflows/main.yml` runs on the remote. The old redundant `ci.yml` was deleted (2026-07-11) now that `main.yml` covers it.
+2. **PyPI** — `sqldoc` **1.4.0 published to PyPI** (2026-07-11) from `~/.pypirc` (`__token__`). `pip install sqldoc` works. README (the PyPI long description) was rewritten for the seven-command platform + a comparison vs Redgate SQL Doc / Dataedo. **Open item:** no `LICENSE` yet — README states all-rights-reserved pending a decision; the package was published without a license classifier. Add a `LICENSE` + `license`/classifier in `pyproject.toml` before the next release if going genuinely open-source (this conflicts with the paid-tier plan in `pricing-strategy.md` — decide the model).
+3. **GitHub Releases** — create Release pages for `v1.2.0` / `v1.3.0` / `v1.4.0` from the CHANGELOG (paste-ready notes were provided in chat). The annotated tags already exist.
 
 ### Shipped in v1.3.0 / v1.4.0
 - **v1.3.0** — JSON export (`doc --format json` + `--json` on the analysis commands); constraints (check/unique/default + FK actions); scan depth (6 new PII categories, `--confidence-threshold`, `pii_allowlist:`); `--include-definitions`; and the `health`, `quality`, `intel` commands.

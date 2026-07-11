@@ -1,299 +1,273 @@
 # sqldoc
 
-[![CI](https://github.com/htamber1/sqldoc/actions/workflows/ci.yml/badge.svg)](https://github.com/htamber1/sqldoc/actions/workflows/ci.yml)
+[![CI](https://github.com/htamber1/sqldoc/actions/workflows/main.yml/badge.svg)](https://github.com/htamber1/sqldoc/actions/workflows/main.yml)
+[![PyPI](https://img.shields.io/pypi/v/sqldoc.svg)](https://pypi.org/project/sqldoc/)
+[![Python](https://img.shields.io/pypi/pyversions/sqldoc.svg)](https://pypi.org/project/sqldoc/)
 
-Automated documentation generator for **SQL Server** databases.
+**A seven-command database platform for SQL Server** — documentation, PII/compliance
+scanning, health analysis, data-quality profiling, schema intelligence, AI insights,
+and compliance reporting. One CLI, self-contained HTML reports, and machine-readable
+`--json` for every command.
 
-`sqldoc` connects to a SQL Server database, extracts its schema, uses an LLM to
-write plain-English descriptions of every table and column, and renders it all
-into a single self-contained HTML file you can open in any browser or hand to a
-colleague.
+`sqldoc` connects to a SQL Server database, reads its schema (and, for a couple of
+commands, aggregate statistics — never row data), optionally uses an LLM to write
+plain-English descriptions, and produces reports you can open in any browser or feed
+to another tool.
+
+## Quick start
+
+```bash
+pip install sqldoc
+
+# Document a database (schema-only, nothing leaves your machine):
+sqldoc doc --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --no-ai --output docs.html
+
+# Scan for PII / regulated columns:
+sqldoc scan --server localhost --database AdventureWorks2022 \
+    --username sa --password '***' --output pii-report.html
+```
+
+Extraction needs the **Microsoft ODBC Driver 18 for SQL Server** on the host
+([download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server));
+it is a system package, not a pip dependency. AI descriptions are **opt-in** and, by
+default, run **locally** against [Ollama](https://ollama.com) — see the privacy
+section below.
+
+## The seven commands
+
+| Command | What it does | Reads |
+| --- | --- | --- |
+| **`sqldoc doc`** | Schema documentation with AI descriptions, ER diagram, search. HTML / Markdown / PDF / JSON. | schema metadata |
+| **`sqldoc scan`** | PII / compliance scan — ~21 categories mapped to HIPAA / GDPR / PCI-DSS, risk dashboard, SARIF, CI gate. | schema metadata |
+| **`sqldoc health`** | DMV analysis — slow queries, dead tables, missing-index suggestions, index fragmentation. | server/DB statistics |
+| **`sqldoc quality`** | Data-quality profiling — null rates, cardinality/distribution, duplicate detection. | data (aggregate only) |
+| **`sqldoc intel`** | Schema intelligence — naming conventions, orphaned FKs, impact analysis, migration generation. | schema metadata |
+| **`sqldoc insights`** | AI insights — natural-language-to-SQL, anomaly detection, business glossary, relationship inference. | schema metadata |
+| **`sqldoc comply`** | Compliance reports — per-regulation HIPAA/GDPR/PCI-DSS scope + controls, data lineage, access audit. | schema + catalog metadata |
+
+Every command writes a self-contained dark-themed HTML report and accepts `--json`
+(or, for `doc`, `--format json`) for machine-readable output. `sqldoc` with options
+but no subcommand runs `doc` for backward compatibility.
 
 ## 🔒 Privacy guarantee
 
-**sqldoc runs on-premise by default and never reads your data.**
+**sqldoc runs on-premise by default and never reads your table row data for
+documentation, scanning, or schema analysis.**
 
-- **Local by default.** In the default local mode, all AI processing runs against
-  a [Ollama](https://ollama.com) instance on your own machine. **No data of any
-  kind leaves your network** — not schema, not metadata, nothing.
-- **Row data is never read.** sqldoc queries only SQL Server's `sys.*` catalog
-  views. It does not issue a single `SELECT` against your tables, so actual row
-  data is never read, stored, or transmitted — in *any* mode.
-- **Cloud is opt-in and explicit.** Sending anything off-network requires
-  `--mode cloud`, which prints a warning and requires interactive confirmation
-  before making a network call. Even then, only *schema metadata* (table/column
-  names, data types, keys, and row counts) is sent to the Anthropic API.
+- **Local by default.** AI processing (in `doc` and `insights`) runs against an
+  [Ollama](https://ollama.com) instance on your own machine unless you explicitly
+  pass `--mode cloud`. Nothing leaves your network in local mode.
+- **Row data is never read for metadata work.** `doc`, `scan` (without `--sample`),
+  `intel`, `insights`, and `comply` query only `sys.*` catalog views and DMVs — no
+  `SELECT` against your tables.
+- **The commands that do touch data say so and stay local.** `quality` runs
+  *aggregate-only* queries (COUNT / DISTINCT / MIN / MAX / GROUP BY) and prints a
+  confirmation prompt; `scan --sample` reads ≤5 values per flagged column purely to
+  score confidence and **never stores them**. Neither sends data off-network.
+- **Cloud is opt-in and explicit.** `--mode cloud` prints a warning and requires
+  confirmation before any network call, and sends only *schema metadata* (names,
+  types, keys) — never row data. `--include-definitions` additionally sends
+  view/procedure/trigger SQL bodies, with its own widened warning.
 
-This makes sqldoc safe to run against production and regulated databases: the
-worst-case disclosure in cloud mode is a column *name* like `Employee.Salary` —
+The worst-case disclosure in cloud mode is a column *name* like `Employee.Salary` —
 never a salary.
-
-## What it does
-
-1. **Extracts** schema metadata from the `sys.*` catalog views — tables, columns,
-   data types, primary/foreign keys, row counts, indexes, views (with their SQL
-   definitions), stored procedures (with parameters), and any existing
-   `MS_Description` extended properties.
-2. **Enriches** it with AI-generated descriptions: a short summary for each table,
-   view, and stored procedure, plus a one-line description for each column that
-   doesn't already have one. Enrichment runs concurrently (see `--concurrency`),
-   retries transient failures with exponential backoff, and caches descriptions
-   so re-running only regenerates objects whose structure changed.
-3. **Renders** a standalone HTML document — grouped by schema, with an ER diagram,
-   real-time search, and collapsible view/procedure definitions, styled inline,
-   no external assets or dependencies to serve.
-
-### HTML output — an IDE-like reading experience
-
-The HTML report is a self-contained, dark-themed app (one file, no external
-assets) built for navigating large schemas:
-
-- **Sidebar navigation tree** — a collapsible left panel lists every schema and
-  its tables/views/procedures (type-tagged); click any item to smooth-scroll to
-  its card. The whole sidebar and each schema node collapse.
-- **Interactive ER diagram** — schema-banded left-to-right layout showing only
-  FK-connected tables, with arrows colored by schema. Hover a table to spotlight
-  its relationships; click it to jump to its documentation card.
-- **Real-time search + type filter** — filter to All / Tables / Views /
-  Procedures and search across names and columns at once.
-- **Copy SQL** — one-click copy button on every view and stored-procedure
-  definition.
-- **Color-coded row counts** — green pills for populated tables, gray for empty
-  ones, with thousands separators.
-
-## Requirements
-
-- **Python 3.10+**
-- **Microsoft ODBC Driver 18 for SQL Server** installed on the host
-  ([download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server)).
-  This is a system package, not a pip dependency.
-- For **local mode**: a running [Ollama](https://ollama.com) with a model pulled
-  (default `llama3.1:8b` — `ollama pull llama3.1:8b`).
-- For **cloud mode**: an Anthropic API key.
 
 ## Installation
 
+From PyPI:
+
 ```bash
-python -m venv venv
-venv/Scripts/activate        # Windows;  source venv/bin/activate on macOS/Linux
-pip install .                # installs sqldoc and the `sqldoc` command
+pip install sqldoc
 ```
 
-Use `pip install -e .` for an editable/development install. For cloud mode,
-create a `.env` file in the working directory with your API key:
+From source (editable/development install):
+
+```bash
+git clone https://github.com/htamber1/sqldoc.git
+cd sqldoc
+python -m venv venv
+venv/Scripts/activate            # Windows;  source venv/bin/activate on macOS/Linux
+pip install -e .[test]           # includes the pytest extras
+```
+
+**Requirements:** Python 3.10+, the ODBC Driver 18 for SQL Server, and — for AI
+descriptions — either a running Ollama (local, default `llama3.1:8b`) or an Anthropic
+API key (cloud). For cloud mode, put your key in a `.env` file:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-## Usage
+## Commands in depth
 
-sqldoc has two subcommands — **`sqldoc doc`** (generate documentation) and
-**`sqldoc scan`** (scan for PII / compliance). For backward compatibility,
-`sqldoc` with options but no subcommand runs `doc`:
+### `sqldoc doc` — documentation
 
-```bash
-sqldoc doc --server <host> --database <db> --username <user> --password <pw> \
-    --output docs.html
-# equivalently: sqldoc --server <host> ... --output docs.html
-```
-
-You can also run it as a module without installing (`python -m sqldoc.cli ...`).
+Extracts tables, columns (incl. computed columns and constraints — PK/FK with
+referential actions, CHECK / UNIQUE / DEFAULT), indexes, triggers, views and
+procedures (with SQL definitions), enriches them with AI descriptions, and renders a
+single self-contained report.
 
 ```bash
-python -m sqldoc.cli --server <host> --database <db> \
-    --username <user> --password <pw> --output docs.html
+# Local AI (Ollama), HTML with ER diagram + search:
+sqldoc doc --server localhost --database AdventureWorks2022 --username sa --password '***'
+
+# Markdown / PDF / JSON — inferred from the output extension, or forced with --format:
+sqldoc doc ... --output docs.md
+sqldoc doc ... --output docs.pdf
+sqldoc doc ... --format json --output schema.json
 ```
 
-### Examples
+The HTML report is an IDE-like reading experience: a collapsible sidebar navigation
+tree, an interactive ER diagram (schema-banded, FK arrows), real-time search + type
+filter, per-table Constraints sections, one-click **Copy SQL** on every definition,
+and color-coded row counts. `--include-definitions` sends view/proc/trigger bodies to
+the AI for richer descriptions (opt-in; widens the data boundary).
 
-Local mode (default — uses Ollama, nothing leaves your network):
+**Schema change detection** — every run snapshots the schema *structure* and the next
+run prints a git-style diff (new/dropped tables & columns, type/key/constraint
+changes). `--snapshot` / `--no-snapshot`.
+
+### `sqldoc scan` — PII / compliance
+
+Flags columns likely to hold personal or regulated data by name + type, maps each to
+**HIPAA / GDPR / PCI-DSS**, rates **HIGH / MEDIUM / LOW** with a numeric confidence
+score, and writes a compliance dashboard (with CSV export).
 
 ```bash
-python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --output docs.html
+sqldoc scan --server localhost --database AdventureWorks2022 --username sa --password '***'
 ```
 
-Cloud mode (Anthropic — prompts for confirmation before sending metadata):
+- **`--confidence-threshold 0.0-1.0`** drops weak (name-only / type-mismatch) matches.
+- **`--sample`** reads ≤5 values per column and asks the AI to confirm (values never
+  stored; prompts first).
+- **`pii_allowlist:`** in `.sqldoc.yml` suppresses known-safe columns
+  (`schema.table.column`, bare `column`, or a glob like `dbo.*.Password`).
+- **`pii_patterns:`** defines org-specific categories.
+- **PII drift** (`--baseline`), **SARIF 2.1.0** (`--sarif`) for GitHub Advanced
+  Security / Azure DevOps, **JSON** (`--json`), and a **CI gate**
+  (`--fail-on high|new-high`).
+
+### `sqldoc health` — DMV analysis
+
+Reads SQL Server DMVs (statistics only) for the slowest cached queries, dead tables
+(rows + writes but no reads), optimizer missing-index suggestions with a generated
+`CREATE INDEX`, and fragmented indexes with a REBUILD/REORGANIZE call. Each check is
+isolated: a missing `VIEW SERVER STATE` degrades that section, not the whole run.
+`--top`, `--min-fragmentation`, `--min-pages`.
+
+### `sqldoc quality` — data-quality profiling
+
+Profiles the data in **aggregate only**: per-column null rate (with a high-null flag),
+distinct count/cardinality, min/max, blank counts, most-frequent values
+(`--top-values`), and full-row duplicate detection (`--no-duplicates` to skip). Prints
+a local-only notice and confirms before running (`--yes` to skip).
+
+### `sqldoc intel` — schema intelligence
+
+Naming-convention analysis (dominant style + outliers, PK naming), orphaned-FK
+detection (implied-but-unenforced relationships), impact analysis ("what breaks if you
+drop this table"), and migration-script generation from a baseline snapshot
+(`--baseline snapshot.json`, `--migration-out migration.sql`).
+
+### `sqldoc insights` — AI insights
 
 ```bash
-python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --mode cloud --output docs.html
+sqldoc insights --server localhost --database AdventureWorks2022 --username sa \
+    --password '***' --ask "which customers placed the most orders last month?"
 ```
 
-Schema-only, no AI (fastest; nothing leaves the machine):
+- **Natural-language-to-SQL** — `--ask "question"` (repeatable) returns a
+  schema-grounded T-SQL query.
+- **Anomaly detection** (heuristic, always on) — tables with no primary key, generic
+  column names, missing audit columns, and name/type mismatches (a `*Date` stored as
+  `varchar`, etc.).
+- **Business glossary** — an AI-inferred term + definition per table, rendered as a
+  searchable glossary (`--no-glossary` to skip).
+- **Relationship inference** — likely foreign keys with a confidence score and a
+  ready-to-run `ALTER TABLE … ADD CONSTRAINT`.
 
-```bash
-python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --no-ai --output docs.html
-```
+`--no-ai` still runs the heuristic anomaly + relationship analysis.
 
-Markdown export for a GitHub wiki (format inferred from the `.md` extension):
+### `sqldoc comply` — compliance expansion
 
-```bash
-python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --no-ai --output docs.md
-```
-
-PDF export (self-contained, no system libraries — uses `fpdf2`):
-
-```bash
-python -m sqldoc.cli --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --no-ai --output docs.pdf
-```
-
-### Options
-
-| Option | Description |
-| --- | --- |
-| `--server` | SQL Server hostname or IP (**required**) |
-| `--database` | Database name to document (**required**) |
-| `--username` | SQL Server username (**required**) |
-| `--password` | SQL Server password (**required**) |
-| `--connection-string` | Full ODBC connection string — an alternative to the four flags above |
-| `--output` | Output file path (default `documentation.html`) |
-| `--format html\|markdown\|pdf` | Output format. Defaults to the `--output` extension (`.md`→markdown, `.pdf`→pdf), else HTML |
-| `--mode local\|cloud` | AI backend: `local` (Ollama, default) or `cloud` (Anthropic) |
-| `--model` | Model to use. Defaults per mode: `llama3.1:8b` (local), `claude-haiku-4-5` (cloud) |
-| `--schemas` | Comma-separated list of schemas to include (default: all) |
-| `--no-ai` | Skip AI descriptions, output schema only |
-| `--concurrency` | Parallel AI calls during enrichment, 1-64 (default `8`) |
-| `--snapshot` | JSON schema-snapshot path for change detection (default `.sqldoc-snapshots/<database>.json`) |
-| `--no-snapshot` | Disable schema snapshot + change detection for this run |
-| `--cache` | AI description cache path (default `.sqldoc-cache/<database>.json`) |
-| `--no-cache` | Disable the AI description cache (always regenerate) |
-| `--config` | Path to a config file (default `.sqldoc.yml` if present) |
-| `--yes` / `-y` | Skip the cloud-mode confirmation prompt (for non-interactive/CI use) |
-
-Instead of the four connection flags you can pass a single
-`--connection-string` (handy for enterprise/Azure connection strings); the
-database name is parsed from it for labeling. Any option (and the connection
-flags) can also be supplied from a config file — see below.
-
-```bash
-python -m sqldoc.cli --connection-string \
-  "DRIVER={ODBC Driver 18 for SQL Server};SERVER=host;DATABASE=Sales;UID=user;PWD=***;TrustServerCertificate=yes;" \
-  --output docs.html
-```
+- **Per-regulation reports** — the scan findings grouped by HIPAA / GDPR / PCI-DSS,
+  each showing the regulated columns and the controls that regime typically requires.
+- **Data lineage** — flows through view/procedure SQL (a view reads its source tables;
+  a proc's `INSERT … SELECT` is a directional write).
+- **Access audit** — object-level grants from `sys.database_permissions`
+  cross-referenced with the PII findings ("who can read regulated columns");
+  `--no-access-audit` if the account lacks `VIEW DEFINITION`.
 
 ## Config file
 
-Rather than passing the same flags every run, drop a `.sqldoc.yml` in the working
-directory. Every key maps to the CLI option of the same name; an explicitly
-passed CLI flag always overrides the config, which in turn overrides the built-in
-defaults. Copy [`.sqldoc.example.yml`](.sqldoc.example.yml) to get started:
+Rather than repeating flags, drop a `.sqldoc.yml` in the working directory — every key
+maps to the CLI option of the same name (an explicit flag wins over config, which wins
+over defaults). Copy [`.sqldoc.example.yml`](.sqldoc.example.yml) to start.
 
 ```yaml
 server: localhost
 database: AdventureWorks2022
 username: sa
 mode: local
-concurrency: 8
-# password: better supplied via --password than committed to disk
+# password: better supplied via --password or .env than committed to disk
+pii_allowlist:
+  - dbo.Config.ContactEmail       # a support inbox, not personal PII
 ```
 
-Then simply:
+> `.sqldoc.yml` is **gitignored** because it can contain a password. Keep secrets out
+> of it (use `--password` or `.env`) if you plan to share it.
 
-```bash
-python -m sqldoc.cli --output docs.html          # reads .sqldoc.yml
-python -m sqldoc.cli --mode cloud --output docs.html   # override just one setting
-```
+## How does it compare?
 
-> `.sqldoc.yml` is **gitignored** because it can contain a database password.
-> Keep secrets out of it (use `--password` or `.env`) if you plan to share it.
+sqldoc overlaps with commercial documentation and data-catalog tools but takes a
+free, CLI-first, SQL-Server-focused, privacy-first angle. The table below is based on
+publicly documented capabilities — verify current features against each vendor.
 
-## Schema change detection
+| Capability | **sqldoc** | Redgate SQL Doc | Dataedo |
+| --- | --- | --- | --- |
+| Price | Free (source on GitHub) | Paid (per-user) | Paid (per-user / repo) |
+| Interface | CLI — scriptable, CI-friendly | Desktop GUI + CLI | Desktop app + web repo |
+| Databases | SQL Server | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
+| Self-contained HTML docs | ✓ | ✓ (HTML / CHM / Word / Markdown) | ✓ (web catalog) |
+| AI-written descriptions | ✓ (local Ollama **or** cloud) | ✗ | Partial (AI assist) |
+| Runs fully offline / on-prem | ✓ (local mode, no data egress) | ✓ | ✓ (on-prem repo) |
+| PII / sensitive-data detection | ✓ (+ HIPAA/GDPR/PCI mapping) | ✗ | ✓ (classification) |
+| Compliance reports (HIPAA/GDPR/PCI-DSS) | ✓ | ✗ | Partial |
+| DMV health (slow queries, missing indexes) | ✓ | ✗ | ✗ |
+| Data-quality profiling (nulls, dupes) | ✓ | ✗ | ✓ |
+| Business glossary | ✓ (auto-generated) | ✗ | ✓ (curated catalog) |
+| Data lineage | ✓ (view/proc parsing) | ✗ | ✓ (advanced, cross-object) |
+| Schema change detection / diff | ✓ | Partial | ✓ |
+| Machine-readable JSON output | ✓ (every command) | Partial | ✓ (API) |
+| Natural-language-to-SQL | ✓ | ✗ | ✗ |
 
-Every run writes a JSON snapshot of the schema's *structure* (object names,
-column types, keys, indexes, parameters — never descriptions or row data) to
-`.sqldoc-snapshots/<database>.json`. On the next run, sqldoc diffs the live
-schema against that snapshot and prints what changed, like a git diff for your
-database:
-
-```text
-Schema changes since last run  (.sqldoc-snapshots/AdventureWorks2022.json):
-+ table    Sales.Promotion  (6 columns)
-- table    dbo.LegacyAudit
-~ table    HumanResources.Employee
-    + column   PreferredName
-    - column   MiddleName
-    ~ column   MaritalStatus: type int -> nchar
-+ view     Sales.vActiveCustomers
-Schema changes: 1 table(s) added, 1 table(s) removed, 1 table(s) modified, 1 view/proc change(s)
-```
-
-New/dropped tables, new/dropped columns, and type/nullability/key changes are
-all reported. The first run just saves a baseline. Disable with `--no-snapshot`,
-or point somewhere specific with `--snapshot path.json`. Snapshots are
-gitignored by default; commit them intentionally if you want cross-commit or CI
-change tracking.
-
-## PII / compliance scanning
-
-`sqldoc scan` turns sqldoc into a compliance tool. It identifies columns that
-likely hold personal or regulated data and writes a self-contained HTML
-compliance report — a risk dashboard, per-column **HIGH / MEDIUM / LOW** ratings,
-the regulation each finding maps to (**HIPAA / GDPR / PCI-DSS**), recommended
-actions, and a CSV export.
-
-```bash
-# Name + data-type analysis only — reads no row data:
-sqldoc scan --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --output pii-report.html
-```
-
-Detection matches column names (SSN, national ID, credit card, email, phone,
-date of birth, passport, address, credentials, …) and confirms with the data
-type. Add **`--sample`** to read up to 5 values per flagged column and have the
-AI confirm whether they look like real PII:
-
-```bash
-sqldoc scan --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --sample --mode local --output pii-report.html
-```
-
-> `--sample` reads real values (which may be actual PII) purely to score
-> confidence — **sampled values are never stored**, only the verdict. It is
-> opt-in and prompts for confirmation; in cloud mode the samples are sent to the
-> API, so prefer `--mode local` for sampling.
-
-**PII drift** — each scan snapshots its findings; the next scan reports new,
-resolved, and risk-changed findings (like schema change detection, for regulated
-data). `--baseline PATH` / `--no-baseline`.
-
-**CI gating** — `--fail-on high` exits non-zero if any HIGH finding exists;
-`--fail-on new-high` fails only on a *new* HIGH finding vs the baseline. Combine
-with `--sarif` to both gate the build and upload findings.
-
-**SARIF export** — add `--sarif findings.sarif` to also emit SARIF 2.1.0 for
-**GitHub Advanced Security** / **Azure DevOps**, so PII findings appear in the
-security dashboard and can gate CI:
-
-```bash
-sqldoc scan --server localhost --database AdventureWorks2022 \
-    --username sa --password '***' --sarif findings.sarif
-```
-
-**Custom patterns** — define org-specific sensitive-column categories in
-`.sqldoc.yml` under `pii_patterns:` (checked before the built-in catalog). See
-[`.sqldoc.example.yml`](.sqldoc.example.yml):
-
-```yaml
-pii_patterns:
-  - category: "Employee ID"
-    patterns: ['\bempid\b', 'employeenumber']
-    severity: MEDIUM            # HIGH / MEDIUM / LOW
-    regulations: ["Internal Policy"]
-    action: "Restrict to HR systems."
-    types: [varchar, nvarchar]  # optional; a matching type confirms
-```
+**Where each shines.** Redgate SQL Doc is a polished static-documentation generator for
+SQL Server (Word/CHM output, source-control integration). Dataedo is a mature,
+multi-database data catalog with rich curated lineage and glossary and a team
+repository. sqldoc is free and scriptable, focuses on SQL Server, adds AI descriptions
+and a privacy-first local mode, and bundles PII/compliance, DMV health, and
+data-quality analysis that the documentation tools don't cover.
 
 ## How it works
 
-`sqldoc` is a three-stage pipeline, one module per stage:
+A linear pipeline, one module per stage, orchestrated by `cli.py`:
 
-- `sqldoc/extractor.py` — queries the `sys.*` catalog views and builds `Table` /
-  `Column` / `Index` / `View` / `StoredProcedure` dataclasses.
-- `sqldoc/ai.py` — fills in descriptions via Ollama (local) or the Anthropic SDK
-  (cloud), running the calls concurrently across a thread pool.
-- `sqldoc/renderer.py` — renders the enriched data to a single HTML file.
+- `extractor.py` — the only DB-facing code for the metadata path; queries `sys.*`
+  catalog views and builds the shared dataclasses (`Table` / `Column` / `Index` /
+  `View` / `StoredProcedure` / constraints).
+- `ai.py` — fills descriptions via Ollama (local) or the Anthropic SDK (cloud),
+  concurrently, with retry + a structural description cache.
+- Renderers — `renderer.py` (HTML), `markdown_renderer.py`, `pdf_renderer.py`,
+  `json_renderer.py`, plus a dedicated `*_renderer.py` per analysis command.
+- Analysis modules — `pii.py`, `health.py`, `quality.py`, `intel.py`, `insights.py`,
+  `comply.py`, each with a `build_*_json` for machine-readable output.
+
+Run the test suite (mocked — no live SQL Server or Ollama required) with
+`pytest -q`.
+
+## License
+
+No open-source license has been declared yet, so all rights are reserved by the
+author pending a licensing decision. If you want to use, modify, or redistribute
+sqldoc, please contact the author or watch this repository for a `LICENSE` file.
