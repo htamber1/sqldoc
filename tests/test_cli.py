@@ -117,11 +117,11 @@ def test_unknown_dialect_rejected_by_choice(patched, tmp_path):
     # Click.Choice rejects a dialect that isn't in the registry.
     res = CliRunner().invoke(cli.main, [
         "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
-        "--dialect", "oracle",
+        "--dialect", "db2",
         "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
     ])
     assert res.exit_code != 0
-    assert "oracle" in res.output.lower() or "invalid" in res.output.lower()
+    assert "db2" in res.output.lower() or "invalid" in res.output.lower()
 
 
 def test_health_rejected_on_sqlite(monkeypatch, tmp_path):

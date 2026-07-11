@@ -16,6 +16,7 @@ from sqldoc.adapters.postgres import PostgresAdapter
 from sqldoc.adapters.mysql import MySQLAdapter
 from sqldoc.adapters.sqlite import SqliteAdapter
 from sqldoc.adapters.snowflake import SnowflakeAdapter
+from sqldoc.adapters.oracle import OracleAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -34,6 +35,7 @@ DIALECTS: dict = {
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
     "snowflake": SnowflakeAdapter,
+    "oracle": OracleAdapter,
 }
 
 # What --dialect accepts, ordered supported-first for help text / error messages.
@@ -58,6 +60,8 @@ def detect_dialect(connection_string: str) -> str:
         return "mysql"
     if cs.startswith("snowflake://") or "snowflakecomputing.com" in cs:
         return "snowflake"
+    if cs.startswith(("oracle://", "oracle+")) or "oraclecloud.com" in cs:
+        return "oracle"
     if (cs.startswith(("sqlite://", "file:"))
             or cs.endswith((".db", ".sqlite", ".sqlite3", ".db3"))):
         return "sqlite"
@@ -89,6 +93,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
+    "OracleAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

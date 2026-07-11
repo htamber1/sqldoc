@@ -6,10 +6,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **A seven-command database platform** for **SQL Server, PostgreSQL, MySQL,
-SQLite, Snowflake, and Azure SQL** — documentation, PII/compliance scanning,
-health analysis, data-quality profiling, schema intelligence, AI insights, and
-compliance reporting. One CLI, self-contained HTML reports, and machine-readable
-`--json` for every command.
+SQLite, Snowflake, Oracle, and Azure SQL** — documentation, PII/compliance
+scanning, health analysis, data-quality profiling, schema intelligence, AI
+insights, and compliance reporting. One CLI, self-contained HTML reports, and
+machine-readable `--json` for every command.
 
 `sqldoc` connects to your database, reads its schema (and, for a couple of
 commands, aggregate statistics — never row data), optionally uses an LLM to write
@@ -90,17 +90,19 @@ pip install sqldoc              # SQL Server / Azure SQL (pyodbc) + SQLite (stdl
 pip install sqldoc[postgres]    # + PostgreSQL (psycopg2)
 pip install sqldoc[mysql]       # + MySQL (mysql-connector-python)
 pip install sqldoc[snowflake]   # + Snowflake (snowflake-connector-python)
+pip install sqldoc[oracle]      # + Oracle (oracledb)
 pip install sqldoc[all]         # + all optional drivers
 ```
 
 The dialect is auto-detected from the connection string (`postgresql://`,
-`mysql://`, `snowflake://`, `*.snowflakecomputing.com`, `*.db`/`*.sqlite`,
-`*.database.windows.net`) or set explicitly with
-`--dialect {sqlserver,azuresql,postgres,mysql,sqlite,snowflake}`. `doc`, `scan`,
-`intel`, and `insights` run on all six engines; `health` and `quality` run on SQL
-Server, PostgreSQL, and MySQL; the `comply` access audit is SQL Server / Azure SQL
-only. (Snowflake is currently mock-tested, not yet validated against a live
-account.)
+`mysql://`, `snowflake://`, `oracle://`, `*.snowflakecomputing.com`,
+`*.oraclecloud.com`, `*.db`/`*.sqlite`, `*.database.windows.net`) or set
+explicitly with
+`--dialect {sqlserver,azuresql,postgres,mysql,sqlite,snowflake,oracle}`. `doc`,
+`scan`, `intel`, and `insights` run on all seven engines; `health` and `quality`
+run on SQL Server, PostgreSQL, and MySQL; the `comply` access audit runs on SQL
+Server, PostgreSQL, and MySQL. (Snowflake and Oracle are currently mock-tested,
+not yet validated against a live instance.)
 
 From source (editable/development install):
 
@@ -249,7 +251,7 @@ publicly documented capabilities — verify current features against each vendor
 | --- | --- | --- | --- |
 | Price | Free / open source (MIT) | Paid (per-user) | Paid (per-user / repo) |
 | Interface | CLI — scriptable, CI-friendly | Desktop GUI + CLI | Desktop app + web repo |
-| Databases | SQL Server, PostgreSQL, MySQL, SQLite, Snowflake, Azure SQL | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
+| Databases | SQL Server, PostgreSQL, MySQL, SQLite, Snowflake, Oracle, Azure SQL | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
 | Self-contained HTML docs | ✓ | ✓ (HTML / CHM / Word / Markdown) | ✓ (web catalog) |
 | AI-written descriptions | ✓ (local Ollama **or** cloud) | ✗ | Partial (AI assist) |
 | Runs fully offline / on-prem | ✓ (local mode, no data egress) | ✓ | ✓ (on-prem repo) |

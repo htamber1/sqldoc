@@ -9,7 +9,8 @@ from sqldoc.comply import (build_regulation_sections, build_lineage, extract_per
 from sqldoc.comply_renderer import build_comply_json, render_comply_html
 from sqldoc.pii import scan_tables
 from sqldoc.extractor import Table, Column, View, StoredProcedure
-from conftest import FakeConnection
+from sqldoc.adapters.sqlserver import SqlServerAdapter
+from conftest import FakeConnection, FakeAdapter
 
 
 def _table(name, cols, schema="dbo"):
@@ -53,20 +54,38 @@ def test_build_lineage_view_and_proc_write():
     assert ("dbo.Orders", "dbo.Archive", "procedure-write") in kinds
 
 
+def test_build_lineage_handles_dialect_quoting():
+    # PostgreSQL/MySQL definitions quote identifiers differently; the INSERT
+    # INTO detection must handle "..." and `...`, not just SQL Server [ ].
+    orders = _table("orders", [_c("id", "int")], schema="public")
+    archive = _table("archive", [_c("id", "int")], schema="public")
+    proc_pg = StoredProcedure("public", "p_pg", parameters=[],
+                              definition='INSERT INTO "archive" SELECT * FROM "orders"')
+    proc_my = StoredProcedure("public", "p_my", parameters=[],
+                              definition="INSERT INTO `archive` SELECT * FROM `orders`")
+    for proc in (proc_pg, proc_my):
+        flows = build_lineage([orders, archive], [], [proc])
+        assert any(f.source == "public.orders" and f.target == "public.archive"
+                   and f.kind == "procedure-write" for f in flows)
+
+
 # --- access audit -----------------------------------------------------------
 
 def test_extract_permissions(fake_permission_rows):
-    conn = FakeConnection(fake_permission_rows)
-    import sqldoc.comply as c
-    # extract_permissions calls get_connection(cs); patch it to our fake
-    orig = c.get_connection
-    c.get_connection = lambda cs: conn
-    try:
-        perms = extract_permissions("cs")
-    finally:
-        c.get_connection = orig
+    perms = extract_permissions(FakeAdapter(FakeConnection(fake_permission_rows)))
     assert len(perms) == 3
     assert perms[0].principal == "app_reader" and perms[0].permission == "SELECT"
+
+
+def test_extract_permissions_postgres(fake_pg_grant_rows):
+    perms = extract_permissions(FakeAdapter(FakeConnection(fake_pg_grant_rows), dialect="postgres"))
+    assert len(perms) == 2
+    assert perms[0].state == "GRANT"          # table_privileges lists only grants
+    assert perms[0].permission == "SELECT" and perms[0].object == "people"
+
+
+def test_extract_permissions_unsupported_dialect_returns_empty():
+    assert extract_permissions(FakeAdapter(FakeConnection({}), dialect="sqlite")) == []
 
 
 def test_build_access_alerts_flags_grants_on_pii_tables():
@@ -87,13 +106,18 @@ def test_build_access_alerts_flags_grants_on_pii_tables():
 
 # --- orchestration + degrade -----------------------------------------------
 
-def test_collect_compliance_degrades_without_permission(monkeypatch):
-    def boom(cs):
+class _BoomAdapter:
+    dialect = "sqlserver"
+    def connect(self):
         raise PermissionError("VIEW DEFINITION denied")
-    monkeypatch.setattr(comply, "get_connection", boom)
+    def cursor(self, conn):
+        return conn.cursor()
+
+
+def test_collect_compliance_degrades_without_permission():
     tables = [_table("People", [_c("NationalID")])]
     findings = scan_tables(tables)
-    report = collect_compliance("DB", tables, findings, connection_string="cs")
+    report = collect_compliance("DB", tables, findings, adapter=_BoomAdapter())
     assert report.permissions == []
     assert report.errors and "Access audit" in report.errors[0][0]
     assert report.regulations                        # regulation sections still built
@@ -101,11 +125,11 @@ def test_collect_compliance_degrades_without_permission(monkeypatch):
 
 # --- JSON + render ----------------------------------------------------------
 
-def test_build_and_render(monkeypatch, fake_permission_rows, tmp_path):
-    monkeypatch.setattr(comply, "get_connection", lambda cs: FakeConnection(fake_permission_rows))
+def test_build_and_render(fake_permission_rows, tmp_path):
     tables = [_table("People", [_c("NationalID"), _c("CardNumber")])]
     findings = scan_tables(tables)
-    report = collect_compliance("DB", tables, findings, connection_string="cs")
+    report = collect_compliance("DB", tables, findings,
+                                adapter=FakeAdapter(FakeConnection(fake_permission_rows)))
     data = build_comply_json("DB", report)
     assert data["report_type"] == "compliance"
     assert data["summary"]["pci_dss"] >= 1
@@ -124,10 +148,11 @@ def test_comply_cli(monkeypatch, fake_permission_rows, tmp_path):
         Column("Id", "int", 4, False, True, False, None, None),
         _c("NationalID"),
     ])
-    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [people])
-    monkeypatch.setattr(cli, "extract_views", lambda cs: [])
-    monkeypatch.setattr(cli, "extract_procedures", lambda cs: [])
-    monkeypatch.setattr(comply, "get_connection", lambda cs: FakeConnection(fake_permission_rows))
+    monkeypatch.setattr(cli, "extract_metadata", lambda adapter: [people])
+    monkeypatch.setattr(cli, "extract_views", lambda adapter: [])
+    monkeypatch.setattr(cli, "extract_procedures", lambda adapter: [])
+    monkeypatch.setattr(SqlServerAdapter, "_default_connect",
+                        staticmethod(lambda cs: FakeConnection(fake_permission_rows)))
     out = tmp_path / "c.html"
     jout = tmp_path / "c.json"
     res = CliRunner().invoke(cli.cli, [
@@ -143,12 +168,12 @@ def test_comply_cli(monkeypatch, fake_permission_rows, tmp_path):
 
 def test_comply_cli_no_access_audit(monkeypatch, tmp_path):
     people = _table("People", [_c("NationalID")])
-    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [people])
-    monkeypatch.setattr(cli, "extract_views", lambda cs: [])
-    monkeypatch.setattr(cli, "extract_procedures", lambda cs: [])
-    # get_connection must NOT be called when --no-access-audit is set
-    monkeypatch.setattr(comply, "get_connection",
-                        lambda cs: (_ for _ in ()).throw(AssertionError("should not connect")))
+    monkeypatch.setattr(cli, "extract_metadata", lambda adapter: [people])
+    monkeypatch.setattr(cli, "extract_views", lambda adapter: [])
+    monkeypatch.setattr(cli, "extract_procedures", lambda adapter: [])
+    # the adapter must NOT connect when --no-access-audit is set
+    monkeypatch.setattr(SqlServerAdapter, "_default_connect",
+                        staticmethod(lambda cs: (_ for _ in ()).throw(AssertionError("should not connect"))))
     res = CliRunner().invoke(cli.cli, [
         "comply", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
         "--no-access-audit", "--output", str(tmp_path / "c.html"),

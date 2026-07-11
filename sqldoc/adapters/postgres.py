@@ -42,9 +42,9 @@ def _decode_trigger_events(tgtype: int) -> list[str]:
 class PostgresAdapter(DatabaseAdapter):
     dialect = "postgres"
     display_name = "PostgreSQL"
-    # Metadata + aggregate profiling (quality) + health via pg_stat_* views.
-    # The comply access audit reads SQL Server object grants and is not ported.
-    capabilities = Capabilities(quality=True, health=True, access_audit=False)
+    # Metadata + aggregate profiling (quality) + health via pg_stat_* views +
+    # access audit via information_schema.table_privileges.
+    capabilities = Capabilities(quality=True, health=True, access_audit=True)
 
     @staticmethod
     def _default_connect(connection_string: str):

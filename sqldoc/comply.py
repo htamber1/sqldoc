@@ -9,14 +9,18 @@ data is read:
 * **Data lineage** — parse view/procedure definitions to trace how data flows
   between tables (a view reads its source tables; a proc's ``INSERT … SELECT``
   is a directional table-to-table flow).
-* **Access audit** — read object-level grants from ``sys.database_permissions``
+* **Access audit** — read object-level grants (``sys.database_permissions`` on
+  SQL Server; ``information_schema.table_privileges`` on PostgreSQL and MySQL)
   and cross-reference them with the PII findings: "which principals can read
   regulated columns".
+
+Per-regulation reporting and data lineage are dialect-neutral (they run on the
+extracted dataclasses); the access audit dispatches on the adapter's dialect.
 """
 import re
 from dataclasses import dataclass, field
 
-from sqldoc.extractor import get_connection
+from sqldoc.dbutil import cell
 from sqldoc.pii import RISK_ORDER
 
 REGULATIONS = ["HIPAA", "GDPR", "PCI-DSS"]
@@ -124,7 +128,10 @@ def build_regulation_sections(findings) -> list:
 
 # --- data lineage ----------------------------------------------------------
 
-_INSERT_INTO = re.compile(r"insert\s+into\s+(?:\[?(\w+)\]?\.)?\[?(\w+)\]?", re.IGNORECASE)
+# INSERT INTO [schema.]table, tolerating any dialect's identifier quoting
+# (SQL Server [ ], PostgreSQL/ANSI " ", MySQL ` `).
+_Q = r'["\[\]`]?'
+_INSERT_INTO = re.compile(rf"insert\s+into\s+(?:{_Q}(\w+){_Q}\.)?{_Q}(\w+){_Q}", re.IGNORECASE)
 
 
 def _mentions(definition, table_name) -> bool:
@@ -171,35 +178,74 @@ def build_lineage(tables, views=None, procedures=None) -> list:
 
 # --- access audit ----------------------------------------------------------
 
-def extract_permissions(connection_string) -> list:
-    """Object-level grants on tables/views from sys.database_permissions."""
-    conn = get_connection(connection_string)
-    cursor = conn.cursor()
+_SQLSERVER_GRANTS = """
+    SELECT
+        pr.name AS principal_name,
+        pr.type_desc AS principal_type,
+        perm.permission_name AS permission_name,
+        perm.state_desc AS state_desc,
+        s.name AS schema_name,
+        o.name AS object_name,
+        o.type_desc AS object_type
+    FROM sys.database_permissions perm
+    INNER JOIN sys.database_principals pr ON perm.grantee_principal_id = pr.principal_id
+    INNER JOIN sys.objects o ON perm.major_id = o.object_id
+    INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+    WHERE perm.class = 1 AND perm.minor_id = 0 AND o.type IN ('U', 'V')
+    ORDER BY s.name, o.name, pr.name, perm.permission_name
+"""
+
+# information_schema.table_privileges is standard SQL; PostgreSQL and MySQL both
+# expose it. It only lists GRANTs (no DENY), so state is always "GRANT".
+_PG_GRANTS = """
+    SELECT grantee, table_schema, table_name, privilege_type
+    FROM information_schema.table_privileges
+    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY table_schema, table_name, grantee, privilege_type
+"""
+
+_MYSQL_GRANTS = """
+    SELECT grantee, table_schema, table_name, privilege_type
+    FROM information_schema.table_privileges
+    WHERE table_schema = DATABASE()
+    ORDER BY table_schema, table_name, grantee, privilege_type
+"""
+
+
+def extract_permissions(adapter) -> list:
+    """Object-level grants for the adapter's dialect, as Permission rows.
+
+    SQL Server reads ``sys.database_permissions`` (rich: includes DENY);
+    PostgreSQL/MySQL read the standard ``information_schema.table_privileges``
+    (GRANTs only). Other dialects have no ported access audit and return [].
+    """
+    dialect = getattr(adapter, "dialect", "sqlserver")
+    conn = adapter.connect()
+    cursor = adapter.cursor(conn)
     try:
-        cursor.execute("""
-            SELECT
-                pr.name AS principal_name,
-                pr.type_desc AS principal_type,
-                perm.permission_name,
-                perm.state_desc,
-                s.name AS schema_name,
-                o.name AS object_name,
-                o.type_desc AS object_type
-            FROM sys.database_permissions perm
-            INNER JOIN sys.database_principals pr ON perm.grantee_principal_id = pr.principal_id
-            INNER JOIN sys.objects o ON perm.major_id = o.object_id
-            INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
-            WHERE perm.class = 1 AND perm.minor_id = 0 AND o.type IN ('U', 'V')
-            ORDER BY s.name, o.name, pr.name, perm.permission_name
-        """)
-        perms = []
-        for r in cursor.fetchall():
-            perms.append(Permission(
-                principal=r.principal_name, principal_type=r.principal_type,
-                permission=r.permission_name, state=r.state_desc,
-                schema=r.schema_name, object=r.object_name, object_type=r.object_type,
-            ))
-        return perms
+        if dialect in ("sqlserver", "azuresql"):
+            cursor.execute(_SQLSERVER_GRANTS)
+            return [
+                Permission(
+                    principal=cell(r, "principal_name"), principal_type=cell(r, "principal_type"),
+                    permission=cell(r, "permission_name"), state=cell(r, "state_desc"),
+                    schema=cell(r, "schema_name"), object=cell(r, "object_name"),
+                    object_type=cell(r, "object_type"),
+                )
+                for r in cursor.fetchall()
+            ]
+        if dialect in ("postgres", "mysql"):
+            cursor.execute(_PG_GRANTS if dialect == "postgres" else _MYSQL_GRANTS)
+            return [
+                Permission(
+                    principal=cell(r, "grantee"), principal_type="",
+                    permission=cell(r, "privilege_type"), state="GRANT",
+                    schema=cell(r, "table_schema"), object=cell(r, "table_name"),
+                    object_type="",
+                )
+                for r in cursor.fetchall()
+            ]
+        return []
     finally:
         conn.close()
 
@@ -235,15 +281,15 @@ def build_access_alerts(permissions, findings) -> list:
 # --- orchestration ---------------------------------------------------------
 
 def collect_compliance(database, tables, findings, views=None, procedures=None,
-                       connection_string=None) -> ComplianceReport:
+                       adapter=None) -> ComplianceReport:
     report = ComplianceReport(database=database)
     report.regulations = build_regulation_sections(findings)
     report.lineage = build_lineage(tables, views, procedures)
-    if connection_string:
+    if adapter is not None:
         try:
-            report.permissions = extract_permissions(connection_string)
+            report.permissions = extract_permissions(adapter)
         except Exception as e:
-            report.errors.append(("Access audit (sys.database_permissions)",
+            report.errors.append(("Access audit (object grants)",
                                   f"{type(e).__name__}: {e}"))
     report.access_alerts = build_access_alerts(report.permissions, findings)
     return report

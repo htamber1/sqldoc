@@ -4,6 +4,36 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] — 2026-07-11
+
+Oracle support and cross-dialect compliance. A seventh engine — **Oracle
+Database** — and the `comply` access audit + data lineage now run on PostgreSQL
+and MySQL, not just SQL Server.
+
+### Added — Oracle Database
+- **`OracleAdapter`** (optional dependency: `pip install sqldoc[oracle]`) using
+  the `oracledb` driver and the `ALL_*` data-dictionary views (`ALL_TABLES`,
+  `ALL_TAB_COLUMNS`, `ALL_CONSTRAINTS`/`ALL_CONS_COLUMNS`, `ALL_INDEXES`,
+  `ALL_TRIGGERS`, `ALL_VIEWS`, `ALL_PROCEDURES`, `ALL_ARGUMENTS`), scoped to one
+  schema (owner). Auto-detected from `oracle://` URLs and `*.oraclecloud.com`.
+  **Mock-tested only** — not yet run against a live Oracle instance (needs a
+  licensed database).
+
+### Added — `comply` on PostgreSQL & MySQL
+- **Access audit** now runs on PostgreSQL and MySQL via the standard
+  `information_schema.table_privileges` (SQL Server keeps `sys.database_permissions`).
+  Grants are cross-referenced against PII findings exactly as before.
+- **Data lineage** works across dialects: the `INSERT … INTO` detector now
+  tolerates PostgreSQL/ANSI `"…"` and MySQL `` `…` `` identifier quoting, not
+  just SQL Server `[…]`.
+- **Live-validated**: PostgreSQL/Pagila (205 grants read, 29 access alerts on PII
+  tables, 57 lineage flows) and MySQL/Sakila (table grants + 48 lineage flows).
+- `PostgresAdapter` and `MySQLAdapter` now advertise `access_audit=True`.
+
+### Changed
+- `extract_permissions` and `collect_compliance` take the resolved adapter
+  (dispatching the grant SQL by dialect) instead of a raw connection string.
+
 ## [1.6.0] — 2026-07-11
 
 Two more databases and cross-dialect analysis. sqldoc now targets **six

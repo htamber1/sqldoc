@@ -1059,7 +1059,7 @@ def comply(config, server, database, username, password, connection_string, dial
             f"  ! access audit skipped: not available on {adapter.display_name}; "
             f"reporting regulations + lineage only.", fg='yellow'), err=True)
     report = collect_compliance(database, tables, findings, views=views, procedures=procedures,
-                                connection_string=conn_str if do_access_audit else None)
+                                adapter=adapter if do_access_audit else None)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)

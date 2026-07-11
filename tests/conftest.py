@@ -136,6 +136,8 @@ class FakeCursor:
             self._last = "frag"
         elif "database_permissions" in sql:
             self._last = "perms"
+        elif "table_privileges" in sql:
+            self._last = "pgperms"
         elif "dup_rows" in sql:
             self._last = "qdup"
         elif "non_null" in sql:
@@ -193,6 +195,19 @@ def fake_permission_rows():
             FakeRow(principal_name="app_reader", principal_type="SQL_USER",
                     permission_name="SELECT", state_desc="GRANT",
                     schema_name="dbo", object_name="Products", object_type="USER_TABLE"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_pg_grant_rows():
+    """Rows information_schema.table_privileges returns (PostgreSQL/MySQL)."""
+    return {
+        "pgperms": [
+            FakeRow(grantee="app_reader", table_schema="public",
+                    table_name="people", privilege_type="SELECT"),
+            FakeRow(grantee="postgres", table_schema="public",
+                    table_name="people", privilege_type="INSERT"),
         ],
     }
 

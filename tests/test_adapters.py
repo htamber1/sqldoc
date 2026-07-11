@@ -6,7 +6,7 @@ import pytest
 from sqldoc.adapters import (
     get_adapter, detect_dialect, UnsupportedDialectError,
     SqlServerAdapter, PostgresAdapter, MySQLAdapter, SqliteAdapter, SnowflakeAdapter,
-    DatabaseAdapter, Capabilities,
+    OracleAdapter, DatabaseAdapter, Capabilities,
     DIALECTS, SUPPORTED_DIALECTS, PLANNED_DIALECTS, DIALECT_CHOICES,
 )
 from conftest import FakeConnection
@@ -37,7 +37,7 @@ def test_azuresql_host_beats_sqlserver_driver():
 
 def test_all_dialects_supported():
     assert set(SUPPORTED_DIALECTS) == {
-        "sqlserver", "azuresql", "postgres", "mysql", "sqlite", "snowflake"}
+        "sqlserver", "azuresql", "postgres", "mysql", "sqlite", "snowflake", "oracle"}
     assert PLANNED_DIALECTS == []
     assert set(DIALECT_CHOICES) == set(DIALECTS)
 
@@ -50,6 +50,15 @@ def test_registry_maps_to_expected_adapters():
     assert DIALECTS["mysql"] is MySQLAdapter
     assert DIALECTS["sqlite"] is SqliteAdapter
     assert DIALECTS["snowflake"] is SnowflakeAdapter
+    assert DIALECTS["oracle"] is OracleAdapter
+
+
+@pytest.mark.parametrize("cs, expected", [
+    ("oracle://scott:tiger@host:1521/orcl", "oracle"),
+    ("myinst.adb.us-east.oraclecloud.com", "oracle"),
+])
+def test_detect_oracle(cs, expected):
+    assert detect_dialect(cs) == expected
 
 
 # --- get_adapter -----------------------------------------------------------
@@ -85,7 +94,7 @@ def test_get_adapter_mysql():
 
 def test_get_adapter_unknown_dialect_raises():
     with pytest.raises(UnsupportedDialectError) as ei:
-        get_adapter("whatever", dialect="oracle")
+        get_adapter("whatever", dialect="db2")
     assert "Unknown dialect" in str(ei.value)
 
 

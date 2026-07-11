@@ -28,9 +28,9 @@ from sqldoc.adapters.base import (
 class MySQLAdapter(DatabaseAdapter):
     dialect = "mysql"
     display_name = "MySQL"
-    # Metadata + aggregate profiling (quality) + health via performance_schema.
-    # The comply access audit is SQL-Server-specific and not ported.
-    capabilities = Capabilities(quality=True, health=True, access_audit=False)
+    # Metadata + aggregate profiling (quality) + health via performance_schema +
+    # access audit via information_schema.table_privileges.
+    capabilities = Capabilities(quality=True, health=True, access_audit=True)
 
     @staticmethod
     def _default_connect(connection_string: str):
