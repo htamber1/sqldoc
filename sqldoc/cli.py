@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import re
 from sqldoc import __version__
 from sqldoc.extractor import extract_metadata, extract_views, extract_procedures, build_connection_string
+from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError, DIALECT_CHOICES
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
@@ -31,7 +32,7 @@ load_dotenv()
 
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
-    'server', 'database', 'username', 'password', 'connection_string', 'output',
+    'server', 'database', 'username', 'password', 'connection_string', 'dialect', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'include_definitions',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
@@ -108,25 +109,43 @@ def _make_resolver(ctx, cfg):
     return resolve
 
 
-def _resolve_connection(resolve, server, database, username, password, connection_string):
+def resolve_dialect(resolve, conn_str, dialect):
+    """Resolve --dialect (explicit flag > config > auto-detect from the
+    connection string) and validate that an adapter exists for it, so an
+    unsupported/planned dialect fails loud instead of running the wrong SQL.
+    Returns the resolved dialect name."""
+    dialect = resolve('dialect', dialect)
+    try:
+        get_adapter(conn_str, dialect)   # constructed lazily; this only validates
+    except UnsupportedDialectError as e:
+        raise click.UsageError(str(e))
+    return (dialect or detect_dialect(conn_str)).lower()
+
+
+def _resolve_connection(resolve, server, database, username, password, connection_string,
+                        dialect=None):
     """Merge connection settings and return (conn_str, database, server).
-    A --connection-string takes precedence over the discrete parts."""
+    A --connection-string takes precedence over the discrete parts. `dialect`,
+    when given, is resolved and validated (raising on an unsupported dialect)."""
     server = resolve('server', server)
     database = resolve('database', database)
     username = resolve('username', username)
     password = resolve('password', password)
     connection_string = resolve('connection_string', connection_string)
     if connection_string:
-        return connection_string, (database or _parse_database(connection_string) or 'database'), server
-    missing = [n for n, v in (('server', server), ('database', database),
-                              ('username', username), ('password', password)) if not v]
-    if missing:
-        raise click.UsageError(
-            "Missing connection settings: " + ", ".join(missing) +
-            ". Provide --server/--database/--username/--password, a "
-            "--connection-string, or a .sqldoc.yml config file."
-        )
-    return build_connection_string(server, database, username, password), database, server
+        conn_str, database = connection_string, (database or _parse_database(connection_string) or 'database')
+    else:
+        missing = [n for n, v in (('server', server), ('database', database),
+                                  ('username', username), ('password', password)) if not v]
+        if missing:
+            raise click.UsageError(
+                "Missing connection settings: " + ", ".join(missing) +
+                ". Provide --server/--database/--username/--password, a "
+                "--connection-string, or a .sqldoc.yml config file."
+            )
+        conn_str = build_connection_string(server, database, username, password)
+    resolve_dialect(resolve, conn_str, dialect)
+    return conn_str, database, server
 
 
 def load_config(path: str, explicit: bool) -> dict:
@@ -166,6 +185,8 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to --server/--database/--username/--password)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--output', default='documentation.html', help='Output file path')
 @click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf', 'json']), help='Output format (default: inferred from --output extension, else html)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
@@ -180,7 +201,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--cache', default=None, help='AI description cache path (default: .sqldoc-cache/<database>.json)')
 @click.option('--no-cache', is_flag=True, default=False, help='Disable the AI description cache (always regenerate)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, connection_string, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes):
+def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -230,6 +251,9 @@ def main(config, server, database, username, password, connection_string, output
                 "--connection-string, or a .sqldoc.yml config file."
             )
         conn_str = build_connection_string(server, database, username, password)
+
+    # Resolve + validate the dialect (rejects unsupported/planned dialects).
+    resolve_dialect(resolve, conn_str, dialect)
 
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
@@ -375,6 +399,8 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='pii-report.html', help='Output HTML report path')
 @click.option('--sample', is_flag=True, default=False, help='Read up to 5 values per flagged column and use AI to confirm PII (opt-in; reads row data)')
@@ -389,7 +415,7 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high', 'new-high']), default='none',
               help='Exit non-zero to gate CI: high = any HIGH finding; new-high = a new HIGH finding vs the baseline')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes):
+def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -401,7 +427,7 @@ def scan(config, server, database, username, password, connection_string, schema
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     mode = resolve('mode', mode)
     model = resolve('model', model)
@@ -563,6 +589,8 @@ def scan(config, server, database, username, password, connection_string, schema
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist for table-scoped checks (default: all)')
 @click.option('--output', default='health-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the health report as machine-readable JSON to this path')
@@ -571,7 +599,7 @@ def scan(config, server, database, username, password, connection_string, schema
               help='Only report indexes fragmented at least this percent (default: 10)')
 @click.option('--min-pages', 'min_pages', default=100, type=click.IntRange(1, 10_000_000),
               help='Ignore indexes smaller than this many pages for fragmentation (default: 100)')
-def health(config, server, database, username, password, connection_string, schemas, output, json_out, top, min_fragmentation, min_pages):
+def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages):
     """Analyze database health from SQL Server DMVs.
 
     Surfaces the slowest cached queries, tables with writes but no reads,
@@ -584,7 +612,7 @@ def health(config, server, database, username, password, connection_string, sche
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -638,6 +666,8 @@ def health(config, server, database, username, password, connection_string, sche
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='quality-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the quality report as machine-readable JSON to this path')
@@ -646,7 +676,7 @@ def health(config, server, database, username, password, connection_string, sche
 @click.option('--no-duplicates', 'no_duplicates', is_flag=True, default=False,
               help='Skip full-row duplicate detection (the heaviest check)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the data-read confirmation prompt (for non-interactive use)')
-def quality(config, server, database, username, password, connection_string, schemas, output, json_out, top_values, no_duplicates, yes):
+def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
@@ -658,7 +688,7 @@ def quality(config, server, database, username, password, connection_string, sch
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -728,12 +758,14 @@ def quality(config, server, database, username, password, connection_string, sch
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='intel-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
 @click.option('--baseline', default=None, help='A prior schema snapshot (JSON) to diff against; enables migration-script generation')
 @click.option('--migration-out', 'migration_out', default=None, help='Write the generated migration DDL to this .sql path (requires --baseline)')
-def intel(config, server, database, username, password, connection_string, schemas, output, json_out, baseline, migration_out):
+def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out):
     """Schema intelligence: naming, orphaned FKs, impact analysis, migrations.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
@@ -746,7 +778,7 @@ def intel(config, server, database, username, password, connection_string, schem
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -811,6 +843,8 @@ def intel(config, server, database, username, password, connection_string, schem
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='insights-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
@@ -821,7 +855,7 @@ def intel(config, server, database, username, password, connection_string, schem
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI parts (NL-to-SQL + glossary); still runs anomaly + relationship analysis')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls for glossary generation (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def insights(config, server, database, username, password, connection_string, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes):
+def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -834,7 +868,7 @@ def insights(config, server, database, username, password, connection_string, sc
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -923,12 +957,14 @@ def insights(config, server, database, username, password, connection_string, sc
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string; postgres/mysql planned for v1.5.0)')
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='compliance-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
 @click.option('--no-access-audit', 'no_access_audit', is_flag=True, default=False,
               help='Skip reading sys.database_permissions (use if the account lacks VIEW DEFINITION)')
-def comply(config, server, database, username, password, connection_string, schemas, output, json_out, no_access_audit):
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -941,7 +977,7 @@ def comply(config, server, database, username, password, connection_string, sche
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string)
+        resolve, server, database, username, password, connection_string, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')

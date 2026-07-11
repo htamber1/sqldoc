@@ -40,7 +40,7 @@ Repository = "https://github.com/htamber1/sqldoc"
 sqldoc = "sqldoc.cli:cli"
 
 [tool.setuptools]
-packages = ["sqldoc"]
+packages = ["sqldoc", "sqldoc.adapters"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -68,6 +68,45 @@ def test_run_no_ai_html(patched, tmp_path):
     assert out.exists() and "Orders" in out.read_text(encoding="utf-8")
 
 
+def test_dialect_sqlserver_proceeds(patched, tmp_path):
+    out = tmp_path / "doc.html"
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--dialect", "sqlserver",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert out.exists()
+
+
+def test_dialect_planned_rejected(patched, tmp_path):
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--dialect", "postgres",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code != 0
+    assert "not supported yet" in res.output
+
+
+def test_dialect_autodetected_from_connection_string_rejected(patched, tmp_path):
+    res = CliRunner().invoke(cli.main, [
+        "--connection-string", "postgresql://u:p@host/db",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code != 0
+    assert "postgres" in res.output and "not supported yet" in res.output
+
+
+def test_scan_dialect_planned_rejected(monkeypatch, tmp_path):
+    res = CliRunner().invoke(cli.scan, [
+        "--connection-string", "mysql://u:p@host/db",
+        "--output", str(tmp_path / "s.html"),
+    ])
+    assert res.exit_code != 0
+    assert "not supported yet" in res.output
+
+
 def test_format_inferred_from_extension(patched, tmp_path):
     out = tmp_path / "doc.md"
     res = CliRunner().invoke(cli.main, [
