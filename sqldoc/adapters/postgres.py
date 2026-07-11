@@ -73,14 +73,19 @@ class PostgresAdapter(DatabaseAdapter):
         conn = self.connect()
         cursor = conn.cursor()
 
-        # Base tables with estimated row counts (reltuples; refreshed by ANALYZE).
+        # Ordinary tables ('r') and declarative-partition parents ('p'), with
+        # estimated row counts (reltuples; refreshed by ANALYZE). Exclude the
+        # physical partition children (relispartition) so a partitioned table
+        # documents as one logical table, not one per partition. A partition
+        # parent's reltuples is -1 (no direct storage); clamp it to 0.
         cursor.execute("""
             SELECT n.nspname AS schema_name,
                    c.relname AS table_name,
-                   c.reltuples::bigint AS row_count
+                   GREATEST(c.reltuples, 0)::bigint AS row_count
             FROM pg_catalog.pg_class c
             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-            WHERE c.relkind = 'r'
+            WHERE c.relkind IN ('r', 'p')
+              AND NOT c.relispartition
               AND n.nspname NOT IN ('pg_catalog', 'information_schema')
             ORDER BY n.nspname, c.relname
         """)

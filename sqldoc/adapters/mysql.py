@@ -5,6 +5,11 @@ driver (`mysql-connector-python`) is an *optional* dependency imported lazily
 inside `_default_connect`, so SQL Server users never need it installed; a
 missing driver raises a clear, actionable error.
 
+Rows are read through a `dictionary=True` cursor (`row["col"]`) — the one row
+format mysql-connector's C-extension and pure-Python connections both support
+across versions (the older `named_tuple` cursor was dropped in 9.x). Every
+SELECT aliases its columns, so the dict keys are stable regardless of engine.
+
 MySQL has no schema/database distinction, so `Table.schema` carries the database
 name and every query is scoped to `DATABASE()` (the connected database). MySQL
 has neither INCLUDE index columns nor INSTEAD OF / disablable triggers, so those
@@ -52,9 +57,9 @@ class MySQLAdapter(DatabaseAdapter):
         return f"mysql://{username}:{password}@{server}/{database}"
 
     def _cursor(self, conn):
-        # named_tuple cursor gives row.column attribute access, matching the
-        # extraction code's pyodbc-style access.
-        return conn.cursor(named_tuple=True)
+        # dictionary=True yields row["col"] access — the format supported across
+        # mysql-connector's C-extension and pure-Python connections and versions.
+        return conn.cursor(dictionary=True)
 
     # --- tables ------------------------------------------------------------
 
@@ -87,17 +92,17 @@ class MySQLAdapter(DatabaseAdapter):
         """)
         triggers_by_table = {}
         for row in cursor.fetchall():
-            triggers_by_table.setdefault((row.schema_name, row.table_name), []).append(Trigger(
-                name=row.trigger_name,
+            triggers_by_table.setdefault((row["schema_name"], row["table_name"]), []).append(Trigger(
+                name=row["trigger_name"],
                 is_instead_of=False,           # MySQL has no INSTEAD OF triggers
                 is_disabled=False,             # MySQL triggers cannot be disabled
-                events=[row.event_manipulation] if row.event_manipulation else [],
-                definition=str(row.action_statement) if row.action_statement else None,
+                events=[row["event_manipulation"]] if row["event_manipulation"] else [],
+                definition=str(row["action_statement"]) if row["action_statement"] else None,
             ))
 
         tables = []
         for row in tables_raw:
-            schema_name, table_name = row.schema_name, row.table_name
+            schema_name, table_name = row["schema_name"], row["table_name"]
             columns = self._columns(cursor, schema_name, table_name)
             indexes = self._indexes(cursor, schema_name, table_name)
             checks = self._check_constraints(cursor, schema_name, table_name)
@@ -105,7 +110,7 @@ class MySQLAdapter(DatabaseAdapter):
             tables.append(Table(
                 schema=schema_name,
                 name=table_name,
-                row_count=int(row.row_count or 0),
+                row_count=int(row["row_count"] or 0),
                 columns=columns,
                 indexes=indexes,
                 triggers=triggers_by_table.get((schema_name, table_name), []),
@@ -135,21 +140,21 @@ class MySQLAdapter(DatabaseAdapter):
 
         columns = []
         for row in cols_raw:
-            fk = fk_by_col.get(row.column_name)
-            gen = str(row.generation_expression) if row.generation_expression else ""
+            fk = fk_by_col.get(row["column_name"])
+            gen = str(row["generation_expression"]) if row["generation_expression"] else ""
             columns.append(Column(
-                name=row.column_name,
-                data_type=row.data_type,
-                max_length=row.max_length,
-                is_nullable=(str(row.is_nullable).upper() == "YES"),
-                is_primary_key=(str(row.column_key).upper() == "PRI"),
+                name=row["column_name"],
+                data_type=row["data_type"],
+                max_length=row["max_length"],
+                is_nullable=(str(row["is_nullable"]).upper() == "YES"),
+                is_primary_key=(str(row["column_key"]).upper() == "PRI"),
                 is_foreign_key=fk is not None,
                 references_table=fk[0] if fk else None,
                 references_column=fk[1] if fk else None,
-                description=str(row.description) if row.description else None,
+                description=str(row["description"]) if row["description"] else None,
                 is_computed=bool(gen),
                 computed_definition=gen or None,
-                default_definition=str(row.column_default) if row.column_default else None,
+                default_definition=str(row["column_default"]) if row["column_default"] else None,
                 fk_on_delete=fk[2] if fk else None,
                 fk_on_update=fk[3] if fk else None,
             ))
@@ -171,8 +176,8 @@ class MySQLAdapter(DatabaseAdapter):
         """, (schema_name, table_name))
         out = {}
         for r in cursor.fetchall():
-            out[r.column_name] = (r.referenced_table_name, r.referenced_column_name,
-                                  r.delete_rule, r.update_rule)
+            out[r["column_name"]] = (r["referenced_table_name"], r["referenced_column_name"],
+                                     r["delete_rule"], r["update_rule"])
         return out
 
     def _indexes(self, cursor, schema_name, table_name) -> list[Index]:
@@ -188,16 +193,17 @@ class MySQLAdapter(DatabaseAdapter):
         """, (schema_name, table_name))
         by_name = {}
         for row in cursor.fetchall():
-            idx = by_name.get(row.index_name)
+            name = row["index_name"]
+            idx = by_name.get(name)
             if idx is None:
                 idx = Index(
-                    name=row.index_name,
-                    type_desc=str(row.index_type).upper() if row.index_type else "",
-                    is_unique=(int(row.non_unique) == 0),
-                    is_primary_key=(str(row.index_name).upper() == "PRIMARY"),
+                    name=name,
+                    type_desc=str(row["index_type"]).upper() if row["index_type"] else "",
+                    is_unique=(int(row["non_unique"]) == 0),
+                    is_primary_key=(str(name).upper() == "PRIMARY"),
                 )
-                by_name[row.index_name] = idx
-            idx.key_columns.append(row.column_name)   # MySQL has no INCLUDE columns
+                by_name[name] = idx
+            idx.key_columns.append(row["column_name"])   # MySQL has no INCLUDE columns
         return list(by_name.values())
 
     def _check_constraints(self, cursor, schema_name, table_name) -> list[CheckConstraint]:
@@ -216,8 +222,8 @@ class MySQLAdapter(DatabaseAdapter):
                 ORDER BY tc.constraint_name
             """, (schema_name, table_name))
             return [
-                CheckConstraint(name=r.constraint_name,
-                                definition=str(r.check_clause) if r.check_clause else "",
+                CheckConstraint(name=r["constraint_name"],
+                                definition=str(r["check_clause"]) if r["check_clause"] else "",
                                 column=None)
                 for r in cursor.fetchall()
             ]
@@ -239,11 +245,12 @@ class MySQLAdapter(DatabaseAdapter):
         """, (schema_name, table_name))
         by_name = {}
         for r in cursor.fetchall():
-            uq = by_name.get(r.uq_name)
+            name = r["uq_name"]
+            uq = by_name.get(name)
             if uq is None:
-                uq = UniqueConstraint(name=r.uq_name)
-                by_name[r.uq_name] = uq
-            uq.columns.append(r.column_name)
+                uq = UniqueConstraint(name=name)
+                by_name[name] = uq
+            uq.columns.append(r["column_name"])
         return list(by_name.values())
 
     # --- views -------------------------------------------------------------
@@ -271,13 +278,13 @@ class MySQLAdapter(DatabaseAdapter):
                 FROM information_schema.columns
                 WHERE table_schema = %s AND table_name = %s
                 ORDER BY ordinal_position
-            """, (row.schema_name, row.view_name))
+            """, (row["schema_name"], row["view_name"]))
             columns = [
                 Column(
-                    name=cr.column_name,
-                    data_type=cr.data_type,
-                    max_length=cr.max_length,
-                    is_nullable=(str(cr.is_nullable).upper() == "YES"),
+                    name=cr["column_name"],
+                    data_type=cr["data_type"],
+                    max_length=cr["max_length"],
+                    is_nullable=(str(cr["is_nullable"]).upper() == "YES"),
                     is_primary_key=False,
                     is_foreign_key=False,
                     references_table=None,
@@ -286,10 +293,10 @@ class MySQLAdapter(DatabaseAdapter):
                 for cr in cursor.fetchall()
             ]
             views.append(View(
-                schema=row.schema_name,
-                name=row.view_name,
+                schema=row["schema_name"],
+                name=row["view_name"],
                 columns=columns,
-                definition=str(row.definition) if row.definition else None,
+                definition=str(row["definition"]) if row["definition"] else None,
             ))
         conn.close()
         return views
@@ -321,24 +328,24 @@ class MySQLAdapter(DatabaseAdapter):
                 FROM information_schema.parameters
                 WHERE specific_schema = %s AND specific_name = %s
                 ORDER BY ordinal_position
-            """, (row.schema_name, row.specific_name))
+            """, (row["schema_name"], row["specific_name"]))
             parameters = []
             for pr in cursor.fetchall():
                 # ordinal_position 0 (the function return value) has a NULL name.
-                if not pr.parameter_name:
+                if not pr["parameter_name"]:
                     continue
                 parameters.append(Parameter(
-                    name=pr.parameter_name,
-                    data_type=pr.data_type,
-                    max_length=pr.max_length,
-                    is_output=str(pr.parameter_mode).upper() in ("OUT", "INOUT"),
+                    name=pr["parameter_name"],
+                    data_type=pr["data_type"],
+                    max_length=pr["max_length"],
+                    is_output=str(pr["parameter_mode"]).upper() in ("OUT", "INOUT"),
                 ))
             procedures.append(StoredProcedure(
-                schema=row.schema_name,
-                name=row.proc_name,
+                schema=row["schema_name"],
+                name=row["proc_name"],
                 parameters=parameters,
-                definition=str(row.definition) if row.definition else None,
-                description=str(row.description) if row.description else None,
+                definition=str(row["definition"]) if row["definition"] else None,
+                description=str(row["description"]) if row["description"] else None,
             ))
         conn.close()
         return procedures

@@ -90,6 +90,10 @@ class FakeRow:
         return iter(self._d.values())
 
     def __getitem__(self, i):
+        # Support both positional (pyodbc-style) and string-key (dict-cursor)
+        # access, so one fake row mimics pyodbc rows and MySQL dict cursors.
+        if isinstance(i, str):
+            return self._d[i]
         return list(self._d.values())[i]
 
 

@@ -4,6 +4,33 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] — 2026-07-11
+
+Live-validation release: the PostgreSQL and MySQL adapters were run end-to-end
+against real databases in Docker (**Pagila** on PostgreSQL 16, **Sakila** on
+MySQL 8) — `doc`, `scan`, and `intel` all produce correct reports. Two bugs
+surfaced by real data are fixed.
+
+### Fixed
+- **PostgreSQL — partitioned tables.** A declaratively-partitioned table (e.g.
+  Pagila's `payment`) was documented as its physical partitions
+  (`payment_p2022_01` …) instead of one logical table. The table query now
+  includes partition parents (`relkind = 'p'`) and excludes partition children
+  (`relispartition`), and clamps the parent's `-1` row estimate to `0`. Pagila
+  now documents as 15 tables (was 21), with `payment` present as one table.
+- **MySQL — cursor compatibility.** `mysql-connector-python` 9.x removed the
+  `named_tuple` cursor, which raised `unexpected keyword argument 'named_tuple'`
+  on connect. The adapter now uses a `dictionary=True` cursor (supported across
+  the C-extension and pure-Python connections and all recent versions).
+
+### Validated
+- **PostgreSQL / Pagila** — 15 tables, 7 views, 9 functions; PK/FK (with
+  `RESTRICT`/`CASCADE` actions), grouped indexes, `last_updated` triggers, and
+  accurate row counts all extracted correctly.
+- **MySQL / Sakila** — 16 tables, 7 views, 6 procedures; PK/FK, ENUM/SET/YEAR
+  column types, INSERT/UPDATE/DELETE triggers, composite UNIQUE constraints, and
+  procedure output parameters all correct.
+
 ## [1.5.0] — 2026-07-11
 
 Multi-database support. sqldoc is no longer SQL-Server-only: a new adapter
