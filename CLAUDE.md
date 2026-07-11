@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), and **`sqldoc health`** (DMV health); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
+`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based) and a **data-quality profiler** (`sqldoc quality`, aggregate reads). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), **`sqldoc health`** (DMV health), and **`sqldoc quality`** (data profiling); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
 ## Project status (v1.2.0, as of 2026-07-10)
 
@@ -17,7 +17,9 @@ Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan
 
 **`sqldoc health`** — `health.py` (four DMV checks: slow queries `sys.dm_exec_query_stats`, dead tables `sys.dm_db_index_usage_stats`, missing indexes `sys.dm_db_missing_index_details` with generated `CREATE INDEX`, index fragmentation `sys.dm_db_index_physical_stats`; each check isolated so a missing `VIEW SERVER STATE` degrades that section only; reads statistics, never row data) → `health_renderer.py` (dark HTML dashboard + `build_health_json` for `--json`). Flags: `--top`, `--min-fragmentation`, `--min-pages`, `--schemas`.
 
-**JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json`.
+**`sqldoc quality`** — `quality.py` (aggregate-only data profiling: per-column null rate, distinct/cardinality, min/max, blank-string count, most-frequent values `--top-values`; full-row duplicate detection via GROUP BY, `--no-duplicates` to skip; each column/table isolated in try/except; **reads row data in aggregate** — never row dumps, nothing leaves the machine) → `quality_renderer.py` (dark HTML with flag filters + `build_quality_json` for `--json`). Prints a local-only notice + confirm prompt (`--yes`).
+
+**JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json` / `quality --json`.
 
 **Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite + `tests/conftest.py` fake-pyodbc; GitHub Actions CI (`.github/workflows/ci.yml`); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
 

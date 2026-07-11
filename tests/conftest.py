@@ -109,6 +109,12 @@ class FakeCursor:
             self._last = "missing"
         elif "dm_db_index_physical_stats" in sql:
             self._last = "frag"
+        elif "dup_rows" in sql:
+            self._last = "qdup"
+        elif "non_null" in sql:
+            self._last = "qstats"
+        elif " AS freq" in sql:
+            self._last = "qtop"
         elif "row_count" in sql:
             self._last = "tables"
         elif "trigger_name" in sql:
@@ -144,6 +150,18 @@ class FakeConnection:
 
     def close(self):
         pass
+
+
+@pytest.fixture
+def fake_quality_rows():
+    """Rows the quality aggregate queries would see (same stats for every
+    column, which is fine for exercising the pipeline)."""
+    return {
+        "qstats": [FakeRow(total=100, non_null=40, distinct_count=1, blank_count=5,
+                           min_val="0", max_val="9")],       # null_rate 0.6, constant, blanks
+        "qtop": [FakeRow(val="0", freq=40)],
+        "qdup": [FakeRow(dup_rows=8, dup_groups=3)],          # 5 redundant rows
+    }
 
 
 @pytest.fixture

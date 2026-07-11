@@ -17,6 +17,8 @@ from sqldoc.pii_renderer import render_pii_html
 from sqldoc.sarif import render_sarif
 from sqldoc.health import collect_health, summarize as health_summarize
 from sqldoc.health_renderer import render_health_html, build_health_json
+from sqldoc.quality import collect_quality, summarize as quality_summarize
+from sqldoc.quality_renderer import render_quality_html, build_quality_json
 
 load_dotenv()
 
@@ -29,6 +31,7 @@ CONFIG_KEYS = {
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
     'confidence_threshold', 'fail_on', 'yes',
     'top', 'min_fragmentation', 'min_pages',
+    'top_values', 'no_duplicates',
 }
 
 
@@ -621,6 +624,96 @@ def health(config, server, database, username, password, connection_string, sche
     click.echo(f"Open {output} in your browser for the full health report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to analyze')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='quality-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the quality report as machine-readable JSON to this path')
+@click.option('--top-values', 'top_values', default=5, type=click.IntRange(0, 50),
+              help='Most-frequent values to show per column for the distribution view (0 to skip; default: 5)')
+@click.option('--no-duplicates', 'no_duplicates', is_flag=True, default=False,
+              help='Skip full-row duplicate detection (the heaviest check)')
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip the data-read confirmation prompt (for non-interactive use)')
+def quality(config, server, database, username, password, connection_string, schemas, output, json_out, top_values, no_duplicates, yes):
+    """Profile data quality: null rates, per-column distribution, duplicates.
+
+    Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
+    GROUP BY); each column's most-frequent values are shown for context. Nothing
+    is sent to any AI or off this machine.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    top_values = resolve('top_values', top_values, param='top_values')
+    no_duplicates = resolve('no_duplicates', no_duplicates, param='no_duplicates')
+    yes = resolve('yes', yes)
+
+    click.echo("\nsqldoc v1.2.0  -  Data quality profiling")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(
+        "NOTE: This reads your table data in aggregate (COUNT / DISTINCT / MIN /\n"
+        "      MAX / GROUP BY) and shows each column's most-frequent values. All\n"
+        "      processing is local — nothing is sent to any AI or off this machine."
+    )
+    if not yes and not click.confirm("Proceed with aggregate data profiling?", default=True):
+        click.echo("Aborted.")
+        raise click.Abort()
+
+    click.echo("\nConnecting to SQL Server...")
+    try:
+        tables = extract_metadata(conn_str)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    schema_list = [s.strip() for s in schemas.split(',')] if schemas else None
+
+    def progress(i, total, t):
+        if i == 1 or i % 10 == 0 or i == total:
+            click.echo(f"  [{i}/{total}] profiling {t.schema}.{t.name}")
+
+    report = collect_quality(conn_str, tables, top_values=int(top_values),
+                             schemas=schema_list, detect_dupes=not no_duplicates,
+                             progress=progress)
+    report.database = database
+
+    for c, msg in report.errors:
+        click.echo(click.style(f"  ! skipped {c}: {msg}", fg='yellow'), err=True)
+
+    s = quality_summarize(report)
+    click.echo(
+        click.style(f"\nColumns: {s['columns_profiled']}", fg='blue')
+        + click.style(f"    High-null: {s['high_null_columns']}", fg='red')
+        + click.style(f"    Constant: {s['constant_columns']}", fg='yellow')
+        + f"    Tables with dupes: {s['tables_with_duplicates']}"
+    )
+
+    click.echo("\nRendering report...")
+    render_quality_html(database, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_quality_json(database, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable quality report written to {json_out}")
+    click.echo(f"Open {output} in your browser for the full data-quality report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -641,6 +734,7 @@ def cli():
 cli.add_command(main, name='doc')
 cli.add_command(scan, name='scan')
 cli.add_command(health, name='health')
+cli.add_command(quality, name='quality')
 
 
 if __name__ == '__main__':

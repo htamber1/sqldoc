@@ -6,6 +6,19 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 
 ## [Unreleased]
 
+### Added — `sqldoc quality` (data-quality profiling)
+A fourth command that profiles the data itself, in **aggregate only** (COUNT /
+COUNT DISTINCT / MIN / MAX / GROUP BY — nothing leaves the machine, no AI):
+- **Null-rate analysis** — per-column null count/rate, with a `high-null` flag
+  at ≥50%.
+- **Distribution** — distinct count/cardinality, min/max, blank-string count,
+  and each column's most-frequent values (`--top-values`, truncated).
+- **Duplicate detection** — full-row duplicates via GROUP BY over every
+  groupable column, reported as duplicate groups + redundant rows
+  (`--no-duplicates` to skip the heaviest check).
+Dark HTML report with flag filters, plus `--json`. Reads row data, so it prints
+a local-only notice and confirms before running (`--yes` / `-y` to skip).
+
 ### Added — `sqldoc health` (database health analysis)
 A third command that reads SQL Server DMVs (server/DB statistics only — never
 table row data) and writes a dark-themed HTML report (`--json` for a
