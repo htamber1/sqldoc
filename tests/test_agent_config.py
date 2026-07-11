@@ -1,0 +1,90 @@
+"""Agent config parsing + notification dispatch."""
+import pytest
+
+from sqldoc.agent import config as agentcfg
+from sqldoc.agent import notify as notifymod
+from sqldoc.agent.config import parse_agent_config, NotifyConfig
+from sqldoc.agent.notify import Notifier
+
+
+def test_parse_minimal_connection_string():
+    cfg = {"agent": {"databases": [
+        {"name": "prod", "connection_string": "postgresql://u:p@h/db"}]}}
+    ac = parse_agent_config(cfg)
+    assert ac.interval_minutes == 30 and ac.dashboard_port == 8080
+    assert len(ac.databases) == 1
+    db = ac.databases[0]
+    assert db.name == "prod" and db.dialect == "postgres"
+    assert db.connection_string == "postgresql://u:p@h/db"
+
+
+def test_parse_builds_connection_string_from_parts():
+    cfg = {"agent": {"databases": [
+        {"name": "wh", "dialect": "sqlserver", "server": "h", "database": "DB",
+         "username": "sa", "password": "x"}]}}
+    db = parse_agent_config(cfg).databases[0]
+    assert "ODBC Driver 18 for SQL Server" in db.connection_string
+    assert "SERVER=h" in db.connection_string and db.dialect == "sqlserver"
+
+
+def test_parse_overrides_and_notifications():
+    cfg = {"agent": {
+        "interval_minutes": 5, "dashboard_port": 9000, "mode": "cloud",
+        "databases": [{"name": "a", "connection_string": "mysql://u:p@h/db"}],
+        "notifications": {
+            "slack_webhook": "https://hooks.slack.com/x",
+            "email": {"smtp_host": "smtp.x", "to": ["dba@x"]},
+            "on": ["schema_change", "new_pii"],
+        },
+    }}
+    ac = parse_agent_config(cfg)
+    assert ac.interval_minutes == 5 and ac.dashboard_port == 9000
+    assert ac.databases[0].dialect == "mysql"
+    assert ac.notify.slack_webhook == "https://hooks.slack.com/x"
+    assert ac.notify.on == ["schema_change", "new_pii"]
+
+
+@pytest.mark.parametrize("cfg, msg", [
+    ({}, "No 'agent:'"),
+    ({"agent": {"databases": []}}, "non-empty list"),
+    ({"agent": {"databases": [{"connection_string": "x"}]}}, "needs a 'name'"),
+    ({"agent": {"databases": [{"name": "a"}]}}, "connection_string"),
+    ({"agent": {"databases": [{"name": "a", "connection_string": "x"},
+                              {"name": "a", "connection_string": "y"}]}}, "duplicate"),
+    ({"agent": {"interval_minutes": 0,
+                "databases": [{"name": "a", "connection_string": "x"}]}}, "at least 1"),
+    ({"agent": {"databases": [{"name": "a", "connection_string": "x"}],
+                "notifications": {"on": ["bogus"]}}}, "unknown notification"),
+])
+def test_parse_errors(cfg, msg):
+    with pytest.raises(ValueError) as ei:
+        parse_agent_config(cfg)
+    assert msg in str(ei.value)
+
+
+# --- notifier --------------------------------------------------------------
+
+def test_notifier_respects_allowlist():
+    n = Notifier(NotifyConfig(on=["schema_change"]))
+    assert n.should_notify("schema_change") is True
+    assert n.should_notify("new_pii") is False
+    assert n.notify("new_pii", "x", "y") == []      # filtered -> no channels
+
+
+def test_notifier_dispatches_slack_and_email(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notifymod, "send_slack", lambda wh, text: sent.append(("slack", wh, text)))
+    monkeypatch.setattr(notifymod, "send_email", lambda smtp, subj, body: sent.append(("email", subj, body)))
+    n = Notifier(NotifyConfig(slack_webhook="https://hook", smtp={"smtp_host": "x", "to": ["a"]}))
+    results = n.notify("schema_change", "Schema changed", "2 tables added")
+    assert ("slack", True, None) in results and ("email", True, None) in results
+    assert sent[0][0] == "slack" and "Schema changed" in sent[0][2]
+
+
+def test_notifier_isolates_channel_failures(monkeypatch):
+    def boom_slack(wh, text):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(notifymod, "send_slack", boom_slack)
+    n = Notifier(NotifyConfig(slack_webhook="https://hook"))
+    results = n.notify("schema_change", "x", "y")
+    assert results == [("slack", False, "RuntimeError: network down")]
