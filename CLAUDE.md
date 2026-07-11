@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. It has grown into a **seven-command** platform. The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance scan), **`sqldoc health`** (DMV performance/health), **`sqldoc quality`** (aggregate data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI-powered: NL-to-SQL, anomalies, glossary, relationship inference), and **`sqldoc comply`** (HIPAA/GDPR/PCI-DSS reports, data lineage, access audit); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
-## Project status (v1.4.0, as of 2026-07-11)
+## Project status (v1.4.1, as of 2026-07-11)
 
-Shippable seven-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI insights), **`sqldoc comply`** (compliance expansion). Tags **v1.0.0 → v1.4.0** pushed to `github.com/htamber1/sqldoc`. **162 pytest tests** (mocked — no live SQL Server/Ollama). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump. **CI is live** (`.github/workflows/main.yml`, added on the remote 2026-07-11).
+Shipped, **MIT-licensed, and live on PyPI** (`pip install sqldoc`) — a seven-command CLI: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII/compliance), **`sqldoc health`** (DMV health), **`sqldoc quality`** (data profiling), **`sqldoc intel`** (schema intelligence), **`sqldoc insights`** (AI insights), **`sqldoc comply`** (compliance expansion). Four release tags **v1.0.0 → v1.4.1** pushed to `github.com/htamber1/sqldoc` (latest **v1.4.1**, MIT license). **162 pytest tests** passing (mocked — no live SQL Server/Ollama). **CI is live** on GitHub (`.github/workflows/main.yml`). Validated end-to-end against a local `AdventureWorks2022` (71 tables / 20 views / 10 procs / 10 triggers / 10 computed columns; `sa`/`SqlDoc123!`). Version is single-sourced in `sqldoc/__init__.py` (`__version__`) — `cli.py` banners + `--version` and `sarif.py` read it; `pyproject.toml` is the only other place to bump.
 
 ### What's built (all shipped + tested)
 **`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
@@ -32,21 +32,41 @@ Shippable seven-command CLI — **`sqldoc doc`** (documentation), **`sqldoc scan
 ### Release / distribution state
 1. **CI is live** — `.github/workflows/main.yml` runs on the remote. The old redundant `ci.yml` was deleted (2026-07-11) now that `main.yml` covers it.
 2. **PyPI** — published from `~/.pypirc` (`__token__`); `pip install sqldoc` works. **1.4.0** (2026-07-11) shipped the seven-command platform; **1.4.1** (2026-07-11) added the **MIT License** (`LICENSE`, `license = {text = "MIT"}` + OSI classifier in `pyproject.toml`, README badge). README (the PyPI long description) covers the seven commands + a comparison vs Redgate SQL Doc / Dataedo. NOTE: MIT makes the project genuinely open-source, which **supersedes the license-key/entitlement paid-tier plan** in `pricing-strategy.md` — anyone can fork/remove gating; a viable model is now hosted/support/dual-license, not code gating. Reconcile `pricing-strategy.md` with the MIT decision.
-3. **GitHub Releases** — create Release pages for `v1.2.0` / `v1.3.0` / `v1.4.0` from the CHANGELOG (paste-ready notes were provided in chat). The annotated tags already exist.
+3. **GitHub Releases** — Release pages for **v1.4.0 and v1.4.1 are done**. Still TODO: create Release pages for **`v1.2.0`** and **`v1.3.0`** from the CHANGELOG (paste-ready notes were provided in chat). The annotated tags already exist.
 
-### Shipped in v1.3.0 / v1.4.0
+### Shipped in v1.3.0 / v1.4.0 / v1.4.1
 - **v1.3.0** — JSON export (`doc --format json` + `--json` on the analysis commands); constraints (check/unique/default + FK actions); scan depth (6 new PII categories, `--confidence-threshold`, `pii_allowlist:`); `--include-definitions`; and the `health`, `quality`, `intel` commands.
 - **v1.4.0** — **`sqldoc insights`** (NL-to-SQL via `--ask`, heuristic anomaly detection, AI business glossary, relationship inference) and **`sqldoc comply`** (per-regulation HIPAA/GDPR/PCI-DSS reports + controls, data-lineage tracking, access audit over `sys.database_permissions`).
+- **v1.4.1** — MIT License (`LICENSE`, `pyproject` metadata, README badge). No code changes.
 
-### Next session — planned features
-- **Entitlement layer** (unblocks paid tiers + public PyPI): license-key gating for the paid commands, audit logs, air-gapped-mode validation.
-- **Deepen `insights`** — schema anomaly detection is currently heuristic; add an optional AI review pass over the model for subtler smells; enrich relationship inference with data-profile signals (join `quality`'s cardinality/overlap stats).
-- **Deepen `comply`** — column-level lineage (not just table-level); expand `extract_permissions` to resolve role membership + server-level rights; per-regulation CSV/PDF export.
-- Smaller: **ER layout toggles** (key-columns-only / connected-only); **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
+### Next session — multi-database adapter architecture (the big one)
+**Goal:** support **PostgreSQL, MySQL, and Azure SQL** alongside SQL Server, with all seven commands working through a common adapter interface. This is the highest-leverage next feature (it 4×'s the addressable market and directly answers the Dataedo "20+ databases" gap in the README comparison).
+
+Design:
+- **`adapters/` package** with a **`base.py` `DatabaseAdapter` ABC** defining the metadata surface every command needs — the current `extractor.py` functions become the contract: `extract_metadata() -> list[Table]`, `extract_views()`, `extract_procedures()`, plus the analysis-specific queries (`health` DMVs, `quality` aggregates, `comply` permissions). Keep the shared dataclasses (`Table`/`Column`/…) as the dialect-neutral currency the whole pipeline already flows through — adapters populate them; renderers/analysis stay unchanged.
+- **Concrete adapters**: `sqlserver.py` (refactor today's `extractor.py`/DMV/permission SQL into it — behavior-preserving), `postgres.py` (`information_schema` + `pg_catalog`; `psycopg`), `mysql.py` (`information_schema`; `mysql-connector-python` or `PyMySQL`), `azuresql.py` (subclass `sqlserver.py` — same T-SQL, different conn(ODBC/`azure-identity` auth); note Azure SQL DB lacks some server-scoped DMVs, so `health` must degrade gracefully like it already does for permissions).
+- **Auto-detection from the connection string** + an explicit **`--dialect {sqlserver,postgres,mysql,azuresql}`** flag that overrides. Detect by driver/scheme (`postgresql://`, `mysql://`, `DRIVER={ODBC Driver 18 for SQL Server}`, `*.database.windows.net`). Add `dialect` to `CONFIG_KEYS`.
+- **Per-dialect capability flags** — not every check exists everywhere (e.g. SQL Server DMV `sys.dm_db_missing_index_details` has no exact MySQL analogue). Each adapter advertises which `health`/`quality`/`comply` features it supports; unsupported ones render an explicit "not available on <dialect>" section (reuse the existing degrade-to-`errors` pattern).
+- **PII/intel/insights are already dialect-neutral** (they run on the populated dataclasses), so most of the work is the extraction layer + dialect-specific SQL for `health`/`quality`/`comply`.
+
+Testing: extend the fake-DB harness so `tests/conftest.py` can emulate each dialect's catalog rows; add per-adapter tests. Keep the token-routed fake-cursor approach. Aim to hold the "no live DB needed" property.
+
+Rollout: land as a minor bump (**v1.5.0**) once SQL Server + at least Postgres pass; MySQL/Azure can follow. Update the README comparison ("Databases" row) and the privacy section (the `sys.*`-only claim becomes dialect-specific).
+
+### Also pending (non-code)
+- **Reconcile `pricing-strategy.md` with the MIT decision** — the four-tier license-key/entitlement plan no longer fits an MIT-licensed project (anyone can fork and strip gating). Rework toward hosted SaaS / paid support / dual-license / sponsorware, or explicitly commit to fully-free + a services model. This blocks any monetization messaging.
+- **GitHub Release pages for `v1.2.0` and `v1.3.0`** (v1.4.0/v1.4.1 done) — paste-ready notes are in chat history.
+- **Go-to-market planning** — with MIT + PyPI live, decide launch surface (Show HN / r/SQLServer / r/dataengineering / LinkedIn), a landing page or GitHub Pages demo (host a sample HTML report per command), and positioning vs Redgate SQL Doc (free + AI + compliance) and Dataedo (CLI + SQL-Server-deep + privacy-first). The multi-DB work above is a prerequisite for a broad "database documentation tool" pitch.
+
+### Deferred / smaller
+- **Deepen `insights`** — optional AI review pass over the model for subtler smells; enrich relationship inference with `quality` cardinality/overlap signals.
+- **Deepen `comply`** — column-level lineage; resolve role membership + server-level rights in `extract_permissions`; per-regulation CSV/PDF export.
+- **ER layout toggles** (key-columns-only / connected-only); **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
 
 ### Standing decisions
 - SQL definitions stay **out of AI calls by default** (metadata-only cloud boundary). The opt-in **`--include-definitions`** flag (shipped, post-1.2.0) sends view/proc/trigger bodies to the AI and widens the `Privacy:` banner + cloud warning accordingly.
-- Per-server subscription pricing; four tiers documented in `pricing-strategy.md`.
+- **Licensing: MIT** (as of v1.4.1). `pricing-strategy.md`'s per-server subscription / license-key tiers are now **superseded** and need reworking (see "Also pending") — code-gating an MIT project doesn't hold.
+- **Dialect-neutral core**: the extractor dataclasses (`Table`/`Column`/…) are the currency the whole pipeline flows through; the planned multi-DB adapters populate them so renderers + analysis stay dialect-agnostic. Preserve this boundary when adding adapters.
 
 ---
 
