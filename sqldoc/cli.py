@@ -15,6 +15,8 @@ from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
                         apply_allowlist, filter_by_confidence)
 from sqldoc.pii_renderer import render_pii_html
 from sqldoc.sarif import render_sarif
+from sqldoc.health import collect_health, summarize as health_summarize
+from sqldoc.health_renderer import render_health_html, build_health_json
 
 load_dotenv()
 
@@ -26,6 +28,7 @@ CONFIG_KEYS = {
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
     'confidence_threshold', 'fail_on', 'yes',
+    'top', 'min_fragmentation', 'min_pages',
 }
 
 
@@ -543,6 +546,81 @@ def scan(config, server, database, username, password, connection_string, schema
         ctx.exit(1)
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name to analyze')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist for table-scoped checks (default: all)')
+@click.option('--output', default='health-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the health report as machine-readable JSON to this path')
+@click.option('--top', default=20, type=click.IntRange(1, 500), help='Rows to keep for slow-query + missing-index rankings (default: 20)')
+@click.option('--min-fragmentation', 'min_fragmentation', default=10.0, type=click.FloatRange(0.0, 100.0),
+              help='Only report indexes fragmented at least this percent (default: 10)')
+@click.option('--min-pages', 'min_pages', default=100, type=click.IntRange(1, 10_000_000),
+              help='Ignore indexes smaller than this many pages for fragmentation (default: 100)')
+def health(config, server, database, username, password, connection_string, schemas, output, json_out, top, min_fragmentation, min_pages):
+    """Analyze database health from SQL Server DMVs.
+
+    Surfaces the slowest cached queries, tables with writes but no reads,
+    optimizer-suggested missing indexes, and fragmented indexes — reading only
+    server/DB statistics, never table row data. Needs VIEW SERVER STATE; any
+    check that lacks permission is skipped and noted in the report.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    top = resolve('top', top)
+    min_fragmentation = resolve('min_fragmentation', min_fragmentation, param='min_fragmentation')
+    min_pages = resolve('min_pages', min_pages, param='min_pages')
+
+    click.echo("\nsqldoc v1.2.0  -  Database health analysis")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server if server else '(connection string)'}")
+    click.echo(f"Database: {database}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo("Connecting to SQL Server and reading DMVs...")
+    try:
+        schema_list = [s.strip() for s in schemas.split(',')] if schemas else None
+        report = collect_health(conn_str, top=int(top),
+                                min_fragmentation=float(min_fragmentation),
+                                min_pages=int(min_pages), schemas=schema_list)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+    report.database = database
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! skipped {section}: {msg}", fg='yellow'), err=True)
+
+    s = health_summarize(report)
+    click.echo(
+        click.style(f"Slow queries: {s['slow_queries']}", fg='red')
+        + click.style(f"    Dead tables: {s['dead_tables']}", fg='yellow')
+        + click.style(f"    Missing indexes: {s['missing_indexes']}", fg='blue')
+        + f"    Fragmented: {s['fragmented_indexes']}"
+    )
+
+    click.echo("\nRendering report...")
+    render_health_html(database, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_health_json(database, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable health report written to {json_out}")
+    click.echo(f"Open {output} in your browser for the full health report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -562,6 +640,7 @@ def cli():
 
 cli.add_command(main, name='doc')
 cli.add_command(scan, name='scan')
+cli.add_command(health, name='health')
 
 
 if __name__ == '__main__':

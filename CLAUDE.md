@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`). The CLI is a command group: **`sqldoc doc`** (documentation) and **`sqldoc scan`** (PII scan); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
+`sqldoc` is a CLI that connects to a **SQL Server** database, extracts schema metadata, uses an LLM to generate plain-English descriptions of each table and column, and renders a single self-contained HTML documentation file. As of v1.1 it also ships a **PII / compliance scanner** (`sqldoc scan`), and post-1.2 a **database health analyzer** (`sqldoc health`, DMV-based). The CLI is a command group: **`sqldoc doc`** (documentation), **`sqldoc scan`** (PII scan), and **`sqldoc health`** (DMV health); a `DefaultGroup` routes `sqldoc <options>` (no subcommand) to `doc` for backward compatibility. Entry point is `sqldoc.cli:cli`.
 
 ## Project status (v1.2.0, as of 2026-07-10)
 
@@ -13,7 +13,11 @@ Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan
 ### What's built (all shipped + tested)
 **`sqldoc doc`** — `extractor.py` (tables, columns incl. PK/FK/**computed**, indexes, views+procs with definitions, **triggers**; single connection string via `build_connection_string()` or `--connection-string`) → `ai.py` (local Ollama / cloud Anthropic; `--concurrency`; retry+backoff; structural **description cache** `--cache`; metadata-only prompts) → renderers: **HTML** (`renderer.py` — dark theme, sidebar nav tree, interactive ER diagram, type filter+search, Copy SQL, color-coded row counts), **Markdown** (`markdown_renderer.py`), **PDF** (`pdf_renderer.py`/fpdf2); `--format`/extension dispatch. **Schema change detection** (`snapshot.py`, `--snapshot`).
 
-**`sqldoc scan`** — `pii.py` (~15 PII categories → HIGH/MEDIUM/LOW + HIPAA/GDPR/PCI-DSS + action; camelCase-aware matcher; type confirmation; optional AI `--sample` with values never stored; **custom categories** via `.sqldoc.yml` `pii_patterns:`) → `pii_renderer.py` (dark compliance HTML: dashboard, risk filter, CSV export). **PII drift** (`--baseline`), **SARIF export** (`sarif.py`, `--sarif`), **CI gate** (`--fail-on high|new-high`).
+**`sqldoc scan`** — `pii.py` (~21 PII categories → HIGH/MEDIUM/LOW + HIPAA/GDPR/PCI-DSS + action; camelCase-aware matcher; type confirmation; numeric confidence score + `--confidence-threshold`; per-column `pii_allowlist:`; optional AI `--sample` with values never stored; **custom categories** via `.sqldoc.yml` `pii_patterns:`) → `pii_renderer.py` (dark compliance HTML: dashboard, risk filter, CSV export). **PII drift** (`--baseline`), **SARIF export** (`sarif.py`, `--sarif`), **JSON** (`--json`), **CI gate** (`--fail-on high|new-high`).
+
+**`sqldoc health`** — `health.py` (four DMV checks: slow queries `sys.dm_exec_query_stats`, dead tables `sys.dm_db_index_usage_stats`, missing indexes `sys.dm_db_missing_index_details` with generated `CREATE INDEX`, index fragmentation `sys.dm_db_index_physical_stats`; each check isolated so a missing `VIEW SERVER STATE` degrades that section only; reads statistics, never row data) → `health_renderer.py` (dark HTML dashboard + `build_health_json` for `--json`). Flags: `--top`, `--min-fragmentation`, `--min-pages`, `--schemas`.
+
+**JSON export** — `json_renderer.py` (`sqldoc doc --format json` / `.json` extension, full model via `dataclasses.asdict`) and machine-readable findings for `scan --json` / `health --json`.
 
 **Infra** — `pyproject.toml` + `sqldoc` console entry point (group via `DefaultGroup`; bare `sqldoc <opts>` → `doc`); pytest suite + `tests/conftest.py` fake-pyodbc; GitHub Actions CI (`.github/workflows/ci.yml`); `PUBLISHING.md`; `pricing-strategy.md`; `CHANGELOG.md`.
 

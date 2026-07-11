@@ -6,6 +6,23 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 
 ## [Unreleased]
 
+### Added — `sqldoc health` (database health analysis)
+A third command that reads SQL Server DMVs (server/DB statistics only — never
+table row data) and writes a dark-themed HTML report (`--json` for a
+machine-readable copy):
+- **Slow queries** — costliest cached statements by average elapsed time
+  (`sys.dm_exec_query_stats` + `sys.dm_exec_sql_text`).
+- **Dead tables** — tables with rows and writes but no reads since the stats
+  last reset (`sys.dm_db_index_usage_stats`).
+- **Missing indexes** — optimizer suggestions ranked by benefit, each with a
+  ready-to-review `CREATE INDEX` (`sys.dm_db_missing_index_details` + stats).
+- **Index fragmentation** — indexes past `--min-fragmentation` (and
+  `--min-pages`) with a REBUILD/REORGANIZE call
+  (`sys.dm_db_index_physical_stats`).
+Each check is isolated: a missing `VIEW SERVER STATE` permission degrades that
+one section (noted in the report) instead of aborting. `--top` bounds the
+query/index rankings; `--schemas` filters the table-scoped checks.
+
 ### Added
 - **JSON export** — machine-readable output for programmatic consumers.
   `sqldoc doc --format json` (or an `.json` output extension) emits the full

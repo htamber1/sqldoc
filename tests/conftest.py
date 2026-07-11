@@ -99,7 +99,17 @@ class FakeCursor:
         self._last = None
 
     def execute(self, sql, *params):
-        if "row_count" in sql:
+        # Health DMV queries first — the dead-tables query aliases `p.rows AS
+        # row_count`, which would otherwise misroute to the extractor branch.
+        if "dm_exec_query_stats" in sql:
+            self._last = "slow"
+        elif "dm_db_index_usage_stats" in sql:
+            self._last = "dead"
+        elif "dm_db_missing_index_details" in sql:
+            self._last = "missing"
+        elif "dm_db_index_physical_stats" in sql:
+            self._last = "frag"
+        elif "row_count" in sql:
             self._last = "tables"
         elif "trigger_name" in sql:
             self._last = "triggers"
@@ -134,6 +144,38 @@ class FakeConnection:
 
     def close(self):
         pass
+
+
+@pytest.fixture
+def fake_health_rows():
+    """Rows the health DMV queries would see."""
+    return {
+        "slow": [FakeRow(query_text="SELECT * FROM Sales.Orders WHERE Total > 0",
+                         execution_count=1200, total_elapsed_ms=90000.0,
+                         avg_elapsed_ms=75.0, avg_logical_reads=4200,
+                         last_execution_time="2026-07-10 09:00:00")],
+        "dead": [
+            FakeRow(schema_name="Sales", table_name="Archive", row_count=50000,
+                    user_seeks=0, user_scans=0, user_lookups=0, user_updates=1200,
+                    last_user_scan=None),                     # dead: writes, no reads
+            FakeRow(schema_name="Sales", table_name="Orders", row_count=1596,
+                    user_seeks=900, user_scans=3, user_lookups=1, user_updates=40,
+                    last_user_scan="2026-07-10 08:00:00"),    # active: filtered out
+            FakeRow(schema_name="Sales", table_name="Empty", row_count=0,
+                    user_seeks=0, user_scans=0, user_lookups=0, user_updates=0,
+                    last_user_scan=None),                     # empty: filtered out
+        ],
+        "missing": [FakeRow(schema_name="Sales", table_name="Orders",
+                            equality_columns="[CustomerID]", inequality_columns="[OrderDate]",
+                            included_columns="[Total]", user_seeks=800,
+                            avg_user_impact=92.5, improvement_measure=14200.7)],
+        "frag": [
+            FakeRow(schema_name="Sales", table_name="Orders", index_name="IX_Orders_Customer",
+                    avg_fragmentation_in_percent=64.2, page_count=5000),   # REBUILD
+            FakeRow(schema_name="Sales", table_name="Orders", index_name="IX_Orders_Date",
+                    avg_fragmentation_in_percent=18.0, page_count=800),    # REORGANIZE
+        ],
+    }
 
 
 @pytest.fixture
