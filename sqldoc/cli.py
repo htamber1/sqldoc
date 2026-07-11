@@ -655,10 +655,10 @@ def health(config, server, database, username, password, connection_string, dial
     click.echo(f"Output:   {output}")
     click.echo(f"{'='*44}\n")
 
-    click.echo("Connecting to SQL Server and reading DMVs...")
+    click.echo(f"Connecting to {adapter.display_name} and reading system views...")
     try:
         schema_list = [s.strip() for s in schemas.split(',')] if schemas else None
-        report = collect_health(conn_str, top=int(top),
+        report = collect_health(adapter, top=int(top),
                                 min_fragmentation=float(min_fragmentation),
                                 min_pages=int(min_pages), schemas=schema_list)
     except Exception as e:
@@ -755,7 +755,7 @@ def quality(config, server, database, username, password, connection_string, dia
         if i == 1 or i % 10 == 0 or i == total:
             click.echo(f"  [{i}/{total}] profiling {t.schema}.{t.name}")
 
-    report = collect_quality(conn_str, tables, top_values=int(top_values),
+    report = collect_quality(adapter, tables, top_values=int(top_values),
                              schemas=schema_list, detect_dupes=not no_duplicates,
                              progress=progress)
     report.database = database

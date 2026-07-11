@@ -14,6 +14,8 @@ from sqldoc.adapters.base import DatabaseAdapter, Capabilities
 from sqldoc.adapters.sqlserver import SqlServerAdapter
 from sqldoc.adapters.postgres import PostgresAdapter
 from sqldoc.adapters.mysql import MySQLAdapter
+from sqldoc.adapters.sqlite import SqliteAdapter
+from sqldoc.adapters.snowflake import SnowflakeAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -21,15 +23,17 @@ class UnsupportedDialectError(Exception):
 
 
 # Registry: dialect name -> adapter class (None == recognized but not built).
-# Azure SQL reuses the SQL Server adapter (identical T-SQL); a dedicated adapter
-# with graceful DMV degradation for Azure SQL Database can follow. The postgres
-# and mysql drivers are optional dependencies imported lazily by their adapters,
-# so importing this registry never requires them to be installed.
+# Azure SQL reuses the SQL Server adapter (identical T-SQL). The postgres, mysql,
+# and snowflake drivers are optional dependencies imported lazily by their
+# adapters, so importing this registry never requires them to be installed
+# (sqlite uses the stdlib driver, so it always works).
 DIALECTS: dict = {
     "sqlserver": SqlServerAdapter,
     "azuresql": SqlServerAdapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
+    "sqlite": SqliteAdapter,
+    "snowflake": SnowflakeAdapter,
 }
 
 # What --dialect accepts, ordered supported-first for help text / error messages.
@@ -52,6 +56,11 @@ def detect_dialect(connection_string: str) -> str:
         return "postgres"
     if cs.startswith("mysql://") or "mysql" in cs:
         return "mysql"
+    if cs.startswith("snowflake://") or "snowflakecomputing.com" in cs:
+        return "snowflake"
+    if (cs.startswith(("sqlite://", "file:"))
+            or cs.endswith((".db", ".sqlite", ".sqlite3", ".db3"))):
+        return "sqlite"
     return "sqlserver"
 
 
@@ -79,7 +88,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
-    "PostgresAdapter", "MySQLAdapter",
+    "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

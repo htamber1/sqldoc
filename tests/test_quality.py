@@ -7,7 +7,28 @@ from sqldoc import quality, cli
 from sqldoc.quality import analyze_column_quality, detect_duplicates
 from sqldoc.quality_renderer import build_quality_json, render_quality_html
 from sqldoc.extractor import Column
-from conftest import FakeConnection, build_tables
+from sqldoc.adapters.sqlserver import SqlServerAdapter
+from conftest import FakeConnection, FakeAdapter, build_tables
+
+
+def _quality_adapter(rows):
+    return FakeAdapter(FakeConnection(rows))
+
+
+def test_quality_profiles():
+    from sqldoc.quality import profile_for
+    pg = profile_for("postgres")
+    assert pg.quote("col") == '"col"' and pg.use_limit is True
+    # boolean is groupable but not order-comparable (no MIN(boolean) in Postgres)
+    is_str, is_cmp, groupable = pg.classify("boolean")
+    assert is_cmp is False and groupable is True
+    my = profile_for("mysql")
+    assert my.quote("col") == "`col`" and my.use_limit is True
+    ss = profile_for("sqlserver")
+    assert ss.quote("col") == "[col]" and ss.use_limit is False
+    # length suffix is stripped before classification
+    assert pg.classify("character varying(70)")[0] is True   # string
+    assert profile_for("sqlite").classify("BLOB")[2] is False  # blob not groupable
 
 
 def test_analyze_column_quality(fake_quality_rows):
@@ -37,9 +58,8 @@ def test_detect_duplicates_none_when_no_groupable_columns(fake_quality_rows):
     assert detect_duplicates(cur, "Sales", "Orders", [computed]) is None
 
 
-def test_collect_quality_pipeline(monkeypatch, fake_quality_rows):
-    monkeypatch.setattr(quality, "get_connection", lambda cs: FakeConnection(fake_quality_rows))
-    report = quality.collect_quality("cs", build_tables(), top_values=5)
+def test_collect_quality_pipeline(fake_quality_rows):
+    report = quality.collect_quality(_quality_adapter(fake_quality_rows), build_tables(), top_values=5)
     # Orders: Id, CustomerID, Status (LineTotal is computed -> skipped); Archive: Id
     assert len(report.columns) == 4
     assert len(report.duplicates) == 2       # both tables report duplicates in the fixture
@@ -48,15 +68,13 @@ def test_collect_quality_pipeline(monkeypatch, fake_quality_rows):
     assert s["duplicate_rows"] == 10         # 5 per table
 
 
-def test_collect_quality_no_duplicates_flag(monkeypatch, fake_quality_rows):
-    monkeypatch.setattr(quality, "get_connection", lambda cs: FakeConnection(fake_quality_rows))
-    report = quality.collect_quality("cs", build_tables(), detect_dupes=False)
+def test_collect_quality_no_duplicates_flag(fake_quality_rows):
+    report = quality.collect_quality(_quality_adapter(fake_quality_rows), build_tables(), detect_dupes=False)
     assert report.duplicates == []
 
 
-def test_build_quality_json(monkeypatch, fake_quality_rows):
-    monkeypatch.setattr(quality, "get_connection", lambda cs: FakeConnection(fake_quality_rows))
-    report = quality.collect_quality("cs", build_tables())
+def test_build_quality_json(fake_quality_rows):
+    report = quality.collect_quality(_quality_adapter(fake_quality_rows), build_tables())
     data = build_quality_json("DB", report)
     assert data["report_type"] == "quality"
     assert data["summary"]["columns_profiled"] == 4
@@ -64,9 +82,8 @@ def test_build_quality_json(monkeypatch, fake_quality_rows):
     assert data["duplicates"][0]["duplicate_rows"] == 5
 
 
-def test_render_quality_html(monkeypatch, fake_quality_rows, tmp_path):
-    monkeypatch.setattr(quality, "get_connection", lambda cs: FakeConnection(fake_quality_rows))
-    report = quality.collect_quality("cs", build_tables())
+def test_render_quality_html(fake_quality_rows, tmp_path):
+    report = quality.collect_quality(_quality_adapter(fake_quality_rows), build_tables())
     out = tmp_path / "q.html"
     render_quality_html("DB", report, str(out))
     h = out.read_text(encoding="utf-8")
@@ -76,8 +93,9 @@ def test_render_quality_html(monkeypatch, fake_quality_rows, tmp_path):
 
 
 def test_quality_cli(monkeypatch, fake_quality_rows, tmp_path):
-    monkeypatch.setattr(cli, "extract_metadata", lambda cs: build_tables())
-    monkeypatch.setattr(quality, "get_connection", lambda cs: FakeConnection(fake_quality_rows))
+    monkeypatch.setattr(cli, "extract_metadata", lambda adapter: build_tables())
+    monkeypatch.setattr(SqlServerAdapter, "_default_connect",
+                        staticmethod(lambda cs: FakeConnection(fake_quality_rows)))
     out = tmp_path / "q.html"
     jout = tmp_path / "q.json"
     res = CliRunner().invoke(cli.cli, [

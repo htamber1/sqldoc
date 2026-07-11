@@ -5,7 +5,8 @@ import pytest
 
 from sqldoc.adapters import (
     get_adapter, detect_dialect, UnsupportedDialectError,
-    SqlServerAdapter, PostgresAdapter, MySQLAdapter, DatabaseAdapter, Capabilities,
+    SqlServerAdapter, PostgresAdapter, MySQLAdapter, SqliteAdapter, SnowflakeAdapter,
+    DatabaseAdapter, Capabilities,
     DIALECTS, SUPPORTED_DIALECTS, PLANNED_DIALECTS, DIALECT_CHOICES,
 )
 from conftest import FakeConnection
@@ -34,8 +35,9 @@ def test_azuresql_host_beats_sqlserver_driver():
 
 # --- registry --------------------------------------------------------------
 
-def test_all_four_dialects_supported():
-    assert set(SUPPORTED_DIALECTS) == {"sqlserver", "azuresql", "postgres", "mysql"}
+def test_all_dialects_supported():
+    assert set(SUPPORTED_DIALECTS) == {
+        "sqlserver", "azuresql", "postgres", "mysql", "sqlite", "snowflake"}
     assert PLANNED_DIALECTS == []
     assert set(DIALECT_CHOICES) == set(DIALECTS)
 
@@ -46,6 +48,8 @@ def test_registry_maps_to_expected_adapters():
     assert DIALECTS["azuresql"] is SqlServerAdapter
     assert DIALECTS["postgres"] is PostgresAdapter
     assert DIALECTS["mysql"] is MySQLAdapter
+    assert DIALECTS["sqlite"] is SqliteAdapter
+    assert DIALECTS["snowflake"] is SnowflakeAdapter
 
 
 # --- get_adapter -----------------------------------------------------------

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldoc"
-version = "1.5.1"
+version = "1.6.0"
 description = "Multi-database documentation generator + PII/compliance scanner for SQL Server, PostgreSQL, MySQL and Azure SQL, with optional AI-written descriptions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,11 +30,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Database drivers are optional: SQL Server (pyodbc) is a core dependency; the
-# postgres/mysql drivers install only when you target those engines.
+# Database drivers are optional: SQL Server (pyodbc) is a core dependency and
+# SQLite uses the stdlib; the postgres/mysql/snowflake drivers install only when
+# you target those engines.
 postgres = ["psycopg2-binary>=2.9"]
 mysql = ["mysql-connector-python>=8.0"]
-all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0"]
+snowflake = ["snowflake-connector-python>=3.0"]
+all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0", "snowflake-connector-python>=3.0"]
 test = ["pytest>=8", "pypdf>=4"]
 
 [project.urls]

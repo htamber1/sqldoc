@@ -28,9 +28,9 @@ from sqldoc.adapters.base import (
 class MySQLAdapter(DatabaseAdapter):
     dialect = "mysql"
     display_name = "MySQL"
-    # Metadata + aggregate profiling; no SQL Server DMV analogue for health and
-    # the comply access audit is SQL-Server-specific.
-    capabilities = Capabilities(quality=True, health=False, access_audit=False)
+    # Metadata + aggregate profiling (quality) + health via performance_schema.
+    # The comply access audit is SQL-Server-specific and not ported.
+    capabilities = Capabilities(quality=True, health=True, access_audit=False)
 
     @staticmethod
     def _default_connect(connection_string: str):
@@ -56,7 +56,7 @@ class MySQLAdapter(DatabaseAdapter):
                                 username: str, password: str) -> str:
         return f"mysql://{username}:{password}@{server}/{database}"
 
-    def _cursor(self, conn):
+    def cursor(self, conn):
         # dictionary=True yields row["col"] access — the format supported across
         # mysql-connector's C-extension and pure-Python connections and versions.
         return conn.cursor(dictionary=True)
@@ -65,7 +65,7 @@ class MySQLAdapter(DatabaseAdapter):
 
     def extract_metadata(self) -> list[Table]:
         conn = self.connect()
-        cursor = self._cursor(conn)
+        cursor = self.cursor(conn)
 
         cursor.execute("""
             SELECT table_schema AS schema_name,
@@ -257,7 +257,7 @@ class MySQLAdapter(DatabaseAdapter):
 
     def extract_views(self) -> list[View]:
         conn = self.connect()
-        cursor = self._cursor(conn)
+        cursor = self.cursor(conn)
         cursor.execute("""
             SELECT table_schema AS schema_name,
                    table_name AS view_name,
@@ -305,7 +305,7 @@ class MySQLAdapter(DatabaseAdapter):
 
     def extract_procedures(self) -> list[StoredProcedure]:
         conn = self.connect()
-        cursor = self._cursor(conn)
+        cursor = self.cursor(conn)
         cursor.execute("""
             SELECT routine_schema AS schema_name,
                    routine_name AS proc_name,

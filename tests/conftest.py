@@ -60,6 +60,24 @@ def build_procs():
     )]
 
 
+class FakeAdapter:
+    """Minimal adapter stand-in for health/quality unit tests: a fixed dialect
+    and a pre-built (fake) connection."""
+    def __init__(self, conn, dialect="sqlserver", display_name=None, capabilities=None):
+        from sqldoc.adapters.base import Capabilities
+        self._conn = conn
+        self.dialect = dialect
+        self.display_name = display_name or dialect
+        self.capabilities = capabilities or Capabilities(
+            quality=True, health=True, access_audit=True)
+
+    def connect(self):
+        return self._conn
+
+    def cursor(self, conn):
+        return conn.cursor()
+
+
 @pytest.fixture
 def sample_tables():
     return build_tables()
@@ -95,6 +113,9 @@ class FakeRow:
         if isinstance(i, str):
             return self._d[i]
         return list(self._d.values())[i]
+
+    def get(self, k, default=None):
+        return self._d.get(k, default)
 
 
 class FakeCursor:

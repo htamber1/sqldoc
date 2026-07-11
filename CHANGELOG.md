@@ -4,6 +4,58 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] — 2026-07-11
+
+Two more databases and cross-dialect analysis. sqldoc now targets **six
+engines** — SQL Server, Azure SQL, PostgreSQL, MySQL, **SQLite**, and
+**Snowflake** — and the `health` and `quality` commands work on PostgreSQL and
+MySQL, not just SQL Server.
+
+### Added — SQLite
+- **`SqliteAdapter`** using the Python-stdlib `sqlite3` driver (no extra
+  dependency) — PRAGMA-based extraction (`table_info` / `foreign_key_list` /
+  `index_list` / `index_info`) plus `sqlite_master` for views and triggers.
+  Auto-detected from `*.db` / `*.sqlite` paths and `sqlite://` URLs.
+- **Live-validated** against the **Chinook** sample database (11 tables, FKs,
+  indexes) — `doc`, `scan`, `intel`, and `quality` all produce correct reports.
+
+### Added — Snowflake
+- **`SnowflakeAdapter`** (optional dependency: `pip install sqldoc[snowflake]`)
+  using `INFORMATION_SCHEMA` for tables/columns/views/procedures and
+  `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS` for constraints. Auto-detected from
+  `snowflake://` URLs and `*.snowflakecomputing.com`. **Mock-tested only** — not
+  yet run against a live account.
+
+### Added — `health` and `quality` on PostgreSQL & MySQL
+- **`quality`** now runs on SQL Server, PostgreSQL, MySQL, and SQLite via a
+  per-dialect `QualityProfile` (identifier quoting, `TOP` vs `LIMIT`, and
+  type classification), with min/max stringified in Python to stay
+  dialect-neutral.
+- **`health`** now runs on PostgreSQL (dead tables via `pg_stat_user_tables`,
+  slow queries via `pg_stat_statements`) and MySQL (dead tables via
+  `performance_schema.table_io_waits_summary_by_table`, slow queries via
+  `performance_schema.events_statements_summary_by_digest`). Checks with no
+  analogue on a dialect (missing-index / fragmentation advice) degrade to an
+  explicit note. Capabilities are advertised per adapter, so unsupported
+  combinations (e.g. `health` on SQLite) are refused with a clear message.
+- **Live-validated**: PostgreSQL/Pagila and MySQL/Sakila — `quality` profiles
+  every column with zero errors, and `health` correctly flags a genuinely dead
+  table and surfaces slow-query digests.
+
+### Fixed
+- **PostgreSQL transaction-abort cascade** — analysis connections now use
+  autocommit, so one failed statement (a missing `pg_stat_statements` extension,
+  or `MIN` on an unsupported type) no longer aborts the whole transaction and
+  poisons every following query.
+- `boolean` is no longer classified as order-comparable (PostgreSQL has no
+  `MIN(boolean)`).
+
+### Changed
+- The adapter interface gained a `cursor(conn)` method so each dialect hands the
+  analysis code a row type it can read uniformly (e.g. MySQL's dict cursor).
+- `collect_health` / `collect_quality` now take the resolved adapter rather than
+  a raw connection string.
+
 ## [1.5.1] — 2026-07-11
 
 Live-validation release: the PostgreSQL and MySQL adapters were run end-to-end

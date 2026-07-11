@@ -124,14 +124,15 @@ def test_unknown_dialect_rejected_by_choice(patched, tmp_path):
     assert "oracle" in res.output.lower() or "invalid" in res.output.lower()
 
 
-def test_health_rejected_on_postgres(monkeypatch, tmp_path):
-    # health's DMV SQL is SQL-Server-only; postgres must be refused cleanly.
+def test_health_rejected_on_sqlite(monkeypatch, tmp_path):
+    # health is supported on SQL Server / Postgres / MySQL but not SQLite
+    # (no per-table stat views); SQLite must be refused cleanly.
     res = CliRunner().invoke(cli.health, [
-        "--connection-string", "postgresql://u:p@host/db",
+        "--connection-string", str(tmp_path / "x.db"),
         "--output", str(tmp_path / "h.html"),
     ])
     assert res.exit_code != 0
-    assert "not available on dialect 'postgres'" in res.output
+    assert "not available on dialect 'sqlite'" in res.output
 
 
 def test_format_inferred_from_extension(patched, tmp_path):

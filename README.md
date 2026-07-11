@@ -5,21 +5,22 @@
 [![Python](https://img.shields.io/pypi/pyversions/sqldoc.svg)](https://pypi.org/project/sqldoc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A seven-command database platform** for **SQL Server, PostgreSQL, MySQL, and
-Azure SQL** — documentation, PII/compliance scanning, health analysis,
-data-quality profiling, schema intelligence, AI insights, and compliance
-reporting. One CLI, self-contained HTML reports, and machine-readable `--json`
-for every command.
+**A seven-command database platform** for **SQL Server, PostgreSQL, MySQL,
+SQLite, Snowflake, and Azure SQL** — documentation, PII/compliance scanning,
+health analysis, data-quality profiling, schema intelligence, AI insights, and
+compliance reporting. One CLI, self-contained HTML reports, and machine-readable
+`--json` for every command.
 
 `sqldoc` connects to your database, reads its schema (and, for a couple of
 commands, aggregate statistics — never row data), optionally uses an LLM to write
 plain-English descriptions, and produces reports you can open in any browser or feed
 to another tool. Documentation, PII scanning, schema intelligence, and AI insights
-run on **SQL Server, PostgreSQL, MySQL, and Azure SQL** via a common adapter layer;
-pick the engine with `--dialect` or let it auto-detect from the connection string.
-The database drivers for Postgres/MySQL are optional installs
-(`pip install sqldoc[postgres]` / `sqldoc[mysql]` / `sqldoc[all]`) — SQL Server
-users need nothing extra.
+run on **all six engines** via a common adapter layer; `health` and `quality` run on
+SQL Server, PostgreSQL, and MySQL. Pick the engine with `--dialect` or let it
+auto-detect from the connection string. SQLite uses the Python stdlib and SQL Server
+ships in the core install; the Postgres/MySQL/Snowflake drivers are optional
+installs (`pip install sqldoc[postgres]` / `sqldoc[mysql]` / `sqldoc[snowflake]` /
+`sqldoc[all]`).
 
 ## Quick start
 
@@ -85,17 +86,21 @@ never a salary.
 From PyPI:
 
 ```bash
-pip install sqldoc              # SQL Server / Azure SQL (via pyodbc)
+pip install sqldoc              # SQL Server / Azure SQL (pyodbc) + SQLite (stdlib)
 pip install sqldoc[postgres]    # + PostgreSQL (psycopg2)
 pip install sqldoc[mysql]       # + MySQL (mysql-connector-python)
-pip install sqldoc[all]         # + both
+pip install sqldoc[snowflake]   # + Snowflake (snowflake-connector-python)
+pip install sqldoc[all]         # + all optional drivers
 ```
 
 The dialect is auto-detected from the connection string (`postgresql://`,
-`mysql://`, `*.database.windows.net`) or set explicitly with
-`--dialect {sqlserver,azuresql,postgres,mysql}`. `doc`, `scan`, `intel`, and
-`insights` run on all four engines; `health`, `quality`, and the `comply` access
-audit are SQL Server / Azure SQL only for now.
+`mysql://`, `snowflake://`, `*.snowflakecomputing.com`, `*.db`/`*.sqlite`,
+`*.database.windows.net`) or set explicitly with
+`--dialect {sqlserver,azuresql,postgres,mysql,sqlite,snowflake}`. `doc`, `scan`,
+`intel`, and `insights` run on all six engines; `health` and `quality` run on SQL
+Server, PostgreSQL, and MySQL; the `comply` access audit is SQL Server / Azure SQL
+only. (Snowflake is currently mock-tested, not yet validated against a live
+account.)
 
 From source (editable/development install):
 
@@ -244,7 +249,7 @@ publicly documented capabilities — verify current features against each vendor
 | --- | --- | --- | --- |
 | Price | Free / open source (MIT) | Paid (per-user) | Paid (per-user / repo) |
 | Interface | CLI — scriptable, CI-friendly | Desktop GUI + CLI | Desktop app + web repo |
-| Databases | SQL Server, PostgreSQL, MySQL, Azure SQL | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
+| Databases | SQL Server, PostgreSQL, MySQL, SQLite, Snowflake, Azure SQL | SQL Server | 20+ (SQL Server, Oracle, PostgreSQL, MySQL, …) |
 | Self-contained HTML docs | ✓ | ✓ (HTML / CHM / Word / Markdown) | ✓ (web catalog) |
 | AI-written descriptions | ✓ (local Ollama **or** cloud) | ✗ | Partial (AI assist) |
 | Runs fully offline / on-prem | ✓ (local mode, no data egress) | ✓ | ✓ (on-prem repo) |

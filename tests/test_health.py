@@ -6,13 +6,13 @@ from click.testing import CliRunner
 
 from sqldoc import health, cli
 from sqldoc.health_renderer import build_health_json, render_health_html
-from conftest import FakeConnection
+from sqldoc.adapters.sqlserver import SqlServerAdapter
+from conftest import FakeConnection, FakeAdapter
 
 
 @pytest.fixture
-def report(monkeypatch, fake_health_rows):
-    monkeypatch.setattr(health, "get_connection", lambda cs: FakeConnection(fake_health_rows))
-    return health.collect_health("cs", top=20)
+def report(fake_health_rows):
+    return health.collect_health(FakeAdapter(FakeConnection(fake_health_rows)), top=20)
 
 
 def test_collect_health_sections(report):
@@ -41,22 +41,19 @@ def test_fragmentation_recommendation(report):
 
 
 def test_collect_health_degrades_on_permission_error(monkeypatch, fake_health_rows):
-    monkeypatch.setattr(health, "get_connection", lambda cs: FakeConnection(fake_health_rows))
-
     def boom(cursor, top):
         raise PermissionError("VIEW SERVER STATE denied")
     monkeypatch.setattr(health, "collect_slow_queries", boom)
 
-    r = health.collect_health("cs")
+    r = health.collect_health(FakeAdapter(FakeConnection(fake_health_rows)))
     assert r.slow_queries == []
     assert r.errors and r.errors[0][0] == "Slow queries"
     # other checks still ran
     assert r.dead_tables and r.fragmented_indexes
 
 
-def test_schema_filter(monkeypatch, fake_health_rows):
-    monkeypatch.setattr(health, "get_connection", lambda cs: FakeConnection(fake_health_rows))
-    r = health.collect_health("cs", schemas=["HR"])   # nothing is in HR
+def test_schema_filter(fake_health_rows):
+    r = health.collect_health(FakeAdapter(FakeConnection(fake_health_rows)), schemas=["HR"])
     assert r.dead_tables == [] and r.missing_indexes == [] and r.fragmented_indexes == []
 
 
@@ -78,7 +75,9 @@ def test_render_health_html(report, tmp_path):
 
 
 def test_health_cli(monkeypatch, fake_health_rows, tmp_path):
-    monkeypatch.setattr(health, "get_connection", lambda cs: FakeConnection(fake_health_rows))
+    # The CLI builds a real SqlServerAdapter; patch its connection seam.
+    monkeypatch.setattr(SqlServerAdapter, "_default_connect",
+                        staticmethod(lambda cs: FakeConnection(fake_health_rows)))
     out = tmp_path / "health.html"
     jout = tmp_path / "health.json"
     res = CliRunner().invoke(cli.cli, [

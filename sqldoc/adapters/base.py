@@ -173,6 +173,12 @@ class DatabaseAdapter(ABC):
     def _default_connect(connection_string: str):
         raise NotImplementedError
 
+    def cursor(self, conn):
+        """Create a cursor whose rows expose columns the way the analysis code
+        reads them (via `sqldoc.dbutil.cell`). Overridden where the driver needs
+        an explicit row format (e.g. MySQL's dict cursor)."""
+        return conn.cursor()
+
     @staticmethod
     @abstractmethod
     def build_connection_string(server: str, database: str,

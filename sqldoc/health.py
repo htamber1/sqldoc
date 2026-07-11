@@ -19,7 +19,8 @@ statistics are transient (reset on restart / `DBCC`), which the report notes.
 """
 from dataclasses import dataclass, field
 
-from sqldoc.extractor import get_connection
+from sqldoc.dbutil import cell
+from sqldoc.extractor import get_connection   # retained for back-compat imports/tests
 
 
 @dataclass
@@ -227,17 +228,136 @@ def collect_fragmented_indexes(cursor, min_fragmentation: float, min_pages: int)
     return out
 
 
-def collect_health(connection_string: str, top: int = 20,
-                   min_fragmentation: float = 10.0, min_pages: int = 100,
-                   schemas: list = None) -> HealthReport:
-    """Run all four checks against the DB. Each is isolated so a missing
-    permission degrades that section (recorded in `report.errors`) instead of
-    failing the whole run. `schemas`, if given, filters the table-scoped checks."""
-    report = HealthReport(database="")
-    conn = get_connection(connection_string)
-    cursor = conn.cursor()
-    try:
-        checks = [
+# --- PostgreSQL checks -----------------------------------------------------
+# pg_stat_user_tables gives per-table read/write counters; pg_stat_statements
+# (an extension) gives statement timings. Missing-index and fragmentation
+# advice have no native analogue, so those sections degrade to a note.
+
+def collect_pg_dead_tables(cursor) -> list:
+    cursor.execute("""
+        SELECT schemaname AS schema_name,
+               relname AS table_name,
+               n_live_tup AS row_count,
+               COALESCE(idx_scan, 0) AS user_seeks,
+               COALESCE(seq_scan, 0) AS user_scans,
+               COALESCE(n_tup_ins, 0) + COALESCE(n_tup_upd, 0) + COALESCE(n_tup_del, 0) AS user_updates,
+               last_analyze
+        FROM pg_stat_user_tables
+        ORDER BY n_live_tup DESC
+    """)
+    out = []
+    for r in cursor.fetchall():
+        dt = DeadTable(
+            schema=cell(r, "schema_name"), table=cell(r, "table_name"),
+            row_count=int(cell(r, "row_count") or 0),
+            user_seeks=int(cell(r, "user_seeks") or 0),
+            user_scans=int(cell(r, "user_scans") or 0),
+            user_lookups=0, user_updates=int(cell(r, "user_updates") or 0),
+            last_read=_s(cell(r, "last_analyze")),
+        )
+        if dt.reads == 0 and dt.row_count > 0:
+            out.append(dt)
+    return out
+
+
+def collect_pg_slow_queries(cursor, top: int) -> list:
+    # Requires the pg_stat_statements extension; if absent this raises and the
+    # section degrades. Columns are the PG 13+ names (total_exec_time / mean_exec_time).
+    cursor.execute(f"""
+        SELECT query AS query_text,
+               calls AS execution_count,
+               total_exec_time AS total_elapsed_ms,
+               mean_exec_time AS avg_elapsed_ms,
+               rows AS avg_logical_reads,
+               '' AS last_execution
+        FROM pg_stat_statements
+        ORDER BY mean_exec_time DESC
+        LIMIT {int(top)}
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(SlowQuery(
+            query_text=_collapse_ws(_s(cell(r, "query_text")))[:500],
+            execution_count=int(cell(r, "execution_count") or 0),
+            avg_elapsed_ms=round(float(cell(r, "avg_elapsed_ms") or 0), 2),
+            total_elapsed_ms=round(float(cell(r, "total_elapsed_ms") or 0), 2),
+            avg_logical_reads=int(cell(r, "avg_logical_reads") or 0),
+            last_execution=_s(cell(r, "last_execution")),
+        ))
+    return out
+
+
+# --- MySQL checks ----------------------------------------------------------
+# performance_schema surfaces per-table I/O counters and per-statement digests.
+# Timer columns are in picoseconds (÷1e9 → ms). Missing-index / fragmentation
+# advice degrade to a note.
+
+def collect_mysql_dead_tables(cursor) -> list:
+    cursor.execute("""
+        SELECT t.OBJECT_SCHEMA AS schema_name,
+               t.OBJECT_NAME AS table_name,
+               COALESCE(it.TABLE_ROWS, 0) AS row_count,
+               t.COUNT_READ AS user_scans,
+               t.COUNT_WRITE AS user_updates
+        FROM performance_schema.table_io_waits_summary_by_table t
+        JOIN information_schema.tables it
+          ON it.table_schema = t.OBJECT_SCHEMA AND it.table_name = t.OBJECT_NAME
+        WHERE t.OBJECT_SCHEMA = DATABASE() AND t.OBJECT_TYPE = 'TABLE'
+        ORDER BY it.TABLE_ROWS DESC
+    """)
+    out = []
+    for r in cursor.fetchall():
+        dt = DeadTable(
+            schema=cell(r, "schema_name"), table=cell(r, "table_name"),
+            row_count=int(cell(r, "row_count") or 0),
+            user_seeks=0, user_scans=int(cell(r, "user_scans") or 0),
+            user_lookups=0, user_updates=int(cell(r, "user_updates") or 0),
+            last_read="",
+        )
+        if dt.reads == 0 and dt.row_count > 0:
+            out.append(dt)
+    return out
+
+
+def collect_mysql_slow_queries(cursor, top: int) -> list:
+    cursor.execute(f"""
+        SELECT DIGEST_TEXT AS query_text,
+               COUNT_STAR AS execution_count,
+               SUM_TIMER_WAIT / 1e9 AS total_elapsed_ms,
+               AVG_TIMER_WAIT / 1e9 AS avg_elapsed_ms,
+               SUM_ROWS_EXAMINED / GREATEST(COUNT_STAR, 1) AS avg_logical_reads,
+               LAST_SEEN AS last_execution
+        FROM performance_schema.events_statements_summary_by_digest
+        WHERE DIGEST_TEXT IS NOT NULL
+        ORDER BY AVG_TIMER_WAIT DESC
+        LIMIT {int(top)}
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(SlowQuery(
+            query_text=_collapse_ws(_s(cell(r, "query_text")))[:500],
+            execution_count=int(cell(r, "execution_count") or 0),
+            avg_elapsed_ms=round(float(cell(r, "avg_elapsed_ms") or 0), 2),
+            total_elapsed_ms=round(float(cell(r, "total_elapsed_ms") or 0), 2),
+            avg_logical_reads=int(cell(r, "avg_logical_reads") or 0),
+            last_execution=_s(cell(r, "last_execution")),
+        ))
+    return out
+
+
+# --- orchestration ---------------------------------------------------------
+
+_NOT_AVAILABLE = "NotAvailable: no equivalent system view on this dialect"
+
+
+def _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
+    """Return the [(label, fn, attr)] check list for a dialect. Sections with no
+    analogue are represented by a fn that raises, so they degrade uniformly."""
+    def unavailable():
+        raise RuntimeError(_NOT_AVAILABLE)
+
+    if dialect in ("sqlserver", "azuresql"):
+        return [
             ("Slow queries", lambda: collect_slow_queries(cursor, top), "slow_queries"),
             ("Dead tables", lambda: collect_dead_tables(cursor), "dead_tables"),
             ("Missing indexes", lambda: collect_missing_indexes(cursor, top), "missing_indexes"),
@@ -245,7 +365,36 @@ def collect_health(connection_string: str, top: int = 20,
              lambda: collect_fragmented_indexes(cursor, min_fragmentation, min_pages),
              "fragmented_indexes"),
         ]
-        for label, fn, attr in checks:
+    if dialect == "postgres":
+        return [
+            ("Slow queries (pg_stat_statements)", lambda: collect_pg_slow_queries(cursor, top), "slow_queries"),
+            ("Dead tables", lambda: collect_pg_dead_tables(cursor), "dead_tables"),
+            ("Missing indexes", unavailable, "missing_indexes"),
+            ("Index fragmentation", unavailable, "fragmented_indexes"),
+        ]
+    if dialect == "mysql":
+        return [
+            ("Slow queries (performance_schema)", lambda: collect_mysql_slow_queries(cursor, top), "slow_queries"),
+            ("Dead tables", lambda: collect_mysql_dead_tables(cursor), "dead_tables"),
+            ("Missing indexes", unavailable, "missing_indexes"),
+            ("Index fragmentation", unavailable, "fragmented_indexes"),
+        ]
+    return []
+
+
+def collect_health(adapter, top: int = 20,
+                   min_fragmentation: float = 10.0, min_pages: int = 100,
+                   schemas: list = None) -> HealthReport:
+    """Run the health checks appropriate to the adapter's dialect. Each check is
+    isolated so a missing permission/extension (or a section with no analogue on
+    this dialect) degrades to a note in `report.errors` instead of failing the
+    whole run. `schemas`, if given, filters the table-scoped checks."""
+    report = HealthReport(database="")
+    dialect = getattr(adapter, "dialect", "sqlserver")
+    conn = adapter.connect()
+    cursor = adapter.cursor(conn)
+    try:
+        for label, fn, attr in _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
             try:
                 setattr(report, attr, fn())
             except Exception as e:

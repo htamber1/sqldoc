@@ -42,10 +42,9 @@ def _decode_trigger_events(tgtype: int) -> list[str]:
 class PostgresAdapter(DatabaseAdapter):
     dialect = "postgres"
     display_name = "PostgreSQL"
-    # Postgres serves the metadata surface + aggregate profiling (quality runs
-    # its own ANSI-ish SQL). Health (SQL Server DMVs) has no analogue; the
-    # comply access audit reads SQL Server object grants and is not yet ported.
-    capabilities = Capabilities(quality=True, health=False, access_audit=False)
+    # Metadata + aggregate profiling (quality) + health via pg_stat_* views.
+    # The comply access audit reads SQL Server object grants and is not ported.
+    capabilities = Capabilities(quality=True, health=True, access_audit=False)
 
     @staticmethod
     def _default_connect(connection_string: str):
@@ -60,7 +59,14 @@ class PostgresAdapter(DatabaseAdapter):
             ) from e
         # NamedTupleCursor as the default factory gives row.column attribute
         # access, matching the pyodbc-style access the extraction code uses.
-        return psycopg2.connect(connection_string, cursor_factory=NamedTupleCursor)
+        conn = psycopg2.connect(connection_string, cursor_factory=NamedTupleCursor)
+        # Autocommit for read-only introspection/analysis: without it, one failed
+        # statement (e.g. a missing pg_stat_statements extension, or MIN on an
+        # unsupported type) aborts the whole transaction and every following
+        # query fails with InFailedSqlTransaction. Each analysis query is
+        # independently guarded, so per-statement autocommit is what we want.
+        conn.autocommit = True
+        return conn
 
     @staticmethod
     def build_connection_string(server: str, database: str,
