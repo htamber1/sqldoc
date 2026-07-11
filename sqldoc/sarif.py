@@ -58,6 +58,7 @@ def build_sarif(database: str, findings: list) -> dict:
             }],
             "properties": {
                 "risk": f.risk, "confidence": f.confidence,
+                "confidenceScore": f.confidence_score,
                 "dataType": f.data_type, "regulations": f.regulations,
             },
         })

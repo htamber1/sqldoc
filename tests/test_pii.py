@@ -1,7 +1,8 @@
 """PII / compliance detection engine."""
 import pytest
 
-from sqldoc.pii import scan_tables, summarize, _match_category, Finding
+from sqldoc.pii import (scan_tables, summarize, _match_category, Finding,
+                        apply_allowlist, filter_by_confidence)
 from sqldoc.extractor import Table, Column
 
 
@@ -32,12 +33,54 @@ def test_detects_common_pii(name, category):
     assert m is not None and m.name == category, (name, m and m.name)
 
 
+@pytest.mark.parametrize("name,category", [
+    ("Fingerprint", "Biometric"),
+    ("DNAProfile", "Biometric"),
+    ("CriminalRecord", "Criminal Record"),
+    ("PolicyNumber", "Insurance / Policy"),
+    ("LicensePlate", "Vehicle / Registration"),
+    ("MacAddress", "Device Identifier"),
+    ("IMEI", "Device Identifier"),
+    ("Age", "Age"),
+])
+def test_detects_extended_pii(name, category):
+    m = _match_category(name)
+    assert m is not None and m.name == category, (name, m and m.name)
+
+
 @pytest.mark.parametrize("name", [
     "Rating", "DiscontinuedDate", "AdditionalContactInfo",
     "ProductID", "Quantity", "ModifiedDate", "ProductName",
+    # extended-category false positives: none of these should match "Age"/"Vehicle"/etc.
+    "Usage", "PageCount", "MessageId", "Language", "ProvinceId", "Vintage",
 ])
 def test_avoids_false_positives(name):
     assert _match_category(name) is None, name
+
+
+def test_confidence_scores():
+    hi = scan_tables([_table([_col("EmailAddress", "nvarchar")])])[0]
+    assert hi.confidence_score == 0.9                    # name + type
+    mismatch = scan_tables([_table([_col("NationalID", "int")])])[0]
+    assert mismatch.confidence_score == 0.4              # type mismatch
+
+
+def test_apply_allowlist_forms():
+    findings = scan_tables([_table([_col("EmailAddress"), _col("NationalID")])])
+    kept, n = apply_allowlist(findings, ["dbo.T.EmailAddress"])   # full path
+    assert n == 1 and all(f.column != "EmailAddress" for f in kept)
+    assert apply_allowlist(findings, ["nationalid"])[1] == 1      # bare column, case-insensitive
+    assert apply_allowlist(findings, ["dbo.*.Email*"])[1] == 1    # glob
+    assert apply_allowlist(findings, [])[1] == 0                   # empty = no-op
+
+
+def test_filter_by_confidence():
+    weak = scan_tables([_table([_col("NationalID", "int")])])      # 0.4
+    kept, dropped = filter_by_confidence(weak, 0.5)
+    assert dropped == 1 and kept == []
+    strong = scan_tables([_table([_col("EmailAddress")])])         # 0.9
+    assert filter_by_confidence(strong, 0.5)[1] == 0
+    assert filter_by_confidence(strong, 0.0)[1] == 0               # threshold 0 = keep all
 
 
 def test_type_match_boosts_confidence():

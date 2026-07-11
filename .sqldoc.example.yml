@@ -41,3 +41,14 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #     severity: HIGH
 #     regulations: ["Security"]
 #     action: "Move to a secrets vault; never store in the database."
+
+# --- Scan tuning for `sqldoc scan` (optional) ---
+# confidence_threshold: 0.5   # drop findings below this score (0.0-1.0);
+                              # 0.5 hides weak name-only / type-mismatch matches
+# Known-safe columns to suppress (never sampled, reported, gated, or baselined).
+# Each entry matches schema.table.column, table.column, a bare column name, or a
+# glob — all case-insensitive.
+# pii_allowlist:
+#   - dbo.Config.ContactEmail       # this specific column is a support inbox, not PII
+#   - "*.TestSSN"                    # any column named TestSSN
+#   - dbo.Staging.*                  # everything in a staging table

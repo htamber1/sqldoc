@@ -19,6 +19,14 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
   default/action detail on columns; Markdown/PDF get equivalents; JSON includes
   them automatically) and participate in schema change detection (`--snapshot`
   reports added/removed checks & uniques and changed defaults/FK actions).
+- **Scan depth** — six new PII categories (**Biometric**, **Criminal Record**,
+  **Insurance / Policy**, **Vehicle / Registration**, **Device Identifier**,
+  **Age**). Each finding now carries a numeric **confidence score**;
+  `sqldoc scan --confidence-threshold 0.0-1.0` drops weak (name-only /
+  type-mismatch) matches. A **per-column allowlist** (`.sqldoc.yml`
+  `pii_allowlist:`) suppresses known-safe columns — entries match
+  `schema.table.column`, `table.column`, bare `column`, or a glob
+  (`dbo.*.Password`) — before sampling, reporting, gating, or the baseline.
 
 ## [1.2.0] — 2026-07-10
 

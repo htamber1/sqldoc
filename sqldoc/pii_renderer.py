@@ -156,7 +156,7 @@ PII_TEMPLATE = """
             });
 
             document.getElementById('export-csv').addEventListener('click', function () {
-                var cols = ['schema', 'table', 'column', 'data_type', 'category', 'risk', 'confidence', 'regulations', 'action'];
+                var cols = ['schema', 'table', 'column', 'data_type', 'category', 'risk', 'confidence', 'confidence_score', 'regulations', 'action'];
                 var esc = function (v) { v = String(v == null ? '' : v); return '"' + v.replace(/"/g, '""') + '"'; };
                 var lines = [cols.join(',')];
                 FINDINGS.forEach(function (f) {
@@ -183,7 +183,8 @@ def render_pii_html(database, findings, output_path, sampled=False):
     findings_data = [{
         "schema": f.schema, "table": f.table, "column": f.column,
         "data_type": f.data_type, "category": f.category, "risk": f.risk,
-        "confidence": f.confidence, "regulations": f.regulations, "action": f.action,
+        "confidence": f.confidence, "confidence_score": f.confidence_score,
+        "regulations": f.regulations, "action": f.action,
     } for f in findings]
 
     template = Environment(autoescape=True).from_string(PII_TEMPLATE)

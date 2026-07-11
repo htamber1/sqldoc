@@ -217,6 +217,43 @@ def test_scan_fail_on_high_passes_without_high(monkeypatch, tmp_path):
     assert res.exit_code == 0, res.output
 
 
+def test_scan_confidence_threshold_drops_weak(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    # NationalID as int is a type-mismatch (confidence 0.4); threshold 0.5 drops it.
+    t = Table("dbo", "People", 1, columns=[
+        Column("NationalID", "int", 4, True, False, False, None, None),
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [t])
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-baseline", "--confidence-threshold", "0.5", "--output", str(tmp_path / "p.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "Dropped 1 finding" in res.output
+    assert "Flagged 0 column" not in res.output       # flagged before the drop
+    assert "MEDIUM: 0" in res.output
+
+
+def test_scan_allowlist_suppresses(monkeypatch, tmp_path):
+    from sqldoc.extractor import Table, Column
+    t = Table("dbo", "People", 1, columns=[
+        Column("EmailAddress", "nvarchar", 100, True, False, False, None, None),
+        Column("NationalID", "nvarchar", 20, True, False, False, None, None),
+    ])
+    monkeypatch.setattr(cli, "extract_metadata", lambda cs: [t])
+    cfg = tmp_path / "c.yml"
+    cfg.write_text("pii_allowlist:\n  - dbo.People.EmailAddress\n", encoding="utf-8")
+    out = tmp_path / "pii.html"
+    res = CliRunner().invoke(cli.cli, [
+        "scan", "--config", str(cfg), "--server", "h", "--database", "DB",
+        "--username", "u", "--password", "p", "--no-baseline", "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "Suppressed 1 finding" in res.output
+    html = out.read_text(encoding="utf-8")
+    assert "National ID / SSN" in html and "Email Address" not in html
+
+
 def test_scan_custom_pii_patterns_from_config(monkeypatch, tmp_path):
     from sqldoc.extractor import Table, Column
     staff = Table("dbo", "Staff", 1, columns=[

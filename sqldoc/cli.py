@@ -11,7 +11,8 @@ from sqldoc.json_renderer import render_json
 from sqldoc.snapshot import build_snapshot, load_snapshot, save_snapshot, diff_snapshots, iter_diff_lines
 from sqldoc.pii import (scan_tables, confirm_with_sampling, summarize,
                         findings_snapshot, diff_findings, iter_findings_diff_lines,
-                        load_custom_categories, findings_json)
+                        load_custom_categories, findings_json,
+                        apply_allowlist, filter_by_confidence)
 from sqldoc.pii_renderer import render_pii_html
 from sqldoc.sarif import render_sarif
 
@@ -22,7 +23,8 @@ CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
-    'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'fail_on', 'yes',
+    'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
+    'confidence_threshold', 'fail_on', 'yes',
 }
 
 
@@ -354,10 +356,12 @@ def main(config, server, database, username, password, connection_string, output
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
 @click.option('--json', 'json_out', default=None, help='Also write machine-readable findings (summary + all findings) as JSON to this path')
+@click.option('--confidence-threshold', 'confidence_threshold', type=click.FloatRange(0.0, 1.0), default=0.0,
+              help='Drop findings below this confidence score (0.0-1.0). E.g. 0.5 hides weak name-only / type-mismatch matches.')
 @click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high', 'new-high']), default='none',
               help='Exit non-zero to gate CI: high = any HIGH finding; new-high = a new HIGH finding vs the baseline')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, fail_on, yes):
+def scan(config, server, database, username, password, connection_string, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -378,6 +382,7 @@ def scan(config, server, database, username, password, connection_string, schema
     no_baseline = resolve('no_baseline', no_baseline)
     sarif = resolve('sarif', sarif)
     json_out = resolve('json', json_out, param='json_out')
+    confidence_threshold = resolve('confidence_threshold', confidence_threshold, param='confidence_threshold')
     fail_on = resolve('fail_on', fail_on, param='fail_on')
     yes = resolve('yes', yes)
 
@@ -391,6 +396,17 @@ def scan(config, server, database, username, password, connection_string, schema
         custom_cats = load_custom_categories(cfg.get('pii_patterns'))
     except ValueError as e:
         raise click.UsageError(f"Invalid pii_patterns in config: {e}")
+
+    # Known-safe columns to suppress (org allowlist), from config or --config.
+    allowlist = cfg.get('pii_allowlist') or []
+    if not isinstance(allowlist, list):
+        raise click.UsageError("pii_allowlist in config must be a list of column patterns.")
+
+    # Confidence threshold may come from config as a string; coerce + clamp.
+    try:
+        confidence_threshold = max(0.0, min(1.0, float(confidence_threshold)))
+    except (TypeError, ValueError):
+        raise click.UsageError(f"Invalid confidence_threshold '{confidence_threshold}' (must be 0.0-1.0).")
 
     click.echo("\nsqldoc v1.2.0  -  PII / compliance scan")
     click.echo(f"{'='*44}")
@@ -414,6 +430,14 @@ def scan(config, server, database, username, password, connection_string, schema
     if custom_cats:
         click.echo(f"Loaded {len(custom_cats)} custom PII pattern(s) from config.")
     findings = scan_tables(tables, extra_categories=custom_cats)
+
+    # Suppress known-safe columns before anything else (so they are never
+    # sampled, reported, gated on, or written to the baseline).
+    if allowlist:
+        findings, suppressed = apply_allowlist(findings, allowlist)
+        if suppressed:
+            click.echo(f"Suppressed {suppressed} finding(s) via the {len(allowlist)}-entry allowlist.")
+
     affected = len({(f.schema, f.table) for f in findings})
     click.echo(f"Flagged {len(findings)} column(s) across {affected} table(s).")
 
@@ -444,6 +468,14 @@ def scan(config, server, database, username, password, connection_string, schema
                 click.echo(f"Sampling failed: {e}; continuing with name/type findings.", err=True)
         else:
             click.echo("Skipping data sampling; using name/type findings.")
+
+    # Confidence gate: drop weak matches (applied after any sampling, so an AI
+    # confirmation can rescue a low-confidence name-only match, and an AI "not
+    # PII" verdict removes a false positive).
+    if confidence_threshold:
+        findings, dropped = filter_by_confidence(findings, confidence_threshold)
+        if dropped:
+            click.echo(f"Dropped {dropped} finding(s) below confidence threshold {confidence_threshold:.2f}.")
 
     # PII drift: diff this scan's findings against the previous baseline, then
     # overwrite it (mirrors schema change detection, but for regulated data).

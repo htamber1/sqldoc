@@ -52,6 +52,14 @@ PII_CATEGORIES = [
                 "HIGH", ["HIPAA", "GDPR"],
                 "Protected Health Information: apply HIPAA safeguards, encryption, and access logging.",
                 set()),
+    PIICategory("Biometric", [r"biometric", r"fingerprint", r"faceid", r"faceprint", r"retina", r"irisscan", r"voiceprint", r"dnaprofile", r"dnasequence"],
+                "HIGH", ["GDPR", "HIPAA"],
+                "Biometric identifiers are GDPR special-category data: encrypt, minimize, and require explicit consent.",
+                set()),
+    PIICategory("Criminal Record", [r"criminalrecord", r"conviction", r"arrestrecord", r"offence", r"offense", r"probation"],
+                "HIGH", ["GDPR"],
+                "GDPR Article 10 data on criminal convictions/offences: restrict tightly and log all access.",
+                set()),
     PIICategory("Credentials", [r"password", r"passwd", r"\bpwd\b", r"passwordhash", r"\bsecret\b", r"apikey", r"accesstoken", r"privatekey", r"\bsalt\b"],
                 "HIGH", ["Security"],
                 "Never store plaintext secrets; hash+salt passwords or use a secrets vault.",
@@ -84,6 +92,14 @@ PII_CATEGORIES = [
                 "MEDIUM", ["GDPR"],
                 "Precise location is personal data under GDPR.",
                 set()),
+    PIICategory("Insurance / Policy", [r"policynumber", r"insuranceid", r"insurancepolicy", r"policyholder", r"claimnumber"],
+                "MEDIUM", ["GDPR", "HIPAA"],
+                "Links a person to coverage/claims; restrict access and treat as regulated where health-related.",
+                set()),
+    PIICategory("Vehicle / Registration", [r"licenseplate", r"numberplate", r"\bvin\b", r"vehicleregistration", r"registrationplate"],
+                "MEDIUM", ["GDPR"],
+                "A plate/VIN is an identifier linkable to a person; minimize retention.",
+                STRING_TYPES),
     PIICategory("Full Name", [r"firstname", r"lastname", r"fullname", r"surname", r"givenname", r"middlename", r"forename", r"maidenname"],
                 "LOW", ["GDPR"],
                 "Personal data; minimize exposure and combine-with-other-fields risk.",
@@ -92,6 +108,14 @@ PII_CATEGORIES = [
                 "LOW", ["GDPR"],
                 "Online identifier linkable to a person under GDPR.",
                 set()),
+    PIICategory("Device Identifier", [r"macaddress", r"\bimei\b", r"\bimsi\b", r"deviceid", r"\budid\b", r"advertisingid"],
+                "LOW", ["GDPR"],
+                "A persistent device identifier can be linked to a person under GDPR.",
+                set()),
+    PIICategory("Age", [r"\bage\b", r"agegroup", r"ageband"],
+                "LOW", ["GDPR"],
+                "Quasi-identifier; combine-with-other-fields re-identification risk.",
+                NUMERIC_TYPES | STRING_TYPES),
 ]
 
 
@@ -106,6 +130,7 @@ class Finding:
     confidence: str           # human-readable basis for the match
     regulations: list
     action: str
+    confidence_score: float = 0.0   # 0.0-1.0, for --confidence-threshold filtering
 
 
 # Split a column name into words, handling camelCase and acronym runs:
@@ -184,17 +209,49 @@ def scan_tables(tables, extra_categories=None) -> list:
                 continue
             dtype = (col.data_type or "").lower()
             if cat.expected_types and dtype in cat.expected_types:
-                risk, confidence = cat.severity, "name + type match"
+                risk, confidence, score = cat.severity, "name + type match", 0.9
             elif cat.expected_types and dtype not in cat.expected_types:
-                risk, confidence = _downgrade(cat.severity), "name match (type mismatch)"
+                risk, confidence, score = _downgrade(cat.severity), "name match (type mismatch)", 0.4
             else:
-                risk, confidence = cat.severity, "name match"
+                risk, confidence, score = cat.severity, "name match", 0.7
             findings.append(Finding(
                 schema=t.schema, table=t.name, column=col.name, data_type=col.data_type,
                 category=cat.name, risk=risk, confidence=confidence,
                 regulations=list(cat.regulations), action=cat.action,
+                confidence_score=score,
             ))
     return findings
+
+
+def apply_allowlist(findings: list, patterns) -> tuple:
+    """Drop findings for known-safe columns (an org allowlist from `.sqldoc.yml`
+    `pii_allowlist:`). Each entry is matched case-insensitively with fnmatch
+    globbing against the finding's ``schema.table.column``, ``table.column`` and
+    bare ``column`` forms — so ``dbo.Users.Password``, ``Users.Password``,
+    ``Password``, and ``dbo.*.Password`` all suppress it. Returns
+    ``(kept, suppressed_count)``."""
+    import fnmatch
+    pats = [str(p).lower() for p in (patterns or []) if str(p).strip()]
+    if not pats:
+        return findings, 0
+    kept, suppressed = [], 0
+    for f in findings:
+        candidates = [f"{f.schema}.{f.table}.{f.column}".lower(),
+                      f"{f.table}.{f.column}".lower(), f.column.lower()]
+        if any(fnmatch.fnmatch(c, p) for c in candidates for p in pats):
+            suppressed += 1
+        else:
+            kept.append(f)
+    return kept, suppressed
+
+
+def filter_by_confidence(findings: list, threshold: float) -> tuple:
+    """Drop findings whose confidence_score is below `threshold` (0.0-1.0).
+    Returns ``(kept, dropped_count)``. A threshold of 0 keeps everything."""
+    if not threshold:
+        return findings, 0
+    kept = [f for f in findings if f.confidence_score >= threshold]
+    return kept, len(findings) - len(kept)
 
 
 def _quote_ident(name: str) -> str:
@@ -256,11 +313,14 @@ def confirm_with_sampling(findings: list, connection_string: str, mode: str, mod
             if verdict == "YES":
                 f.risk = f.risk  # keep
                 f.confidence = "AI-confirmed from sample"
+                f.confidence_score = 0.97
             elif verdict == "NO":
                 f.risk = _downgrade(_downgrade(f.risk))
                 f.confidence = "AI: sampled values do not look like PII"
+                f.confidence_score = 0.1
             else:
                 f.confidence += "; AI unsure"
+                f.confidence_score = min(f.confidence_score, 0.6)
     finally:
         conn.close()
     return findings
