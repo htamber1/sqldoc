@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to GitHub Advanced Security
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Unit tests — always runs, no database needed (pyodbc + LLM are mocked).
+  # ---------------------------------------------------------------------------
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # sqldoc imports pyodbc at load time, so unixODBC must be present.
+      - name: Install unixODBC
+        run: sudo apt-get update && sudo apt-get install -y unixodbc unixodbc-dev
+      - name: Install sqldoc + test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Run tests
+        run: pytest -q
+
+  # ---------------------------------------------------------------------------
+  # PII compliance gate — scans a database, fails the build on NEW HIGH-risk
+  # findings, and uploads SARIF to the Security tab.
+  #
+  # Disabled by default. To enable in YOUR repo:
+  #   1. Set repository variable  SQLDOC_SCAN_ENABLED = true
+  #      (Settings -> Secrets and variables -> Actions -> Variables)
+  #   2. Set repository secret     SQLDOC_CONNECTION_STRING
+  #      e.g. DRIVER={ODBC Driver 18 for SQL Server};SERVER=host;DATABASE=db;UID=user;PWD=***;TrustServerCertificate=yes;
+  # The runner needs network access to that database.
+  # ---------------------------------------------------------------------------
+  pii-gate:
+    name: PII compliance gate
+    runs-on: ubuntu-latest
+    if: ${{ vars.SQLDOC_SCAN_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Microsoft ODBC Driver 18 (required to reach SQL Server).
+      - name: Install ODBC Driver 18 for SQL Server
+        run: |
+          sudo su -c "curl https://packages.microsoft.com/keys/microsoft.asc | tee /etc/apt/trusted.gpg.d/microsoft.asc"
+          # NOTE: match this to the runner's Ubuntu release (22.04 or 24.04).
+          sudo su -c "curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list"
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+
+      - name: Install sqldoc
+        run: |
+          python -m pip install --upgrade pip
+          pip install .          # or:  pip install sqldoc   (once published)
+
+      # Persist the findings baseline across runs so --fail-on new-high can tell
+      # what is actually *new*. run_id keeps each save unique; restore-keys pulls
+      # the most recent previous baseline.
+      - name: Restore PII baseline
+        uses: actions/cache@v4
+        with:
+          path: .sqldoc-pii-snapshots
+          key: pii-baseline-${{ github.run_id }}
+          restore-keys: pii-baseline-
+
+      - name: Scan for PII and gate on new HIGH findings
+        env:
+          SQLDOC_CONNECTION_STRING: ${{ secrets.SQLDOC_CONNECTION_STRING }}
+        run: |
+          sqldoc scan \
+            --connection-string "$SQLDOC_CONNECTION_STRING" \
+            --baseline .sqldoc-pii-snapshots/scan.json \
+            --sarif sqldoc.sarif \
+            --fail-on new-high \
+            --output pii-report.html
+
+      # Upload SARIF even if the gate failed, so findings show in the Security tab.
+      - name: Upload SARIF to GitHub Advanced Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: sqldoc.sarif
+
+      # Keep the HTML report as a downloadable artifact.
+      - name: Upload compliance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pii-report
+          path: pii-report.html
