@@ -1,0 +1,87 @@
+"""The agent daemon: a dashboard thread + one poller thread per database.
+
+`run_daemon` wires everything together and blocks until `stop_event` is set,
+then shuts the dashboard and poller threads down gracefully. Each poller loops
+`poll_database` on the configured interval, waking early when asked to stop
+(`stop_event.wait(interval)` returns immediately once set), so shutdown is fast.
+The whole thing is plain Python threading — no external service manager.
+"""
+import threading
+import time
+
+from sqldoc.agent.dashboard import make_server
+from sqldoc.agent.poller import poll_database
+
+
+def _interval_seconds(agent_config) -> float:
+    return max(1, int(agent_config.interval_minutes)) * 60.0
+
+
+def _log_result(log, r):
+    if r.get("status") != "ok":
+        log(f"[{r['db']}] poll FAILED: {r.get('error')}")
+        return
+    tags = []
+    if r.get("schema_changed"):
+        tags.append("schema-change")
+    if r.get("new_pii"):
+        tags.append("new-pii")
+    if r.get("health_degraded"):
+        tags.append("health-degraded")
+    n = len(r.get("notifications", []))
+    suffix = (" [" + ", ".join(tags) + "]") if tags else ""
+    note = f" ({n} notification(s) sent)" if n else ""
+    log(f"[{r['db']}] poll ok{suffix}{note}")
+
+
+def poller_loop(store, db_config, agent_config, notifier, stop_event, log, poll_fn):
+    """Poll one database immediately, then every interval, until stop."""
+    interval = _interval_seconds(agent_config)
+    while not stop_event.is_set():
+        try:
+            _log_result(log, poll_fn(store, db_config, agent_config, notifier))
+        except Exception as e:   # poll_fn shouldn't raise, but never kill the thread
+            log(f"[{db_config.name}] poll crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(interval):
+            break
+
+
+def run_daemon(agent_config, store, notifier, stop_event, log=print,
+               host="127.0.0.1", poll_fn=None) -> int:
+    """Start the dashboard + pollers and block until `stop_event`. Returns the
+    dashboard port actually bound (useful when port 0 is requested in tests)."""
+    poll_fn = poll_fn or poll_database
+    server = make_server(store, agent_config.dashboard_port, host)
+    bound_port = server.server_address[1]
+
+    dash_thread = threading.Thread(target=server.serve_forever, name="dashboard", daemon=True)
+    dash_thread.start()
+    log(f"agent started: monitoring {len(agent_config.databases)} database(s) every "
+        f"{agent_config.interval_minutes}m; dashboard http://{host}:{bound_port}")
+
+    poll_threads = []
+    for db in agent_config.databases:
+        t = threading.Thread(target=poller_loop,
+                             args=(store, db, agent_config, notifier, stop_event, log, poll_fn),
+                             name=f"poll-{db.name}", daemon=True)
+        t.start()
+        poll_threads.append(t)
+
+    stop_event.wait()
+    log("stopping agent...")
+    server.shutdown()
+    for t in poll_threads:
+        t.join(timeout=15)
+    server.server_close()
+    log("agent stopped")
+    return bound_port
+
+
+def watch_stop_flag(stop_flag_path, stop_event, poll_seconds=1.0):
+    """Background helper: set `stop_event` when the stop-flag file appears."""
+    import os
+    while not stop_event.is_set():
+        if os.path.exists(stop_flag_path):
+            stop_event.set()
+            return
+        time.sleep(poll_seconds)
