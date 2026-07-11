@@ -21,6 +21,9 @@ mode: local                   # local (Ollama) or cloud (Anthropic)
 # schemas: HumanResources,Sales   # comma-separated allowlist; omit for all
 no_ai: false                  # true = schema-only, skip all LLM calls
 concurrency: 8                # parallel AI calls during enrichment (1-64)
+# include_definitions: false  # true = also send view/proc/trigger SQL bodies to
+                              # the AI for richer descriptions. WIDENS the data
+                              # boundary: in cloud mode the SQL is sent to Anthropic.
 "yes": false                  # true = skip the cloud-mode confirmation prompt
                               # (quote the key: bare yes: is a YAML boolean)
 

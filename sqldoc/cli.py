@@ -22,6 +22,7 @@ load_dotenv()
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'output',
     'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
+    'include_definitions',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
     'confidence_threshold', 'fail_on', 'yes',
@@ -159,12 +160,14 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
+@click.option('--include-definitions', 'include_definitions', is_flag=True, default=False,
+              help='Send view/proc/trigger SQL bodies to the AI for richer descriptions (off by default; widens the data boundary — in cloud mode the SQL is sent to Anthropic)')
 @click.option('--snapshot', default=None, help='JSON schema-snapshot path for change detection (default: .sqldoc-snapshots/<database>.json)')
 @click.option('--no-snapshot', is_flag=True, default=False, help='Disable schema snapshot + change detection for this run')
 @click.option('--cache', default=None, help='AI description cache path (default: .sqldoc-cache/<database>.json)')
 @click.option('--no-cache', is_flag=True, default=False, help='Disable the AI description cache (always regenerate)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, connection_string, output, output_format, mode, model, schemas, no_ai, concurrency, snapshot, no_snapshot, cache, no_cache, yes):
+def main(config, server, database, username, password, connection_string, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -191,6 +194,7 @@ def main(config, server, database, username, password, connection_string, output
     schemas = resolve('schemas', schemas)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
+    include_definitions = resolve('include_definitions', include_definitions)
     snapshot = resolve('snapshot', snapshot)
     no_snapshot = resolve('no_snapshot', no_snapshot)
     cache = resolve('cache', cache)
@@ -228,13 +232,16 @@ def main(config, server, database, username, password, connection_string, output
     if model is None:
         model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
 
-    # Describe the data-egress posture for the chosen mode
+    # Describe the data-egress posture for the chosen mode. --include-definitions
+    # widens what is sent to the AI beyond schema metadata to the actual SQL
+    # bodies of views/procedures/triggers.
+    payload = "schema metadata + SQL definitions" if include_definitions else "schema metadata"
     if no_ai:
         privacy = "No AI - schema only, nothing leaves this machine"
     elif mode == "local":
-        privacy = "local (Ollama) - no data leaves this network"
+        privacy = f"local (Ollama) - {payload}, no data leaves this network"
     else:
-        privacy = "cloud (Anthropic) - schema metadata sent off-network"
+        privacy = f"cloud (Anthropic) - {payload} sent off-network"
 
     click.echo(f"\nsqldoc v1.2.0")
     click.echo(f"{'='*40}")
@@ -255,6 +262,13 @@ def main(config, server, database, username, password, connection_string, output
             "         row data is ever read or sent. Use --mode local to keep\n"
             "         everything on this network."
         )
+        if include_definitions:
+            click.echo(
+                "         --include-definitions ALSO sends the SQL bodies of your\n"
+                "         views, stored procedures, and triggers to Anthropic. These\n"
+                "         definitions can embed literals, comments, or business logic —\n"
+                "         review them before enabling this in cloud mode."
+            )
         if yes:
             click.echo("Proceeding with cloud mode (confirmed via --yes).")
         elif not click.confirm("Proceed with cloud mode?", default=False):
@@ -311,11 +325,12 @@ def main(config, server, database, username, password, connection_string, output
             cache_path = cache or os.path.join('.sqldoc-cache', _safe_filename(database) + '.json')
             cache_obj = load_cache(cache_path)
 
-        click.echo(f"\nGenerating AI descriptions using {mode} mode ({concurrency} parallel)...")
+        click.echo(f"\nGenerating AI descriptions using {mode} mode ({concurrency} parallel)"
+                   f"{' with SQL definitions' if include_definitions else ''}...")
         try:
-            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
-            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
-            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency, cache=cache_obj)
+            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
+            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
+            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
         except Exception as e:
             click.echo(f"\nAI generation failed: {e}", err=True)
             click.echo("Try --no-ai to generate schema-only documentation")

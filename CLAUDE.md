@@ -31,7 +31,7 @@ Shippable two-in-one CLI — **`sqldoc doc`** (documentation) and **`sqldoc scan
 - **`--dry-run` cloud cost estimate**; `.env`-driven credentials.
 
 ### Standing decisions
-- SQL definitions stay **out of AI calls** (metadata-only cloud boundary) until `--include-definitions` ships.
+- SQL definitions stay **out of AI calls by default** (metadata-only cloud boundary). The opt-in **`--include-definitions`** flag (shipped, post-1.2.0) sends view/proc/trigger bodies to the AI and widens the `Privacy:` banner + cloud warning accordingly.
 - Per-server subscription pricing; four tiers documented in `pricing-strategy.md`.
 
 ---

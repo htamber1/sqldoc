@@ -2,7 +2,7 @@
 import pytest
 
 import sqldoc.ai as ai
-from conftest import build_tables
+from conftest import build_tables, build_views, build_procs
 
 
 def test_retry_succeeds_after_transient_failures(monkeypatch):
@@ -83,6 +83,37 @@ def test_cache_miss_on_structure_change(monkeypatch):
     changed[0].columns[1].data_type = "bigint"   # alters table + column signatures
     ai.enrich_tables(changed, mode="local", concurrency=1, cache=cache)
     assert counter["n"] > before
+
+
+def test_include_definitions_adds_body_to_prompts(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(ai, "_call_ollama", lambda prompt, model: captured.setdefault("p", prompt) or "d")
+
+    captured.clear()
+    ai.generate_view_description(build_views()[0], mode="local", include_definitions=True)
+    assert "SQL definition:" in captured["p"] and "CREATE VIEW" in captured["p"]
+
+    captured.clear()
+    ai.generate_view_description(build_views()[0], mode="local", include_definitions=False)
+    assert "SQL definition:" not in captured["p"]
+
+    captured.clear()
+    ai.generate_procedure_description(build_procs()[0], mode="local", include_definitions=True)
+    assert "SQL definition:" in captured["p"] and "CREATE PROCEDURE" in captured["p"]
+
+    captured.clear()
+    ai.generate_table_description(build_tables()[0], mode="local", include_definitions=True)
+    assert "Trigger definitions:" in captured["p"] and "CREATE TRIGGER" in captured["p"]
+
+
+def test_include_definitions_changes_cache_signature():
+    v = build_views()[0]
+    s_meta = ai._sig_view(v, include_definitions=False)
+    s_def = ai._sig_view(v, include_definitions=True)
+    assert s_meta != s_def                                  # def folded into sig
+    v.definition = "CREATE VIEW x AS SELECT 2 AS Two;"
+    assert ai._sig_view(v, include_definitions=True) != s_def   # body change invalidates
+    assert ai._sig_view(v, include_definitions=False) == s_meta  # metadata sig unaffected
 
 
 def test_no_cache_always_generates(monkeypatch):

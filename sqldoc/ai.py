@@ -34,17 +34,34 @@ def _retry(fn, what: str):
 # structure is unchanged since the last run, its description is reused instead of
 # calling the LLM again — saving cost and making incremental runs fast.
 
-def _sig_table(t) -> str:
+def _def_sig(*definitions) -> str:
+    """A short digest of one or more SQL bodies, folded into a cache signature
+    when --include-definitions is on so a changed body invalidates the cache."""
+    joined = "\x1e".join(d for d in definitions if d)
+    if not joined:
+        return ""
+    return "|def:" + hashlib.sha1(joined.encode("utf-8")).hexdigest()[:12]
+
+def _sig_table(t, include_definitions=False) -> str:
     cols = "|".join(f"{c.name}:{c.data_type}:{int(c.is_primary_key)}{int(c.is_foreign_key)}" for c in t.columns)
-    return f"{t.schema}.{t.name}|{cols}"
+    sig = f"{t.schema}.{t.name}|{cols}"
+    if include_definitions:
+        sig += _def_sig(*(tg.definition for tg in t.triggers))
+    return sig
 
-def _sig_view(v) -> str:
+def _sig_view(v, include_definitions=False) -> str:
     cols = "|".join(f"{c.name}:{c.data_type}" for c in v.columns)
-    return f"{v.schema}.{v.name}|{cols}"
+    sig = f"{v.schema}.{v.name}|{cols}"
+    if include_definitions:
+        sig += _def_sig(v.definition)
+    return sig
 
-def _sig_proc(p) -> str:
+def _sig_proc(p, include_definitions=False) -> str:
     params = "|".join(f"{pm.name}:{pm.data_type}:{int(pm.is_output)}" for pm in p.parameters)
-    return f"{p.schema}.{p.name}|{params}"
+    sig = f"{p.schema}.{p.name}|{params}"
+    if include_definitions:
+        sig += _def_sig(p.definition)
+    return sig
 
 def _sig_col(container: str, col) -> str:
     return f"{container}.{col.name}:{col.data_type}"
@@ -87,7 +104,8 @@ def _get_anthropic_client() -> Anthropic:
                 _anthropic_client = Anthropic()
     return _anthropic_client
 
-def generate_table_description(table: Table, mode: str = "local", model: str = "llama3.1:8b") -> str:
+def generate_table_description(table: Table, mode: str = "local", model: str = "llama3.1:8b",
+                               include_definitions: bool = False) -> str:
     column_info = "\n".join([
         f"  - {col.name} ({col.data_type})"
         f"{'[PK]' if col.is_primary_key else ''}"
@@ -101,9 +119,16 @@ def generate_table_description(table: Table, mode: str = "local", model: str = "
 Table: {table.schema}.{table.name}
 Row count: {table.row_count}
 Columns:
-{column_info}
+{column_info}"""
 
-Respond with only the description, no preamble."""
+    # Opt-in: include trigger bodies so the AI can reason about side effects.
+    if include_definitions:
+        trig = "\n\n".join(f"-- trigger {tg.name}\n{tg.definition}"
+                           for tg in table.triggers if tg.definition)
+        if trig:
+            prompt += f"\n\nTrigger definitions:\n{trig}"
+
+    prompt += "\n\nRespond with only the description, no preamble."
 
     if mode == "local":
         return _call_ollama(prompt, model)
@@ -118,27 +143,34 @@ def generate_column_description(table_name: str, col, mode: str = "local", model
     else:
         return _call_anthropic(prompt, model)
 
-def generate_view_description(view: View, mode: str = "local", model: str = "llama3.1:8b") -> str:
-    # Metadata only: name + column names/types. The view's SQL definition is
-    # deliberately NOT sent to the AI, to keep the cloud data boundary limited
-    # to schema metadata (the definition is rendered locally instead).
+def generate_view_description(view: View, mode: str = "local", model: str = "llama3.1:8b",
+                              include_definitions: bool = False) -> str:
+    # Metadata only by default: name + column names/types. The view's SQL
+    # definition is NOT sent unless --include-definitions is set, keeping the
+    # default cloud data boundary limited to schema metadata (the definition is
+    # rendered locally regardless).
     column_info = "\n".join(f"  - {col.name} ({col.data_type})" for col in view.columns)
     prompt = f"""You are documenting a SQL Server view. Based on the view name, schema, and its output columns, write a clear 2-3 sentence description of what this view likely presents and its business purpose.
 
 View: {view.schema}.{view.name}
 Columns:
-{column_info}
+{column_info}"""
 
-Respond with only the description, no preamble."""
+    if include_definitions and view.definition:
+        prompt += f"\n\nSQL definition:\n{view.definition}"
+
+    prompt += "\n\nRespond with only the description, no preamble."
 
     if mode == "local":
         return _call_ollama(prompt, model)
     else:
         return _call_anthropic(prompt, model)
 
-def generate_procedure_description(proc: StoredProcedure, mode: str = "local", model: str = "llama3.1:8b") -> str:
-    # Metadata only: name + parameter names/types/direction. The proc body is
-    # deliberately NOT sent to the AI (rendered locally instead).
+def generate_procedure_description(proc: StoredProcedure, mode: str = "local", model: str = "llama3.1:8b",
+                                   include_definitions: bool = False) -> str:
+    # Metadata only by default: name + parameter names/types/direction. The proc
+    # body is NOT sent unless --include-definitions is set (rendered locally
+    # regardless).
     if proc.parameters:
         param_info = "\n".join(
             f"  - {p.name} ({p.data_type}){' OUTPUT' if p.is_output else ''}"
@@ -150,9 +182,12 @@ def generate_procedure_description(proc: StoredProcedure, mode: str = "local", m
 
 Procedure: {proc.schema}.{proc.name}
 Parameters:
-{param_info}
+{param_info}"""
 
-Respond with only the description, no preamble."""
+    if include_definitions and proc.definition:
+        prompt += f"\n\nSQL definition:\n{proc.definition}"
+
+    prompt += "\n\nRespond with only the description, no preamble."
 
     if mode == "local":
         return _call_ollama(prompt, model)
@@ -233,11 +268,12 @@ def _report(label, tasks, stats, cache):
 
 
 def enrich_tables(tables: list[Table], mode: str = "local", model: str = "llama3.1:8b",
-                  concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[Table]:
+                  concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
+                  include_definitions: bool = False) -> list[Table]:
     tasks, stats = [], {"hits": 0}
     for table in tables:
-        _cache_or_task(cache, _key(model, "table", _sig_table(table)), table,
-                       (lambda t=table: generate_table_description(t, mode, model)), tasks, stats)
+        _cache_or_task(cache, _key(model, "table", _sig_table(table, include_definitions)), table,
+                       (lambda t=table: generate_table_description(t, mode, model, include_definitions)), tasks, stats)
         for col in table.columns:
             if col.description:
                 continue
@@ -248,11 +284,12 @@ def enrich_tables(tables: list[Table], mode: str = "local", model: str = "llama3
     return tables
 
 def enrich_views(views: list[View], mode: str = "local", model: str = "llama3.1:8b",
-                 concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[View]:
+                 concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
+                 include_definitions: bool = False) -> list[View]:
     tasks, stats = [], {"hits": 0}
     for view in views:
-        _cache_or_task(cache, _key(model, "view", _sig_view(view)), view,
-                       (lambda v=view: generate_view_description(v, mode, model)), tasks, stats)
+        _cache_or_task(cache, _key(model, "view", _sig_view(view, include_definitions)), view,
+                       (lambda v=view: generate_view_description(v, mode, model, include_definitions)), tasks, stats)
         for col in view.columns:
             if col.description:
                 continue
@@ -263,11 +300,12 @@ def enrich_views(views: list[View], mode: str = "local", model: str = "llama3.1:
     return views
 
 def enrich_procedures(procedures: list[StoredProcedure], mode: str = "local", model: str = "llama3.1:8b",
-                      concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None) -> list[StoredProcedure]:
+                      concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
+                      include_definitions: bool = False) -> list[StoredProcedure]:
     tasks, stats = [], {"hits": 0}
     for proc in procedures:
-        _cache_or_task(cache, _key(model, "proc", _sig_proc(proc)), proc,
-                       (lambda p=proc: generate_procedure_description(p, mode, model)), tasks, stats)
+        _cache_or_task(cache, _key(model, "proc", _sig_proc(proc, include_definitions)), proc,
+                       (lambda p=proc: generate_procedure_description(p, mode, model, include_definitions)), tasks, stats)
     _run_tasks(tasks, concurrency, "procedure")
     _report("procedures", tasks, stats, cache)
     return procedures

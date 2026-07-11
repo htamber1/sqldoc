@@ -91,6 +91,25 @@ def test_doc_json_format(patched, tmp_path):
     assert any(t["name"] == "Orders" for t in data["tables"])
 
 
+def test_include_definitions_widens_privacy_banner(patched, tmp_path):
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--include-definitions", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "schema metadata + SQL definitions" in res.output
+
+
+def test_include_definitions_cloud_warning(patched, tmp_path):
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--mode", "cloud", "--yes", "--include-definitions",
+        "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "ALSO sends the SQL bodies" in res.output
+
+
 def test_missing_connection_settings_errors():
     res = CliRunner().invoke(cli.main, ["--no-ai", "--no-snapshot", "--no-cache"])
     assert res.exit_code != 0

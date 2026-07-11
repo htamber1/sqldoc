@@ -27,6 +27,12 @@ follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
   `pii_allowlist:`) suppresses known-safe columns — entries match
   `schema.table.column`, `table.column`, bare `column`, or a glob
   (`dbo.*.Password`) — before sampling, reporting, gating, or the baseline.
+- **`--include-definitions`** (opt-in) — sends the SQL bodies of views, stored
+  procedures, and triggers to the AI for richer descriptions. Off by default;
+  when on, the `Privacy:` banner and cloud-mode warning explicitly state the
+  widened data boundary, and the description cache keys on the body so an edited
+  definition regenerates. Without it, only schema metadata reaches the AI (the
+  long-standing cloud boundary).
 
 ## [1.2.0] — 2026-07-10
 
