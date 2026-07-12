@@ -52,6 +52,9 @@ from sqldoc.plans import collect_plans, explain_plans, summarize as plans_summar
 from sqldoc.plans_renderer import render_plans_html, build_plans_json
 from sqldoc.capacity import project_capacity, summarize as capacity_summarize
 from sqldoc.capacity_renderer import render_capacity_html, build_capacity_json
+from sqldoc.baseline import (capture_baseline, compare_baseline, to_dict as baseline_to_dict,
+                             from_dict as baseline_from_dict, summarize as baseline_summarize)
+from sqldoc.baseline_renderer import render_baseline_html, build_baseline_json
 
 load_dotenv()
 
@@ -2055,6 +2058,100 @@ def capacity(store_path, database, output, json_out, verify_offline):
     click.echo(f"Open {output} in your browser for the full capacity report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='Database hostname or IP')
+@click.option('--database', default='master', help='Database to connect through')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (SQL Server / PostgreSQL / MySQL)')
+@click.option('--capture', is_flag=True, default=False,
+              help='Capture the current state as the new baseline (instead of comparing against it)')
+@click.option('--baseline-file', 'baseline_file', default=None,
+              help='Baseline JSON path (default: .sqldoc-baseline-<database>.json)')
+@click.option('--threshold', default=25.0, type=click.FloatRange(0.0, 10000.0),
+              help='Flag metrics/queries that regressed more than this percent (default: 25)')
+@click.option('--output', default='baseline-report.html', help='Output HTML report path (comparison mode)')
+@click.option('--json', 'json_out', default=None, help='Also write the comparison as machine-readable JSON to this path')
+@click.option('--fail-on-regression', 'fail_on_regression', is_flag=True, default=False,
+              help='Exit non-zero if any regression is found (for CI gating)')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def baseline(config, server, database, username, password, connection_string, dialect,
+             capture, baseline_file, threshold, output, json_out, fail_on_regression, verify_offline):
+    """Capture a performance baseline and detect regressions against it.
+
+    First run with --capture to save a snapshot (connection count, wait
+    categories, top query average times, SQL Agent job durations). Later runs
+    capture the current state and flag anything that has regressed by more than
+    --threshold percent. Works on SQL Server, PostgreSQL, and MySQL. Reads only
+    performance statistics — never table row data.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'infra_monitoring', 'baseline')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    bfile = baseline_file or f".sqldoc-baseline-{_safe_filename(database)}.json"
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  Performance baseline")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and capturing performance stats...")
+    try:
+        current = capture_baseline(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    if capture:
+        import json as _json
+        with open(bfile, "w", encoding="utf-8") as f:
+            _json.dump(baseline_to_dict(current), f, indent=2, default=str)
+        click.echo(click.style(
+            f"Baseline captured ({len(current.metrics)} metrics, {len(current.queries)} queries) "
+            f"-> {bfile}", fg='green'))
+        return
+
+    if not os.path.exists(bfile):
+        raise click.UsageError(
+            f"No baseline found at {bfile}. Run 'sqldoc baseline --capture' first to record one.")
+    import json as _json
+    with open(bfile, encoding="utf-8") as f:
+        base = baseline_from_dict(_json.load(f))
+
+    report = compare_baseline(base, current, threshold_pct=float(threshold))
+    s = baseline_summarize(report)
+    click.echo(
+        click.style(f"Regressions: {s['anomalies']}", fg='red' if s['anomalies'] else 'green')
+        + f"    Metric: {s['metric_regressions']}    Query: {s['query_regressions']}"
+        + f"    Compared: {s['metrics_compared']}    Worst: +{s['worst_change_pct']}%"
+    )
+    for a in report.anomalies[:10]:
+        click.echo(click.style(f"  ! {a.metric}: {a.baseline} -> {a.current} (+{a.change_pct}%)", fg='yellow'))
+
+    click.echo("\nRendering report...")
+    render_baseline_html(label, report, output)
+    if json_out:
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_baseline_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable baseline report written to {json_out}")
+    _verify_offline(output, verify_offline)
+    click.echo(f"Open {output} in your browser for the full baseline report.")
+
+    if fail_on_regression and report.anomalies:
+        click.echo(click.style(f"\n{len(report.anomalies)} regression(s) exceeded the threshold.", fg='red'), err=True)
+        raise SystemExit(1)
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2088,6 +2185,7 @@ cli.add_command(ha, name='ha')
 cli.add_command(deadlocks, name='deadlocks')
 cli.add_command(plans, name='plans')
 cli.add_command(capacity, name='capacity')
+cli.add_command(baseline, name='baseline')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

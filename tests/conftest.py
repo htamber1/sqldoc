@@ -127,7 +127,11 @@ class FakeCursor:
         # Capacity queries carry marker comments; route them first because they
         # reuse tokens (dm_os_volume_stats / dm_db_index_physical_stats) that
         # match the server/health branches below.
-        if "CAPACITY_SIZE" in sql:
+        if "BASELINE_CONN" in sql:
+            self._last = "baseline_conn"
+        elif "BASELINE_QUERIES" in sql:
+            self._last = "baseline_queries"
+        elif "CAPACITY_SIZE" in sql:
             self._last = "cap_size"
         elif "CAPACITY_FRAG" in sql:
             self._last = "cap_frag"
@@ -407,6 +411,25 @@ _PLAN_XML = """<?xml version="1.0"?>
   </QueryPlan>
  </StmtSimple></Statements></Batch></BatchSequence>
 </ShowPlanXML>"""
+
+
+@pytest.fixture
+def fake_mssql_baseline_rows():
+    """Rows the SQL Server baseline capture would see (connections + queries +
+    one job; combine with fake_mssql_waits_rows for wait categories)."""
+    return {
+        "baseline_conn": [FakeRow(n=25)],
+        "baseline_queries": [
+            FakeRow(qid="0xAAAA", avg_ms=120.0, query_text="SELECT * FROM Sales.Orders WHERE Id=1"),
+            FakeRow(qid="0xBBBB", avg_ms=40.0, query_text="SELECT COUNT(*) FROM Sales.Orders"),
+        ],
+        "agentjobs": [
+            FakeRow(job_id="J1", job_name="Nightly ETL", enabled=1, owner="sa", category="c",
+                    last_run_status=1, last_run_time="t", run_duration_seconds=200,
+                    avg_duration_seconds=150, next_run_datetime="0"),
+        ],
+        "agentjobsteps": [],
+    }
 
 
 @pytest.fixture
