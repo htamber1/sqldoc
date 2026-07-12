@@ -1,0 +1,158 @@
+{
+  "name": "sqldoc-vscode",
+  "displayName": "sqldoc",
+  "description": "Document, PII/compliance-scan, and health-check your database from VS Code — powered by the sqldoc CLI.",
+  "version": "1.0.0",
+  "publisher": "htamber1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/htamber1/sqldoc.git"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other",
+    "Data Science"
+  ],
+  "keywords": [
+    "sql",
+    "database",
+    "documentation",
+    "pii",
+    "compliance"
+  ],
+  "activationEvents": [
+    "onCommand:sqldoc.documentDatabase",
+    "onCommand:sqldoc.scanPII",
+    "onCommand:sqldoc.healthCheck",
+    "onCommand:sqldoc.viewDocumentation"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sqldoc.documentDatabase",
+        "title": "Document This Database",
+        "category": "sqldoc"
+      },
+      {
+        "command": "sqldoc.scanPII",
+        "title": "Scan for PII",
+        "category": "sqldoc"
+      },
+      {
+        "command": "sqldoc.healthCheck",
+        "title": "Run Health Check",
+        "category": "sqldoc"
+      },
+      {
+        "command": "sqldoc.viewDocumentation",
+        "title": "View Documentation",
+        "category": "sqldoc"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "sqldoc.submenu",
+        "label": "sqldoc"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "sqldoc.submenu",
+          "group": "navigation@99",
+          "when": "resourceLangId == sql"
+        }
+      ],
+      "explorer/context": [
+        {
+          "submenu": "sqldoc.submenu",
+          "group": "navigation@99",
+          "when": "resourceExtname == .sql || explorerResourceIsFolder"
+        }
+      ],
+      "view/item/context": [
+        {
+          "submenu": "sqldoc.submenu",
+          "group": "sqldoc@1",
+          "when": "view =~ /sqltools|mssql|database|connections/"
+        }
+      ],
+      "sqldoc.submenu": [
+        {
+          "command": "sqldoc.documentDatabase",
+          "group": "1_run@1"
+        },
+        {
+          "command": "sqldoc.scanPII",
+          "group": "1_run@2"
+        },
+        {
+          "command": "sqldoc.healthCheck",
+          "group": "1_run@3"
+        },
+        {
+          "command": "sqldoc.viewDocumentation",
+          "group": "2_view@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sqldoc.documentDatabase"
+        },
+        {
+          "command": "sqldoc.scanPII"
+        },
+        {
+          "command": "sqldoc.healthCheck"
+        },
+        {
+          "command": "sqldoc.viewDocumentation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "sqldoc",
+      "properties": {
+        "sqldoc.connectionString": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Database connection string sqldoc should use. If empty, the extension reads `connection_string` from a `.sqldoc.yml` in the workspace, and otherwise prompts you."
+        },
+        "sqldoc.dialect": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "sqlserver",
+            "azuresql",
+            "postgres",
+            "mysql",
+            "sqlite",
+            "snowflake",
+            "oracle"
+          ],
+          "description": "Database dialect passed to sqldoc (empty = auto-detect from the connection string)."
+        },
+        "sqldoc.sqldocPath": {
+          "type": "string",
+          "default": "sqldoc",
+          "description": "Path to the sqldoc executable (or 'python -m sqldoc.cli'). Must be installed: pip install sqldoc."
+        },
+        "sqldoc.documentArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "--no-ai"
+          ],
+          "description": "Extra arguments for 'Document This Database'. Defaults to --no-ai (no local Ollama needed); remove it to enable AI descriptions."
+        }
+      }
+    }
+  }
+}
