@@ -87,6 +87,12 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   mode: local                   # default AI mode for enrichment
 #   no_ai: false                  # true = skip AI docs (schema-only monitoring)
 #   concurrency: 8
+#   # Server-level infrastructure monitoring (SQL Server only). When on, each
+#   # poll also checks instance metrics + SQL Agent jobs, disk space, the
+#   # ERRORLOG, and linked-server connectivity, and can alert on them.
+#   server_monitoring: true
+#   disk_threshold_percent: 10    # alert when a volume drops below this % free
+#   errorlog_severity: 17         # alert on ERRORLOG entries at/above this severity
 #   databases:                    # monitor as many as you like, simultaneously
 #     - name: prod-sqlserver
 #       server: localhost
@@ -107,4 +113,5 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #       password: "***"
 #       from: sqldoc@example.com
 #       to: [dba@example.com]
-#     on: [schema_change, new_pii, health_degradation]   # which events to send
+#     # which events to send (server_monitoring adds the last four)
+#     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down]

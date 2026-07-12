@@ -140,6 +140,58 @@ def test_health_degradation_detected(monkeypatch, store, fake_health_rows):
     assert any(c[0] == "health_degradation" for c in notifier.calls)
 
 
+# --- server-level infrastructure monitoring ---------------------------------
+
+def test_server_monitoring_alerts(monkeypatch, store, fake_server_rows, fake_errorlog_rows):
+    from sqldoc.agent.config import EVENT_TYPES
+    combined = {**fake_server_rows, **fake_errorlog_rows}
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(combined))
+    adapter.capabilities = Capabilities(server_monitoring=True)
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=True)
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(), server_monitoring=True)
+    notifier = RecNotifier(on=EVENT_TYPES)
+
+    r = poll_database(store, db, ac, notifier)
+    assert r["status"] == "ok"
+    assert r.get("job_failures") == 1          # Nightly ETL failed in 24h
+    assert r.get("disk_low") == 1              # D: 4% free < 10%
+    assert r.get("errorlog_critical") == 1     # severity-24 corruption line >= 17
+
+    kinds = {c[0] for c in notifier.calls}
+    assert {"job_failure", "disk_low", "errorlog_critical"} <= kinds
+    types = {e["type"] for e in store.recent_events("prod")}
+    assert "job_failure" in types and "disk_low" in types and "errorlog_critical" in types
+
+
+def test_server_monitoring_skipped_when_disabled(monkeypatch, store, fake_server_rows):
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_server_rows))
+    adapter.capabilities = Capabilities(server_monitoring=True)
+    _use(monkeypatch, adapter)
+    db, ac = _cfg()                            # server_monitoring defaults False
+    r = poll_database(store, db, ac, RecNotifier())
+    assert "job_failures" not in r and "disk_low" not in r
+
+
+def test_linked_server_down_alert(monkeypatch, store):
+    from sqldoc.agent.config import EVENT_TYPES
+    from sqldoc.intel import LinkedServer, LinkedServerReport
+    from sqldoc.server import ServerReport
+    from sqldoc.logs import LogReport
+    monkeypatch.setattr(poller, "collect_server", lambda a, **k: ServerReport(server_name="s"))
+    monkeypatch.setattr(poller, "collect_logs", lambda a, **k: LogReport())
+    monkeypatch.setattr(poller, "collect_linked_servers",
+                        lambda a, **k: LinkedServerReport(
+                            linked_servers=[LinkedServer(name="REMOTE", reachable=False)]))
+    result = {"notifications": []}
+    poller._poll_server_monitoring(store, "prod", object(),
+                                   AgentConfig(server_monitoring=True),
+                                   RecNotifier(on=EVENT_TYPES), result)
+    assert result.get("linked_down") == 1
+    events = {e["type"] for e in store.recent_events("prod")}
+    assert "linked_server_down" in events
+
+
 def test_poll_records_error_and_does_not_raise(monkeypatch, store):
     def boom(cs, d=None):
         raise RuntimeError("connection refused")

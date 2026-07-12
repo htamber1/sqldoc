@@ -32,7 +32,8 @@ from dataclasses import dataclass, field
 
 from sqldoc.adapters import DIALECTS, detect_dialect
 
-EVENT_TYPES = ["schema_change", "new_pii", "health_degradation"]
+EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
+               "job_failure", "disk_low", "errorlog_critical", "linked_server_down"]
 
 
 @dataclass
@@ -62,6 +63,10 @@ class AgentConfig:
     concurrency: int = 8
     databases: list = field(default_factory=list)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    # Server-level infrastructure monitoring (SQL Server only).
+    server_monitoring: bool = False
+    disk_threshold_percent: float = 10.0     # alert when a volume drops below this % free
+    errorlog_severity: int = 17              # alert on ERRORLOG entries at/above this severity
 
 
 def _resolve_connection(entry: dict) -> tuple:
@@ -107,6 +112,9 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     model = agent.get("model")
     no_ai = bool(agent.get("no_ai", False))
     concurrency = int(agent.get("concurrency", 8))
+    server_monitoring = bool(agent.get("server_monitoring", False))
+    disk_threshold = float(agent.get("disk_threshold_percent", 10.0))
+    errorlog_severity = int(agent.get("errorlog_severity", 17))
 
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
@@ -143,4 +151,6 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     return AgentConfig(
         interval_minutes=interval, dashboard_port=port, mode=mode, model=model,
         no_ai=no_ai, concurrency=concurrency, databases=databases, notify=notify,
+        server_monitoring=server_monitoring, disk_threshold_percent=disk_threshold,
+        errorlog_severity=errorlog_severity,
     )

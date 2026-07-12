@@ -44,6 +44,28 @@ def test_parse_overrides_and_notifications():
     assert ac.notify.on == ["schema_change", "new_pii"]
 
 
+def test_parse_server_monitoring_options():
+    cfg = {"agent": {
+        "databases": [{"name": "a", "connection_string": "Driver=x;Server=s;Database=d;"}],
+        "server_monitoring": True,
+        "disk_threshold_percent": 15,
+        "errorlog_severity": 19,
+        "notifications": {"on": ["job_failure", "disk_low", "errorlog_critical",
+                                 "linked_server_down"]},
+    }}
+    ac = parse_agent_config(cfg)
+    assert ac.server_monitoring is True
+    assert ac.disk_threshold_percent == 15.0
+    assert ac.errorlog_severity == 19
+    assert "linked_server_down" in ac.notify.on
+
+
+def test_server_monitoring_defaults_off():
+    cfg = {"agent": {"databases": [{"name": "a", "connection_string": "x"}]}}
+    ac = parse_agent_config(cfg)
+    assert ac.server_monitoring is False and ac.disk_threshold_percent == 10.0
+
+
 @pytest.mark.parametrize("cfg, msg", [
     ({}, "No 'agent:'"),
     ({"agent": {"databases": []}}, "non-empty list"),

@@ -26,6 +26,9 @@ from sqldoc.renderer import render_html
 from sqldoc.snapshot import build_snapshot, diff_snapshots, iter_diff_lines
 from sqldoc.pii import scan_tables, summarize as pii_summarize, findings_snapshot, diff_findings
 from sqldoc.health import collect_health, summarize as health_summarize
+from sqldoc.server import collect_server
+from sqldoc.logs import collect_logs
+from sqldoc.intel import collect_linked_servers
 
 
 def pii_score(high: int, medium: int, low: int) -> float:
@@ -151,6 +154,10 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
             result["notifications"] += notifier.notify(
                 "health_degradation", f"{name}: health degraded", headline)
 
+        # --- server-level infrastructure monitoring (SQL Server only) ---
+        if getattr(agent_config, "server_monitoring", False) and adapter.capabilities.server_monitoring:
+            _poll_server_monitoring(store, name, adapter, agent_config, notifier, result)
+
         store.finish_run(run_id, "ok")
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
@@ -158,6 +165,65 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
         result["status"] = "error"
         result["error"] = msg
     return result
+
+
+def _poll_server_monitoring(store, name, adapter, agent_config, notifier, result):
+    """Poll instance-level metrics and raise the new infrastructure alerts:
+    SQL Agent job failures, low disk space, critical ERRORLOG severity, and
+    unreachable linked servers. Each probe is isolated so one failing check
+    (or missing permission) never aborts the poll."""
+    notes = []
+
+    # SQL Agent job failures + low disk space (one server DMV pass).
+    try:
+        sreport = collect_server(adapter, include_jobs=True)
+        failed = [j for j in sreport.agent_jobs if j.failed_last_24h]
+        if failed:
+            names = ", ".join(j.name for j in failed[:10])
+            headline = f"{len(failed)} SQL Agent job(s) failed in the last 24h: {names}"
+            store.add_event(name, "job_failure", headline)
+            notes += notifier.notify("job_failure", f"{name}: SQL Agent job failure", headline)
+            result["job_failures"] = len(failed)
+
+        threshold = agent_config.disk_threshold_percent
+        low = [v for v in sreport.volumes if v.total_gb > 0 and v.free_percent < threshold]
+        if low:
+            desc = "; ".join(f"{v.volume} {v.free_percent}% free" for v in low)
+            headline = f"{len(low)} volume(s) below {threshold}% free: {desc}"
+            store.add_event(name, "disk_low", headline)
+            notes += notifier.notify("disk_low", f"{name}: low disk space", headline)
+            result["disk_low"] = len(low)
+    except Exception as e:
+        store.add_event(name, "error", f"Server metrics skipped: {type(e).__name__}: {e}")
+
+    # ERRORLOG entries at/above the configured severity in the last 24h.
+    try:
+        sev = agent_config.errorlog_severity
+        lreport = collect_logs(adapter, severity=sev, last_hours=24)
+        if lreport.entries:
+            crit = sum(1 for e in lreport.entries if e.critical)
+            headline = (f"{len(lreport.entries)} ERRORLOG entr{'y' if len(lreport.entries)==1 else 'ies'} "
+                        f"at severity >= {sev}" + (f" ({crit} critical)" if crit else ""))
+            store.add_event(name, "errorlog_critical", headline)
+            notes += notifier.notify("errorlog_critical", f"{name}: critical error-log events", headline)
+            result["errorlog_critical"] = len(lreport.entries)
+    except Exception as e:
+        store.add_event(name, "error", f"ERRORLOG read skipped: {type(e).__name__}: {e}")
+
+    # Linked-server connectivity failures.
+    try:
+        lsr = collect_linked_servers(adapter)
+        down = [s for s in lsr.linked_servers if s.reachable is False]
+        if down:
+            names = ", ".join(s.name for s in down)
+            headline = f"{len(down)} linked server(s) unreachable: {names}"
+            store.add_event(name, "linked_server_down", headline)
+            notes += notifier.notify("linked_server_down", f"{name}: linked server unreachable", headline)
+            result["linked_down"] = len(down)
+    except Exception as e:
+        store.add_event(name, "error", f"Linked-server check skipped: {type(e).__name__}: {e}")
+
+    result["notifications"] += notes
 
 
 def _headline(diff) -> str:
