@@ -37,6 +37,8 @@ from sqldoc.dbt import find_dbt_project, parse_dbt_project, merge as dbt_merge, 
 from sqldoc.dbt_renderer import render_dbt_html, build_dbt_json
 from sqldoc.server import collect_server, summarize as server_summarize
 from sqldoc.server_renderer import render_server_html, build_server_json
+from sqldoc.logs import collect_logs, summarize as logs_summarize
+from sqldoc.logs_renderer import render_logs_html, build_logs_json
 
 load_dotenv()
 
@@ -1446,6 +1448,84 @@ def server(config, server, database, username, password, connection_string, dial
     click.echo(f"Open {output} in your browser for the full server health report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default='master', help='Database to connect through (default: master)')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (ERRORLOG reading is SQL Server only)')
+@click.option('--log-number', 'log_number', default=0, type=click.IntRange(0, 99),
+              help='Which ERRORLOG archive to read (0 = current; default: 0)')
+@click.option('--search', default=None, help='Only return log entries containing this text (server-side)')
+@click.option('--severity', default=None, type=click.IntRange(0, 25),
+              help='Only show entries at or above this severity level (e.g. 17 for serious errors)')
+@click.option('--last-hours', 'last_hours', default=None, type=click.IntRange(1, 8760),
+              help='Only return entries from the last N hours')
+@click.option('--output', default='errorlog-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the log report as machine-readable JSON to this path')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def logs(config, server, database, username, password, connection_string, dialect,
+         log_number, search, severity, last_hours, output, json_out, verify_offline):
+    """Read the SQL Server ERRORLOG and highlight critical events.
+
+    Reads sys.xp_readerrorlog with optional --search / --severity / --last-hours
+    filtering, and automatically flags corruption, deadlocks, memory pressure,
+    disk-full, and login-failure entries. Reads log text only — never table row
+    data. Needs the EXEC right on xp_readerrorlog (typically sysadmin).
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'server_monitoring', 'logs')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  SQL Server error log")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server_name if server_name else '(connection string)'}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and reading the ERRORLOG...")
+    try:
+        report = collect_logs(adapter, log_number=int(log_number), search=search,
+                              severity=severity, last_hours=last_hours)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
+    s = logs_summarize(report)
+    cats = ", ".join(f"{k}:{v}" for k, v in s['by_category'].items()) or "none"
+    click.echo(
+        click.style(f"Entries: {s['entries']}", fg='blue')
+        + click.style(f"    Critical: {s['critical']}", fg='red' if s['critical'] else 'green')
+        + click.style(f"    Severity 17+: {s['high_severity']}", fg='red' if s['high_severity'] else 'green')
+        + f"    Categories: {cats}"
+    )
+
+    click.echo("\nRendering report...")
+    render_logs_html(label, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_logs_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable log report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the full error-log report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1472,6 +1552,7 @@ cli.add_command(insights, name='insights')
 cli.add_command(comply, name='comply')
 cli.add_command(dbt, name='dbt')
 cli.add_command(server, name='server')
+cli.add_command(logs, name='logs')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

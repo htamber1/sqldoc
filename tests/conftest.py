@@ -154,6 +154,8 @@ class FakeCursor:
             self._last = "agentjobs"
         elif "sysjobhistory" in sql:
             self._last = "agentjobsteps"
+        elif "xp_readerrorlog" in sql:
+            self._last = "errorlog"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -293,6 +295,23 @@ def fake_health_rows():
             FakeRow(schema_name="Sales", procedure_name="uspLegacyExport",
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_errorlog_rows():
+    """Rows sys.xp_readerrorlog would return (LogDate/ProcessInfo/Text)."""
+    return {
+        "errorlog": [
+            FakeRow(LogDate="2026-07-11 03:15:00", ProcessInfo="spid51",
+                    Text="Error: 823, Severity: 24, State: 2. The operating system returned error to SQL Server during a read at offset. (corruption)"),
+            FakeRow(LogDate="2026-07-11 04:00:00", ProcessInfo="spid12",
+                    Text="Transaction (Process ID 62) was deadlocked on lock resources with another process and has been chosen as the deadlock victim."),
+            FakeRow(LogDate="2026-07-11 05:30:00", ProcessInfo="Logon",
+                    Text="Login failed for user 'sa'. Reason: Password did not match. [CLIENT: 10.0.0.5] Error: 18456, Severity: 14, State: 8."),
+            FakeRow(LogDate="2026-07-11 06:00:00", ProcessInfo="spid7s",
+                    Text="Server resumed execution after being idle. This is an informational message only. Severity: 10."),
         ],
     }
 
