@@ -4,6 +4,47 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-07-12
+
+**Five performance + planning features.** SQL-Server paths live-validated against
+SQL Server 2022; PostgreSQL/MySQL paths mock-tested. New dark-theme reports +
+`--json` throughout.
+
+### Added — `sqldoc plans` (query execution-plan analyzer)
+Pulls the top-N worst cached queries (SQL Server `dm_exec_query_stats` +
+`dm_exec_query_plan`, PostgreSQL `pg_stat_statements`, MySQL
+`performance_schema`) and — on SQL Server — parses the XML plan for anti-patterns
+(table scans, key/RID lookups, missing-index recommendations, sort/hash spills,
+plan-affecting implicit conversions). AI explains each and gives the exact
+`CREATE INDEX` or rewrite.
+
+### Added — TempDB monitoring (in `sqldoc server`)
+Version store size + generation/cleanup rates, file count vs recommended
+(min(8, cores)), top session-level tempdb consumers, and current PFS/GAM/SGAM
+`PAGELATCH` contention. New agent alert `tempdb_version_store`.
+
+### Added — `sqldoc capacity` (capacity planning)
+Reads the agent's recorded metric history and projects days until disk full,
+days until the database hits its max size, the fastest-growing tables with
+30/60/90-day sizes, and the fragmentation trend — with SVG sparklines. The agent
+now records size/disk/fragmentation + per-table sizes each poll.
+
+### Added — natural-language alerting (in `sqldoc agent`)
+An `alerts:` config section takes plain-English rules ("alert when any database
+has not been backed up in 24 hours"). Each poll the agent sends the rules + a
+metadata-only state snapshot to the LLM, which decides per-rule whether to fire
+and writes the message (`nl_alert` events).
+
+### Added — `sqldoc baseline` (performance baseline + anomaly detection)
+`--capture` records a performance snapshot (connections, wait categories, top
+query average times, job durations); later runs compare against it and flag
+regressions beyond `--threshold` percent. Works on SQL Server / PostgreSQL /
+MySQL, with `--fail-on-regression` for CI.
+
+### Notes
+- 468 tests passing (all mocked). The agent metrics table gains capacity columns
+  via an ALTER-based migration (existing `agent.db` files upgrade in place).
+
 ## [2.1.0] — 2026-07-11
 
 **Five high-value infrastructure features, each implemented across SQL Server,
