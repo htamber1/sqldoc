@@ -31,6 +31,12 @@ _MODULES = {
     "azuredevops": ("azuredevops", "azuredevops"),
     "powerbi": ("powerbi", "powerbi"),
     "webhook": ("webhook", ""),
+    "github_wiki": ("github_wiki", ""),
+    "gitlab_wiki": ("gitlab_wiki", ""),
+    "azuredevops_wiki": ("azuredevops_wiki", ""),
+    "onedrive": ("onedrive", "sharepoint"),
+    "dropbox": ("dropbox", ""),
+    "nuclino": ("nuclino", ""),
 }
 
 

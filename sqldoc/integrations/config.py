@@ -26,6 +26,7 @@ SECTIONS = (
     "sharepoint", "confluence", "notion", "gdrive", "box",
     "jira", "servicenow", "azuredevops", "powerbi",
     "webhook", "webex",
+    "github_wiki", "gitlab_wiki", "azuredevops_wiki", "onedrive", "dropbox", "nuclino",
 )
 
 

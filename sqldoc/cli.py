@@ -83,6 +83,7 @@ CONFIG_KEYS = {
     # Integration suite: each connector owns a top-level config section.
     'sharepoint', 'confluence', 'notion', 'gdrive', 'box', 'jira',
     'servicenow', 'azuredevops', 'powerbi', 'webhook', 'webex',
+    'github_wiki', 'gitlab_wiki', 'azuredevops_wiki', 'onedrive', 'dropbox', 'nuclino',
     'test', 'push', 'kinds', 'alerting',
     # Access request workflow suite.
     'access', 'user', 'ticket', 'request', 'level', 'inactive_days', 'approver',
@@ -3732,6 +3733,47 @@ cli.add_command(servicenow, name='servicenow')
 cli.add_command(azuredevops, name='azuredevops')
 cli.add_command(powerbi, name='powerbi')
 cli.add_command(webhook, name='webhook')
+github_wiki = make_integration_command(
+    'github_wiki',
+    "Publish sqldoc docs to a GitHub project Wiki (git-based).\n\n"
+    "--push writes one Markdown page per database to the repo's wiki and pushes it.\n"
+    "Configure repo (owner/name) + token under 'github_wiki:'. Requires git on PATH.",
+    push_mode='reports')
+gitlab_wiki = make_integration_command(
+    'gitlab_wiki',
+    "Publish sqldoc docs to a GitLab project Wiki (REST API v4).\n\n"
+    "--push creates/updates one Markdown wiki page per database. Configure\n"
+    "base_url, project_id, and token under 'gitlab_wiki:'.",
+    push_mode='reports')
+azuredevops_wiki = make_integration_command(
+    'azuredevops_wiki',
+    "Publish sqldoc docs to an Azure DevOps project Wiki (REST API, PAT).\n\n"
+    "--push creates/updates one Markdown wiki page per database. Configure\n"
+    "organization/org_url, project, pat, and wiki under 'azuredevops_wiki:'.",
+    push_mode='reports')
+onedrive = make_integration_command(
+    'onedrive',
+    "Upload sqldoc reports to OneDrive (Microsoft Graph; reuses SharePoint auth).\n\n"
+    "--push uploads the HTML/PDF/JSON reports to a OneDrive folder. Configure\n"
+    "tenant_id/client_id/client_secret + user_id (or drive_id) + folder under 'onedrive:'.",
+    push_mode='reports')
+dropbox_cmd = make_integration_command(
+    'dropbox',
+    "Upload sqldoc reports to Dropbox (Business) via the Dropbox API.\n\n"
+    "--push uploads the reports to a Dropbox folder. Configure token + folder under 'dropbox:'.",
+    push_mode='reports')
+nuclino = make_integration_command(
+    'nuclino',
+    "Publish sqldoc docs to Nuclino via the Nuclino API.\n\n"
+    "--push creates/updates one Markdown item per database. Configure api_key +\n"
+    "workspace_id (and optional items map) under 'nuclino:'.",
+    push_mode='reports')
+cli.add_command(github_wiki, name='github-wiki')
+cli.add_command(gitlab_wiki, name='gitlab-wiki')
+cli.add_command(azuredevops_wiki, name='azuredevops-wiki')
+cli.add_command(onedrive, name='onedrive')
+cli.add_command(dropbox_cmd, name='dropbox')
+cli.add_command(nuclino, name='nuclino')
 cli.add_command(access, name='access')
 
 

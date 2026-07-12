@@ -59,6 +59,13 @@ jira = ["requests>=2.31"]
 servicenow = ["requests>=2.31"]
 azuredevops = ["requests>=2.31"]
 powerbi = ["msal>=1.24"]
+# Additional documentation destinations. Wikis / Dropbox / Nuclino speak REST via
+# core `requests`; OneDrive reuses the SharePoint MSAL auth; GitHub Wiki uses git.
+gitlab-wiki = ["requests>=2.31"]
+azuredevops-wiki = ["requests>=2.31"]
+dropbox = ["requests>=2.31"]
+nuclino = ["requests>=2.31"]
+onedrive = ["msal>=1.24"]
 integrations = ["msal>=1.24", "google-api-python-client>=2.100",
                 "google-auth>=2.20", "boxsdk[jwt]>=3.9"]
 # Identity providers for the `sqldoc access` suite. ldap3 is pure Python (AD +
