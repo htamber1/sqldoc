@@ -3362,6 +3362,64 @@ def access_approve(config, show_list, token, decision, reason, identifier, reque
     click.echo(f"\nApprover decides with:\n  sqldoc access approve --token {rec['token']} --decision approve|reject")
 
 
+@access.command('recommend')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--user', 'identifier', required=True, help='Username, email, or AD login')
+@click.option('--database', default=None, help='Recommend for this database (default: across all)')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode')
+@click.option('--model', default=None, help='AI model')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Deterministic rationale (no AI)')
+@click.option('--output', default='access-recommend.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_recommend(config, identifier, database, mode, model, ai_backend, no_ai, output, json_out):
+    """Recommend least-privilege database roles from the user's title + department.
+
+    Learns from existing users with a similar title in the same department and
+    suggests the roles they hold, capped at the level the job title justifies.
+    """
+    from sqldoc.access import ad as ad_mod
+    from sqldoc.access import config as access_config
+    from sqldoc.access.recommend import gather_peers, recommend_roles
+    from sqldoc.access.render import render_recommend_html, build_recommend_json
+    from sqldoc.integrations.base import IntegrationError
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    resolve = _make_resolver(ctx, cfg)
+    backend = resolve_ai_backend(resolve, ai_backend)
+
+    try:
+        source = ad_mod.get_source(access_config.ad_config(cfg))
+        user = source.get_user(identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\nsqldoc v{__version__}  -  access recommend")
+    click.echo(f"{'='*44}")
+    if not user.found:
+        click.echo(click.style(f"  User '{identifier}' not found in {user.source or 'AD'}.", fg='red'), err=True)
+        raise click.Abort()
+    click.echo(f"  {user.display_name or identifier}: {user.title or '?'}, {user.department or '?'}")
+    click.echo("  Learning from existing peers...")
+    peers = gather_peers(cfg, source)
+    rec = recommend_roles(user, peers, database=database, mode=mode, model=model,
+                          backend=backend, no_ai=no_ai)
+
+    click.echo(f"\n  Considered {rec.peers_considered} peer(s).")
+    click.echo(click.style("  Recommended roles:", bold=True))
+    for r, reason in rec.recommended_roles:
+        click.echo(f"    {r}  — {reason}")
+    click.echo(click.style(f"  {rec.least_privilege_note}", fg='cyan'))
+
+    render_recommend_html(rec, output)
+    click.echo(f"\nReport written to {output}")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump(build_recommend_json(rec), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""

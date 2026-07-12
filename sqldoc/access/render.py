@@ -255,3 +255,33 @@ def render_review_html(findings, output_path):
             f"{_e(_CAT_LABEL.get(f.category, f.category))} — <span class='mono'>{_e(f.principal)}</span></h2>"
             f"<p class='muted'>{loc}</p><p>{_e(f.summary)}</p><p class='muted'>{_e(f.detail)}</p>{fix}</div>")
     _write(output_path, _doc("Access review", head + "".join(cards)))
+
+
+# --- recommend -------------------------------------------------------------
+
+def build_recommend_json(rec) -> dict:
+    u = rec.user
+    return {
+        "report_type": "access-role-recommendation",
+        "user": {"identifier": u.identifier, "display_name": u.display_name,
+                 "title": u.title, "department": u.department},
+        "database": rec.database, "peers_considered": rec.peers_considered,
+        "recommended_roles": [{"role": r, "reason": reason} for (r, reason) in rec.recommended_roles],
+        "rationale": rec.rationale, "least_privilege_note": rec.least_privilege_note,
+    }
+
+
+def render_recommend_html(rec, output_path):
+    u = rec.user
+    head = (f"<div class='card'><h2 style='margin-top:0'>Role recommendation — "
+            f"{_e(u.display_name or u.identifier)}</h2>"
+            f"<p class='muted'>{_e(u.title or '?')}, {_e(u.department or '?')}"
+            + (f" &middot; database {_e(rec.database)}" if rec.database else "")
+            + f" &middot; learned from {rec.peers_considered} peer(s)</p>"
+            f"<p>{_e(rec.rationale)}</p></div>")
+    rows = "".join(f"<tr><td class='mono'>{_e(r)}</td><td>{_e(reason)}</td></tr>"
+                   for (r, reason) in rec.recommended_roles)
+    body = ("<div class='card'><h2 style='margin-top:0'>Recommended roles</h2>"
+            "<table><tr><th>Role</th><th>Why</th></tr>" + rows + "</table>"
+            f"<p class='muted'>{_e(rec.least_privilege_note)}</p></div>")
+    _write(output_path, _doc(f"Role recommendation — {u.display_name or u.identifier}", head + body))
