@@ -28,6 +28,8 @@ from sqldoc.insights_renderer import render_insights_html, build_insights_json
 from sqldoc.comply import collect_compliance, summarize as comply_summarize
 from sqldoc.comply_renderer import render_comply_html, build_comply_json
 from sqldoc.offline import verify_file, blocking_refs
+from sqldoc.dbt import find_dbt_project, parse_dbt_project, merge as dbt_merge, summarize as dbt_summarize
+from sqldoc.dbt_renderer import render_dbt_html, build_dbt_json
 
 load_dotenv()
 
@@ -42,6 +44,7 @@ CONFIG_KEYS = {
     'top', 'min_fragmentation', 'min_pages',
     'top_values', 'no_duplicates', 'no_glossary',
     'verify_offline',
+    'project_dir', 'no_db',
     'agent',
 }
 
@@ -1148,6 +1151,100 @@ def comply(config, server, database, username, password, connection_string, dial
     click.echo(f"Open {output} in your browser for the full compliance report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--project-dir', 'project_dir', default=None, help='dbt project directory (default: auto-detect from the current directory)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC/connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected from the connection string)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='dbt-docs.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the unified docs as machine-readable JSON to this path')
+@click.option('--no-db', 'no_db', is_flag=True, default=False,
+              help='Skip the database connection and produce dbt-only docs (no live schema merge)')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def dbt(config, project_dir, server, database, username, password, connection_string, dialect,
+        schemas, output, json_out, no_db, verify_offline):
+    """Unify dbt model metadata with the live database schema.
+
+    Auto-detects a dbt project (dbt_project.yml) in the current directory, reads
+    each model's description/columns/tests from the schema.yml files, and — when
+    a database connection is available — merges that with the actual columns,
+    types, and row counts from the database, flagging documentation gaps and
+    drift. Reads schema/catalog metadata only, never table row data.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    project_dir = resolve('project_dir', project_dir)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    schemas = resolve('schemas', schemas)
+    no_db = resolve('no_db', no_db)
+
+    click.echo(f"\nsqldoc v{__version__}  -  dbt + database documentation")
+    click.echo(f"{'='*44}")
+
+    # Locate the dbt project.
+    found = find_dbt_project(project_dir or '.')
+    if not found:
+        raise click.UsageError(
+            "No dbt project found (no dbt_project.yml in the current directory or "
+            "its immediate subdirectories). Pass --project-dir PATH.")
+    click.echo(f"dbt project: {found}")
+    project = parse_dbt_project(found)
+    click.echo(f"Parsed {len(project.models)} model(s) from dbt schema files.")
+    for w in project.warnings:
+        click.echo(click.style(f"  ! {w}", fg='yellow'), err=True)
+
+    # Optionally merge with the live database schema.
+    tables = []
+    have_conn = bool(resolve('connection_string', connection_string) or resolve('server', server)
+                     or cfg.get('connection_string') or cfg.get('server'))
+    if not no_db and have_conn:
+        conn_str, database, server = _resolve_connection(
+            resolve, server, database, username, password, connection_string, dialect)
+        adapter = open_adapter(resolve, conn_str, dialect)
+        click.echo(f"Connecting to {adapter.display_name} to merge the live schema...")
+        try:
+            tables = extract_metadata(adapter)
+        except Exception as e:
+            click.echo(click.style(f"  ! could not read the database schema ({e}); "
+                                   f"producing dbt-only docs.", fg='yellow'), err=True)
+            tables = []
+        if schemas and tables:
+            allow = [s.strip() for s in schemas.split(',')]
+            tables = [t for t in tables if t.schema in allow]
+    else:
+        click.echo("No database connection given - producing dbt-only documentation.")
+
+    doc = dbt_merge(project, tables)
+    s = dbt_summarize(doc)
+    click.echo(
+        click.style(f"Models: {s['models']}", fg='cyan')
+        + f"    Matched in DB: {s['matched_in_db']}"
+        + f"    Column doc coverage: {s['doc_coverage_pct']}%"
+        + click.style(f"    Undocumented DB cols: {s['undocumented_db_columns']}", fg='yellow')
+        + click.style(f"    Drift: {s['drifted_columns']}", fg='red')
+    )
+
+    click.echo("\nRendering report...")
+    render_dbt_html(project.name, doc, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_dbt_json(project.name, doc), f, indent=2, default=str)
+        click.echo(f"Machine-readable report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the unified dbt + database docs.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1172,6 +1269,7 @@ cli.add_command(quality, name='quality')
 cli.add_command(intel, name='intel')
 cli.add_command(insights, name='insights')
 cli.add_command(comply, name='comply')
+cli.add_command(dbt, name='dbt')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

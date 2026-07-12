@@ -9,6 +9,7 @@ from sqldoc.quality_renderer import QUALITY_TEMPLATE
 from sqldoc.intel_renderer import INTEL_TEMPLATE
 from sqldoc.insights_renderer import INSIGHTS_TEMPLATE
 from sqldoc.comply_renderer import COMPLY_TEMPLATE
+from sqldoc.dbt_renderer import DBT_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -64,6 +65,7 @@ _TEMPLATES = {
     "intel": INTEL_TEMPLATE,
     "insights": INSIGHTS_TEMPLATE,
     "comply": COMPLY_TEMPLATE,
+    "dbt": DBT_TEMPLATE,
 }
 
 
