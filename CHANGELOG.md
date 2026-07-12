@@ -4,6 +4,63 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-07-12
+
+**Enterprise & platform features: more AI backends, vertical tuning, an
+executive view, scheduled digests, multi-tenant serving, SSO, and an audit
+trail.** No breaking changes.
+
+### Added — developer experience
+- **Pre-commit PII hook** — `sqldoc install-hooks` drops a git pre-commit hook
+  that PII-scans staged `.sql` files and blocks commits introducing HIGH-risk
+  columns. `sqldoc scan-files <*.sql>` runs the PII matcher over DDL text (no
+  database connection), with `--fail-on high` for CI and `--json` export.
+- **Terraform provider stub** (`terraform-provider/`) — a documentation-as-code
+  integration pattern (working `null_resource` + `local-exec` today, native
+  provider skeleton) with a README.
+
+### Added — AI
+- **OpenAI + Google Gemini backends** alongside Anthropic and Ollama, behind a
+  unified `--ai-backend {ollama,anthropic,openai,gemini}` flag (config key
+  `ai_backend`) on `doc`/`scan`/`insights`/`waits`/`plans`/`deadlocks`. Every AI
+  feature funnels through one `ai.dispatch`; the cloud-egress warning fires for
+  any cloud backend and names the provider. `openai` + `google-generativeai` are
+  optional extras; reads `OPENAI_API_KEY` / `GOOGLE_API_KEY`.
+- **Industry tuning** — `--industry {healthcare,finance,retail,government}` tunes
+  AI descriptions (a vertical guidance paragraph), PII sensitivity (escalates the
+  categories most sensitive to that vertical + tags them with its flagship
+  regulation), and compliance focus. Healthcare→HIPAA/PHI, finance→PCI-DSS+SOX,
+  retail→PCI-DSS+GDPR, government→FedRAMP+retention.
+
+### Added — reporting & monitoring
+- **`sqldoc executive`** — a single-page, plain-English CTO/CISO summary: data
+  protection, backup, security, and performance scores + an overall score, the
+  top 3 prioritized risks, and trend arrows vs the last run. Self-contained HTML.
+- **Scheduled weekly email digest** — `agent.weekly_report` emails an HTML digest
+  on the configured weekday/hour (default Monday 08:00) covering the week's
+  schema changes, new PII, health trends, job failures, and infra/security
+  alerts. Built from the agent store; idempotent per calendar week.
+
+### Added — enterprise serving & security
+- **Multi-tenant REST API** — `sqldoc serve --multi-tenant` hosts many customers
+  from one instance; each tenant in the `tenants:` list has its own `api_key` +
+  database, and a key can only ever reach its own tenant's data (foundation for
+  a hosted SaaS).
+- **SSO** — SAML and OAuth2/OIDC for the dashboard + REST API via the `auth:`
+  section, with presets for Azure AD, Okta, and Google Workspace. OIDC bearer
+  tokens are verified against the IdP JWKS (issuer/audience/expiry) + an
+  email/domain/group allowlist; SAML responses have their conditions, audience,
+  and XML signature validated. Optional extras `[sso]` / `[saml]`.
+- **Audit trail** — every command run is recorded to `~/.sqldoc/audit.log` + the
+  agent store (timestamp, command, dialect, database, user, options with secrets
+  redacted, result). New `sqldoc audit` command queries + exports it
+  (`--command`/`--database`/`--user`/`--since`, `--summary`, `--export` json/csv).
+
+### Testing
+- 644 tests (up from 525): pre-commit hooks, AI backends, industry tuning,
+  executive summary, weekly digest, multi-tenant isolation, SSO (OIDC + SAML),
+  and the audit trail.
+
 ## [2.3.0] — 2026-07-12
 
 **Full-platform parity: ten new database targets + a REST API.** All new
