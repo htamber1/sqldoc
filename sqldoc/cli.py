@@ -86,6 +86,7 @@ CONFIG_KEYS = {
     'test', 'push', 'kinds', 'alerting',
     # Access request workflow suite.
     'access', 'user', 'ticket', 'request', 'level', 'inactive_days', 'approver',
+    'frameworks',
 }
 
 
@@ -1440,7 +1441,10 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @click.option('--all-databases', 'all_databases', is_flag=True, default=False,
               help='Board-level report: audit every database in the .sqldoc.yml "databases:" list and show each user/role and their access across all of them side by side')
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases):
+@click.option('--frameworks', default=None,
+              help='Also assess these compliance frameworks (comma-separated, or "all"): '
+                   'sox, fedramp, iso27001, cmmc, ccpa, pipeda, soc2 — each mapped to control numbers')
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1536,10 +1540,39 @@ def comply(config, server, database, username, password, connection_string, dial
     click.echo("\nRendering report...")
     render_comply_html(database, report, output)
     _verify_offline(output, resolve('verify_offline', verify_offline))
+
+    # Optional multi-framework assessment (SOX/FedRAMP/ISO/CMMC/CCPA/PIPEDA/SOC2).
+    framework_json = None
+    frameworks = resolve('frameworks', frameworks)
+    if frameworks:
+        from sqldoc import frameworks as fw_mod
+        from sqldoc.frameworks_renderer import render_frameworks_html
+        ids = [f.strip().lower() for f in frameworks.split(',') if f.strip()]
+        try:
+            results = fw_mod.assess_all(ids, {
+                "pii_findings": findings, "principals": report.principals,
+                "access_alerts": report.access_alerts, "permissions": report.permissions})
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        fw_out = output.rsplit('.', 1)[0] + '-frameworks.html'
+        render_frameworks_html(results, database, fw_out)
+        _verify_offline(fw_out, resolve('verify_offline', verify_offline))
+        framework_json = fw_mod.build_frameworks_json(results)
+        click.echo("\nFramework assessment:")
+        for r in results:
+            sm = r.summary
+            click.echo(f"  {r.name}: "
+                       + click.style(f"{sm['attention']} attention", fg='red')
+                       + f", {sm['review']} review, {sm['pass']} pass")
+        click.echo(f"Framework report written to {fw_out}")
+
     if json_out:
         import json as _json
+        data = build_comply_json(database, report)
+        if framework_json:
+            data["frameworks"] = framework_json["frameworks"]
         with open(json_out, "w", encoding="utf-8") as f:
-            _json.dump(build_comply_json(database, report), f, indent=2, default=str)
+            _json.dump(data, f, indent=2, default=str)
         click.echo(f"Machine-readable report written to {json_out}")
     click.echo(f"Open {output} in your browser for the full compliance report.")
 
