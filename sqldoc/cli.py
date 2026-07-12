@@ -27,6 +27,7 @@ from sqldoc.insights import collect_insights, summarize as insights_summarize
 from sqldoc.insights_renderer import render_insights_html, build_insights_json
 from sqldoc.comply import collect_compliance, summarize as comply_summarize
 from sqldoc.comply_renderer import render_comply_html, build_comply_json
+from sqldoc.offline import verify_file, blocking_refs
 
 load_dotenv()
 
@@ -40,6 +41,7 @@ CONFIG_KEYS = {
     'confidence_threshold', 'fail_on', 'yes',
     'top', 'min_fragmentation', 'min_pages',
     'top_values', 'no_duplicates', 'no_glossary',
+    'verify_offline',
     'agent',
 }
 
@@ -150,6 +152,37 @@ def _require_capability(adapter, flag, command):
         )
 
 
+def _verify_offline(output, enabled):
+    """When --verify-offline is set, scan the rendered HTML report for any
+    external resource references (CDN scripts, web fonts, remote images) that
+    would break on an air-gapped network, and print the result. Non-HTML output
+    is skipped. Warns (does not fail) if anything is found."""
+    if not enabled or not output:
+        return
+    if not str(output).lower().endswith((".html", ".htm")):
+        click.echo("  offline check skipped: report is not HTML.")
+        return
+    try:
+        refs = verify_file(output)
+    except OSError as e:
+        click.echo(click.style(f"  offline check could not read {output}: {e}", fg='yellow'), err=True)
+        return
+    blocking = blocking_refs(refs)
+    if blocking:
+        click.echo(click.style(
+            f"  ! offline check: {len(blocking)} external resource reference(s) found "
+            f"- this report is NOT air-gap safe:", fg='yellow'), err=True)
+        for r in blocking[:20]:
+            click.echo(click.style(f"      [{r.kind}] {r.url}", fg='yellow'), err=True)
+    else:
+        note = ""
+        links = [r for r in refs if not r.is_blocking]
+        if links:
+            note = f" ({len(links)} external hyperlink(s), which do not auto-load)"
+        click.echo(click.style(
+            f"  offline check: OK - fully self-contained, no external resources{note}.", fg='green'))
+
+
 def _resolve_connection(resolve, server, database, username, password, connection_string,
                         dialect=None):
     """Merge connection settings and return (conn_str, database, server).
@@ -227,7 +260,9 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--cache', default=None, help='AI description cache path (default: .sqldoc-cache/<database>.json)')
 @click.option('--no-cache', is_flag=True, default=False, help='Disable the AI description cache (always regenerate)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
+def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -416,6 +451,7 @@ def main(config, server, database, username, password, connection_string, dialec
     else:
         render_html(database, tables, output, views=views, procedures=procedures)
 
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     click.echo(f"\nDone! Open {output} in your browser to view the documentation.")
 
 @click.command()
@@ -441,7 +477,9 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high', 'new-high']), default='none',
               help='Exit non-zero to gate CI: high = any HIGH finding; new-high = a new HIGH finding vs the baseline')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
-def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -574,6 +612,7 @@ def scan(config, server, database, username, password, connection_string, dialec
 
     click.echo("\nRendering report...")
     render_pii_html(database, findings, output, sampled=sample)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if sarif:
         render_sarif(database, findings, sarif)
     if json_out:
@@ -626,7 +665,9 @@ def scan(config, server, database, username, password, connection_string, dialec
               help='Only report indexes fragmented at least this percent (default: 10)')
 @click.option('--min-pages', 'min_pages', default=100, type=click.IntRange(1, 10_000_000),
               help='Ignore indexes smaller than this many pages for fragmentation (default: 100)')
-def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline):
     """Analyze database health from SQL Server DMVs.
 
     Surfaces the slowest cached queries, tables with writes but no reads,
@@ -690,6 +731,7 @@ def health(config, server, database, username, password, connection_string, dial
 
     click.echo("\nRendering report...")
     render_health_html(database, report, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if json_out:
         import json as _json
         with open(json_out, "w", encoding="utf-8") as f:
@@ -715,7 +757,9 @@ def health(config, server, database, username, password, connection_string, dial
 @click.option('--no-duplicates', 'no_duplicates', is_flag=True, default=False,
               help='Skip full-row duplicate detection (the heaviest check)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the data-read confirmation prompt (for non-interactive use)')
-def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
@@ -784,6 +828,7 @@ def quality(config, server, database, username, password, connection_string, dia
 
     click.echo("\nRendering report...")
     render_quality_html(database, report, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if json_out:
         import json as _json
         with open(json_out, "w", encoding="utf-8") as f:
@@ -806,7 +851,9 @@ def quality(config, server, database, username, password, connection_string, dia
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
 @click.option('--baseline', default=None, help='A prior schema snapshot (JSON) to diff against; enables migration-script generation')
 @click.option('--migration-out', 'migration_out', default=None, help='Write the generated migration DDL to this .sql path (requires --baseline)')
-def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, verify_offline):
     """Schema intelligence: naming, orphaned FKs, impact analysis, migrations.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
@@ -866,6 +913,7 @@ def intel(config, server, database, username, password, connection_string, diale
 
     click.echo("\nRendering report...")
     render_intel_html(database, report, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if migration_out and report.migration_sql:
         with open(migration_out, "w", encoding="utf-8") as f:
             f.write(report.migration_sql)
@@ -897,7 +945,9 @@ def intel(config, server, database, username, password, connection_string, diale
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI parts (NL-to-SQL + glossary); still runs anomaly + relationship analysis')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls for glossary generation (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
-def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes, verify_offline):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -985,6 +1035,7 @@ def insights(config, server, database, username, password, connection_string, di
 
     click.echo("\nRendering report...")
     render_insights_html(database, report, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if json_out:
         import json as _json
         with open(json_out, "w", encoding="utf-8") as f:
@@ -1007,7 +1058,9 @@ def insights(config, server, database, username, password, connection_string, di
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
 @click.option('--no-access-audit', 'no_access_audit', is_flag=True, default=False,
               help='Skip reading sys.database_permissions (use if the account lacks VIEW DEFINITION)')
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit):
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit, verify_offline):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1086,6 +1139,7 @@ def comply(config, server, database, username, password, connection_string, dial
 
     click.echo("\nRendering report...")
     render_comply_html(database, report, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
     if json_out:
         import json as _json
         with open(json_out, "w", encoding="utf-8") as f:

@@ -87,6 +87,30 @@ documentation, scanning, or schema analysis.**
 The worst-case disclosure in cloud mode is a column *name* like `Employee.Salary` —
 never a salary.
 
+## 🛡️ Air-gap ready
+
+**Every HTML report is a single, fully self-contained file** — all CSS and
+JavaScript are inlined, the ER diagram is inline SVG, and there are **no CDN
+scripts, web fonts, or remote images**. Reports render identically on an
+isolated, offline, air-gapped network — open the `.html` straight from disk with
+no internet connection.
+
+Verify it yourself on any generated report with the `--verify-offline` flag
+(available on every command that emits HTML):
+
+```bash
+sqldoc scan --connection-string "..." --output pii.html --verify-offline
+#   offline check: OK - fully self-contained, no external resources.
+```
+
+It scans the rendered HTML for any external resource reference (CDN `<script>`,
+`<link>` stylesheet, web font `@import`, remote `<img>`, protocol-relative
+`//host` URL) and warns if it finds one. Combined with `--mode local` (the
+default) and the metadata-only boundary above, sqldoc runs end-to-end with **zero
+network egress** — a good fit for regulated, classified, or on-prem-only
+environments. The self-containment of all seven report templates is enforced by
+the test suite.
+
 ## Installation
 
 From PyPI:
