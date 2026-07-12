@@ -84,6 +84,8 @@ CONFIG_KEYS = {
     'sharepoint', 'confluence', 'notion', 'gdrive', 'box', 'jira',
     'servicenow', 'azuredevops', 'powerbi', 'webhook', 'webex',
     'test', 'push', 'kinds', 'alerting',
+    # Access request workflow suite.
+    'access', 'user', 'ticket', 'request', 'level', 'inactive_days', 'approver',
 }
 
 
@@ -2914,6 +2916,76 @@ webhook = make_integration_command(
     push_mode='reports')
 
 
+# --- access request workflow suite -----------------------------------------
+
+@click.group()
+def access():
+    """Automate the SQL Server access-request workflow (Active Directory aware).
+
+    Cross-references AD / Entra ID group membership with SQL Server logins and
+    database role memberships to show what access a user has, parse plain-English
+    access requests, generate best-practice grant + rollback scripts, process
+    Jira tickets end-to-end, run access reviews, and recommend least-privilege
+    roles. AD is optional: pip install sqldoc[activedirectory].
+    """
+
+
+def _access_cfg(config):
+    ctx = click.get_current_context()
+    return load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+
+
+@access.command('check')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--user', 'identifier', required=True,
+              help='Username, email, or AD login to check')
+@click.option('--output', default='access-check.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_check(config, identifier, output, json_out):
+    """Show all access a user currently has across the configured servers.
+
+    Resolves the user in Active Directory / Entra ID, lists their AD groups,
+    cross-references those groups with SQL Server logins + database role
+    memberships, and flags PII tables they can currently reach.
+    """
+    from sqldoc.access.checker import check_access
+    from sqldoc.access.render import render_check_html, build_check_json
+    from sqldoc.integrations.base import IntegrationError
+    cfg = _access_cfg(config)
+    click.echo(f"\nsqldoc v{__version__}  -  access check")
+    click.echo(f"{'='*44}")
+    click.echo(f"Resolving '{identifier}' in Active Directory...")
+    try:
+        report = check_access(cfg, identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+
+    u = report.user
+    if not u.found:
+        click.echo(click.style(f"  User '{identifier}' not found in {u.source or 'AD'}.", fg='red'), err=True)
+    else:
+        click.echo(click.style(f"  {u.display_name or identifier}", bold=True)
+                   + f"  ({u.login or u.sam_account_name})  {u.title or '?'}, {u.department or '?'}")
+        click.echo(f"  AD groups: {len(u.groups)}   with SQL access: {len(report.matched_groups)}")
+        for a in report.access:
+            pii = f"  {len(a.pii_tables)} PII table(s)" if a.pii_tables else ""
+            click.echo(f"    {a.server}/{a.database}: "
+                       + click.style(a.level, fg={'admin': 'red', 'write': 'yellow', 'read': 'cyan'}.get(a.level))
+                       + f"  roles=[{', '.join(a.roles) or '-'}]{pii}")
+        if not report.access:
+            click.echo(click.style("  No SQL Server access found.", fg='green'))
+    for w, m in report.errors:
+        click.echo(click.style(f"  ! {w}: {m}", fg='yellow'), err=True)
+
+    render_check_html(report, output)
+    click.echo(f"\nReport written to {output}")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump(build_check_json(report), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2963,6 +3035,7 @@ cli.add_command(servicenow, name='servicenow')
 cli.add_command(azuredevops, name='azuredevops')
 cli.add_command(powerbi, name='powerbi')
 cli.add_command(webhook, name='webhook')
+cli.add_command(access, name='access')
 
 
 # --- audit trail hook ------------------------------------------------------

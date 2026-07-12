@@ -61,6 +61,9 @@ azuredevops = ["requests>=2.31"]
 powerbi = ["msal>=1.24"]
 integrations = ["msal>=1.24", "google-api-python-client>=2.100",
                 "google-auth>=2.20", "boxsdk[jwt]>=3.9"]
+# Active Directory / Entra ID lookup for the `sqldoc access` suite. ldap3 is pure
+# Python (no native deps); msal covers the Entra ID / Graph alternative.
+activedirectory = ["ldap3>=2.9", "msal>=1.24"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
 all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",
@@ -77,7 +80,7 @@ Repository = "https://github.com/htamber1/sqldoc"
 sqldoc = "sqldoc.cli:cli"
 
 [tool.setuptools]
-packages = ["sqldoc", "sqldoc.adapters", "sqldoc.agent", "sqldoc.integrations"]
+packages = ["sqldoc", "sqldoc.adapters", "sqldoc.agent", "sqldoc.integrations", "sqldoc.access"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
