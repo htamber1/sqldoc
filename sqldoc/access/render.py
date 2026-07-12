@@ -178,6 +178,7 @@ def build_script_json(gs) -> dict:
     return {
         "report_type": "access-script",
         "server": gs.server, "database": gs.database, "login": gs.login_name,
+        "login_type": gs.login_type,
         "role": gs.role, "uses_windows_group": gs.uses_windows_group, "note": gs.note,
         "grant_sql": gs.grant_sql, "rollback_sql": gs.rollback_sql,
         "impact": gs.impact,

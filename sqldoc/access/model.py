@@ -100,6 +100,7 @@ class GeneratedScript:
     impact: list = field(default_factory=list)      # objects that become accessible
     pii_exposed: list = field(default_factory=list) # (schema, table, risk, [regs])
     login_name: str = ""
+    login_type: str = ""            # windows | sql | azure_ad | managed_identity
     role: str = ""
     uses_windows_group: bool = False
     note: str = ""

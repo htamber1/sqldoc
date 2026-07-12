@@ -114,7 +114,7 @@ def test_cli_approve_submit_and_decide(monkeypatch, tmp_path):
     r = AccessReport(user=ADUser(identifier="jsmith", login="CORP\\jsmith", groups=["Sales Team"], found=True))
     r.logins.append(Login(name="CORP\\Sales Team", type="WINDOWS_GROUP"))
     monkeypatch.setattr(checker, "check_access", lambda c, ident, **k: r)
-    monkeypatch.setattr(cli, "_access_tables_for", lambda cfg, db: ([], [], "prod", None))
+    monkeypatch.setattr(cli, "_access_tables_for", lambda cfg, db: ([], [], "prod", "sqlserver", None))
     monkeypatch.setattr(approval, "_default_mailer", lambda smtp, subj, html: None)
     cfg = {"access": {**CFG["access"],
                       "ad": {"type": "ldap", "server": "x", "base_dn": "y"},

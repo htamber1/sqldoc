@@ -144,7 +144,7 @@ def test_cli_access_script(monkeypatch, tmp_path):
     r.logins.append(Login(name="CORP\\Sales Team", type="WINDOWS_GROUP"))
     monkeypatch.setattr(checker, "check_access", lambda c, ident, **k: r)
     monkeypatch.setattr(cli, "_access_tables_for",
-                        lambda cfg, db: (_tables(), _pii(), "prod", None))
+                        lambda cfg, db: (_tables(), _pii(), "prod", "sqlserver", None))
     p = tmp_path / ".sqldoc.yml"
     p.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     sql_out = tmp_path / "grant.sql"

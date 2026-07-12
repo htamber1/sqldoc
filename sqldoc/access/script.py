@@ -50,9 +50,16 @@ def _already_roles(report, database) -> set:
 
 
 def generate_script(report, parsed, server, database, tables=None, pii_findings=None,
-                    login_override=None) -> GeneratedScript:
-    """Produce the grant + rollback scripts and impact analysis for one request."""
+                    login_override=None, dialect="sqlserver", login_type=None) -> GeneratedScript:
+    """Produce the grant + rollback scripts and impact analysis for one request.
+
+    ``login_type`` (windows / sql / azure_ad / managed_identity) is honoured when
+    given, else classified from the login name — driving the correct CREATE LOGIN
+    / CREATE USER syntax for every login pattern (incl. Azure AD external
+    providers and Azure SQL Database contained users)."""
+    from sqldoc.access import login_types as lt
     login, is_group, strategy = pick_login(report, parsed, override=login_override)
+    ltype = lt.classify_login(login, hint=login_type)
     needs = parsed.level or "read"
     target_roles = roles_for_level(needs)
     already = _already_roles(report, database)
@@ -60,6 +67,7 @@ def generate_script(report, parsed, server, database, tables=None, pii_findings=
 
     gs = GeneratedScript(server=server, database=database, login_name=login,
                          role=", ".join(add_roles), uses_windows_group=is_group)
+    gs.login_type = ltype
 
     if not add_roles:
         gs.note = (f"No changes needed: the grantee already holds {', '.join(sorted(already)) or 'the required roles'} "
@@ -68,41 +76,46 @@ def generate_script(report, parsed, server, database, tables=None, pii_findings=
         gs.rollback_sql = "-- Nothing to roll back.\n"
         return gs
 
-    login_from = "FROM WINDOWS" if is_group or "\\" in login else ""
     ql = _q(login)
+    kind_label = ("Windows group" if is_group else lt.label(ltype))
+    server_login = lt.needs_server_login(ltype, dialect)
 
     grant = []
     grant.append("-- sqldoc access grant script")
     grant.append(f"-- Server:   {server}")
     grant.append(f"-- Database: {database}")
-    grant.append(f"-- Grantee:  {login}  ({'Windows group' if is_group else 'individual login'})")
+    grant.append(f"-- Grantee:  {login}  ({kind_label})")
     grant.append(f"-- Level:    {needs}  ->  role(s): {', '.join(add_roles)}")
     grant.append(f"-- Strategy: {strategy}")
     grant.append("-- Review before running. A matching rollback script is provided below.")
     grant.append("")
-    grant.append("-- 1) Ensure the server login exists (created only if missing).")
-    grant.append("USE [master];")
-    grant.append("GO")
-    grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{login}')")
-    grant.append("BEGIN")
-    if login_from:
-        grant.append(f"    CREATE LOGIN {ql} {login_from};")
+    step = 1
+    if server_login:
+        grant.append(f"-- {step}) Ensure the server login exists (created only if missing).")
+        grant.append("USE [master];")
+        grant.append("GO")
+        grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{login}')")
+        grant.append("BEGIN")
+        grant.append(f"    {lt.create_login_sql(login, ltype, dialect)}")
+        grant.append("END")
+        grant.append("GO")
+        grant.append("")
+        step += 1
     else:
-        grant.append(f"    -- SQL login: set a strong password out-of-band, do not commit it.")
-        grant.append(f"    CREATE LOGIN {ql} WITH PASSWORD = N'<set-a-strong-password>';")
-    grant.append("END")
-    grant.append("GO")
-    grant.append("")
-    grant.append("-- 2) Ensure the database user mapped to that login exists.")
+        grant.append(f"-- Azure SQL Database: {lt.label(ltype)} is a contained user "
+                     "(no server login needed).")
+        grant.append("")
+    grant.append(f"-- {step}) Ensure the database user exists.")
     grant.append(f"USE {_q(database)};")
     grant.append("GO")
     grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'{login}')")
     grant.append("BEGIN")
-    grant.append(f"    CREATE USER {ql} FOR LOGIN {ql};")
+    grant.append(f"    {lt.create_user_sql(login, ltype, dialect)}")
     grant.append("END")
     grant.append("GO")
     grant.append("")
-    grant.append(f"-- 3) Grant {needs} access via the least-privilege fixed role(s).")
+    step += 1
+    grant.append(f"-- {step}) Grant {needs} access via the least-privilege fixed role(s).")
     for r in add_roles:
         grant.append(f"ALTER ROLE {_q(r)} ADD MEMBER {ql};")
     grant.append("GO")
@@ -119,7 +132,8 @@ def generate_script(report, parsed, server, database, tables=None, pii_findings=
     roll.append("GO")
     roll.append("-- Optional: if the user/login were created *only* for this grant, drop them:")
     roll.append(f"-- DROP USER {ql};")
-    roll.append(f"-- USE [master]; DROP LOGIN {ql};")
+    if server_login:
+        roll.append(f"-- USE [master]; DROP LOGIN {ql};")
     roll.append("GO")
     gs.rollback_sql = "\n".join(roll) + "\n"
 

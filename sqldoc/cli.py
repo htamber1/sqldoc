@@ -3045,19 +3045,20 @@ def access_request(config, identifier, request_text, mode, model, ai_backend, no
 
 def _access_tables_for(cfg, database):
     """Best-effort extract of a database's tables + PII findings for impact
-    analysis. Returns (tables, pii_findings, server_name, note)."""
+    analysis. Returns (tables, pii_findings, server_name, dialect, note)."""
     from sqldoc.access import config as access_config
     from sqldoc.access.checker import build_db_adapter
     from sqldoc.pii import scan_tables
     for entry in access_config.servers(cfg):
         if any(db.lower() == (database or "").lower() for db in entry["databases"]):
+            dialect = entry.get("dialect", "sqlserver")
             try:
                 adapter = build_db_adapter(entry, database)
                 tables = adapter.extract_metadata()
-                return tables, scan_tables(tables), entry["name"], None
+                return tables, scan_tables(tables), entry["name"], dialect, None
             except Exception as e:
-                return [], [], entry["name"], f"{type(e).__name__}: {e}"
-    return [], [], "", f"database '{database}' not found in access.servers"
+                return [], [], entry["name"], dialect, f"{type(e).__name__}: {e}"
+    return [], [], "", "sqlserver", f"database '{database}' not found in access.servers"
 
 
 @access.command('script')
@@ -3068,6 +3069,9 @@ def _access_tables_for(cfg, database):
 @click.option('--level', default=None, type=click.Choice(['read', 'write', 'admin']),
               help='Access level (if not using --request)')
 @click.option('--login', 'login_override', default=None, help='Force a specific login/group to grant to')
+@click.option('--login-type', 'login_type', default=None,
+              type=click.Choice(['windows', 'sql', 'azure_ad', 'managed_identity']),
+              help='Force the login type (default: classified from the name)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for parsing')
 @click.option('--model', default=None, help='AI model for parsing')
 @ai_backend_option
@@ -3076,7 +3080,7 @@ def _access_tables_for(cfg, database):
 @click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
 @click.option('--sql-out', default=None, help='Write the grant script to this .sql file (rollback alongside)')
 def access_script(config, identifier, request_text, database, level, login_override,
-                  mode, model, ai_backend, no_ai, output, json_out, sql_out):
+                  login_type, mode, model, ai_backend, no_ai, output, json_out, sql_out):
     """Generate the grant + rollback SQL for an access request.
 
     Follows SQL Server best practices: check-then-create the login (Windows group
@@ -3113,14 +3117,15 @@ def access_script(config, identifier, request_text, database, level, login_overr
     except IntegrationError as e:
         raise click.UsageError(str(e))
 
-    tables, pii, server_name, note = _access_tables_for(cfg, parsed.database)
+    tables, pii, server_name, dialect, note = _access_tables_for(cfg, parsed.database)
     if note:
         click.echo(click.style(f"  ! impact analysis limited: {note}", fg='yellow'), err=True)
 
     gs = generate_script(report, parsed, server_name or "(server)", parsed.database,
-                         tables=tables, pii_findings=pii, login_override=login_override)
+                         tables=tables, pii_findings=pii, login_override=login_override,
+                         dialect=dialect, login_type=login_type)
 
-    click.echo(f"\nGrantee: {gs.login_name}  ({'Windows group' if gs.uses_windows_group else 'individual login'})")
+    click.echo(f"\nGrantee: {gs.login_name}  ({gs.login_type})")
     click.echo(click.style(gs.note, fg='cyan'))
     click.echo("\n--- grant script ---")
     click.echo(gs.grant_sql)
@@ -3344,9 +3349,9 @@ def access_approve(config, show_list, token, decision, reason, identifier, reque
         report = check_access(cfg, identifier)
     except IntegrationError as e:
         raise click.UsageError(str(e))
-    tables, pii, server_name, _note = _access_tables_for(cfg, parsed.database)
+    tables, pii, server_name, dialect, _note = _access_tables_for(cfg, parsed.database)
     gs = generate_script(report, parsed, server_name or "(server)", parsed.database,
-                         tables=tables, pii_findings=pii)
+                         tables=tables, pii_findings=pii, dialect=dialect)
     import getpass
     req = requester or (getattr(getpass, 'getuser', lambda: 'unknown')() if True else 'unknown')
     rec = approval.submit_approval(cfg, gs, requester=req, ticket=ticket, schema=parsed.schema)
