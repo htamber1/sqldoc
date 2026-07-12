@@ -2837,6 +2837,17 @@ notion = make_integration_command(
     push_mode='reports')
 
 
+gdrive = make_integration_command(
+    'gdrive',
+    "Upload sqldoc reports to Google Drive (Drive API v3, service account).\n\n"
+    "--test verifies the service account + folder; --push uploads the HTML/PDF/JSON\n"
+    "reports to the configured folder under consistent names (re-push updates the\n"
+    "same file, so Drive keeps revision history) and shares them with the configured\n"
+    "emails. Configure service_account_file (or service_account_info), folder_id,\n"
+    "and share_with under 'gdrive:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2879,6 +2890,7 @@ cli.add_command(audit, name='audit')
 cli.add_command(sharepoint, name='sharepoint')
 cli.add_command(confluence, name='confluence')
 cli.add_command(notion, name='notion')
+cli.add_command(gdrive, name='gdrive')
 
 
 # --- audit trail hook ------------------------------------------------------
