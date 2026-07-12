@@ -68,11 +68,41 @@ helm upgrade sqldoc ./helm/sqldoc --set-file config=./.sqldoc.yml    # update
 
 ---
 
+## 4. Cloud-managed containers
+
+Templates that deploy the agent as a managed container service with persistent
+storage and env-var credentials. All three write your `.sqldoc.yml` from a
+base64 secret at startup and mount durable storage at `/data`.
+
+### Azure Container Apps (Bicep) — `deploy/azure-container-app.bicep`
+Persists to an Azure Files share mounted at `/data`; public HTTP ingress on 8080.
+```bash
+az deployment group create -g <rg> -f deploy/azure-container-app.bicep \
+  -p image='<registry>/sqldoc:2.7.0' \
+     configBase64="$(base64 -w0 .sqldoc.yml)" \
+     anthropicApiKey='***'
+```
+
+### AWS ECS Fargate (CloudFormation) — `deploy/aws-ecs-fargate.yaml`
+Persists to an EFS access point mounted at `/data`; deploy into an existing VPC.
+```bash
+aws cloudformation deploy --template-file deploy/aws-ecs-fargate.yaml \
+  --stack-name sqldoc --capabilities CAPABILITY_IAM \
+  --parameter-overrides Image=<ecr-image> VpcId=vpc-xxx \
+    SubnetIds=subnet-a,subnet-b ConfigBase64="$(base64 -w0 .sqldoc.yml)"
+```
+
+### Google Cloud Run (Terraform) — `deploy/gcp-cloud-run.tf`
+Persists to a Cloud Storage bucket mounted at `/data` via gcsfuse.
+```bash
+terraform -chdir=deploy init
+terraform -chdir=deploy apply -var project=<proj> \
+  -var image=gcr.io/<proj>/sqldoc:2.7.0 \
+  -var config_base64="$(base64 -w0 .sqldoc.yml)"
+```
+
 ### Notes
 - **Persistence matters**: the agent's history, metrics, alert/approval state, and
   rendered docs live in `/data`. Always mount a volume there.
 - **Credentials**: pass cloud AI / integration credentials as environment
-  variables (`env` / `envFromSecret` in the chart) rather than baking them in.
-- **Cloud-managed containers** (Azure Container Apps, AWS ECS Fargate, Google
-  Cloud Run): see the templates under `deploy/` (`azure-container-app.bicep`,
-  `aws-ecs-fargate.yaml`, `gcp-cloud-run.tf`).
+  variables (secrets) rather than baking them into the image.

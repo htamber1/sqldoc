@@ -49,3 +49,31 @@ def test_helm_templates_present():
 def test_deploy_readme_covers_all_three():
     readme = _read("deploy", "README.md")
     assert "Docker" in readme and "Docker Compose" in readme and "Helm" in readme
+
+
+# --- cloud templates -------------------------------------------------------
+
+def test_azure_bicep():
+    b = _read("deploy", "azure-container-app.bicep")
+    assert "Microsoft.App/containerApps" in b
+    assert "AzureFile" in b and "/data" in b
+    assert "sqldoc agent start --foreground" in b
+
+
+def test_aws_cloudformation():
+    c = _read("deploy", "aws-ecs-fargate.yaml")
+    assert "AWS::ECS::TaskDefinition" in c and "FARGATE" in c
+    assert "AWS::EFS::FileSystem" in c and "/data" in c
+    assert "sqldoc agent start --foreground" in c
+
+
+def test_gcp_terraform():
+    t = _read("deploy", "gcp-cloud-run.tf")
+    assert "google_cloud_run_v2_service" in t
+    assert "google_storage_bucket" in t and "/data" in t
+    assert "sqldoc agent start --foreground" in t
+
+
+def test_readme_covers_cloud():
+    readme = _read("deploy", "README.md")
+    assert "Container Apps" in readme and "Fargate" in readme and "Cloud Run" in readme

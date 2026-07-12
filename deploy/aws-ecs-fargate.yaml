@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  sqldoc agent on AWS ECS Fargate, with a persistent EFS volume for the agent
+  store (/data) and env-var configuration for credentials. Deploy into an
+  existing VPC + subnets.
+
+Parameters:
+  Image:
+    Type: String
+    Description: Container image (repo:tag) for sqldoc, e.g. <acct>.dkr.ecr.<region>.amazonaws.com/sqldoc:2.7.0
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Two or more subnets (with access to ECR + the target databases)
+  ConfigBase64:
+    Type: String
+    NoEcho: true
+    Description: Base64-encoded .sqldoc.yml config
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+Conditions:
+  HasAnthropic: !Not [!Equals [!Ref AnthropicApiKey, ""]]
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/sqldoc
+      RetentionInDays: 30
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: sqldoc
+
+  ServiceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sqldoc agent
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0        # tighten to your admin CIDR
+
+  EfsSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: sqldoc EFS (NFS from the task)
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref ServiceSG
+
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: sqldoc-data
+
+  MountTarget0:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups: [!Ref EfsSG]
+
+  AccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref FileSystem
+      PosixUser: { Uid: 10001, Gid: 10001 }
+      RootDirectory:
+        Path: /sqldoc
+        CreationInfo: { OwnerUid: 10001, OwnerGid: 10001, Permissions: "0755" }
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: sqldoc
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: "512"
+      Memory: "1024"
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      Volumes:
+        - Name: data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref AccessPoint
+              IAM: DISABLED
+      ContainerDefinitions:
+        - Name: sqldoc
+          Image: !Ref Image
+          EntryPoint: ["/bin/sh", "-c"]
+          Command:
+            - echo "$CONFIG_B64" | base64 -d > /app/.sqldoc.yml && exec sqldoc agent start --foreground
+          PortMappings:
+            - ContainerPort: 8080
+          MountPoints:
+            - SourceVolume: data
+              ContainerPath: /data
+          Environment:
+            - Name: SQLDOC_AGENT_HOME
+              Value: /data
+            - Name: CONFIG_B64
+              Value: !Ref ConfigBase64
+            - !If
+              - HasAnthropic
+              - { Name: ANTHROPIC_API_KEY, Value: !Ref AnthropicApiKey }
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sqldoc
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: MountTarget0
+    Properties:
+      Cluster: !Ref Cluster
+      DesiredCount: 1
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref ServiceSG]
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  FileSystemId:
+    Value: !Ref FileSystem
