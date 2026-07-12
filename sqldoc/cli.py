@@ -2765,10 +2765,9 @@ def _run_integration(name, push_mode, config, server, database, username, passwo
         elif push_mode == 'issues':
             events = finding_events(bundle, _integration_thresholds(sec))
             if not events:
-                click.echo(click.style("  No findings exceeded the configured thresholds; "
-                                       "no issues created.", fg='green'))
-                return
-            res = client.create_issues(events)
+                click.echo(click.style("  No findings exceeded the configured thresholds.",
+                                       fg='green'))
+            res = client.create_issues(events, metrics=_metrics(bundle))
         else:  # 'reports'
             kinds_list = [k.strip() for k in kinds.split(',')] if kinds else None
             artifacts = render_artifacts(bundle, kinds_list)
@@ -2870,6 +2869,18 @@ jira = make_integration_command(
     push_mode='issues')
 
 
+servicenow = make_integration_command(
+    'servicenow',
+    "Open ServiceNow incidents + update CMDB from sqldoc findings.\n\n"
+    "--test verifies the instance; --push creates an incident per critical finding\n"
+    "(security below threshold, failed health, backup staleness, HIGH PII) with\n"
+    "urgency/impact from severity, and updates the database's CI record with\n"
+    "documentation metadata. Schema-change change-requests are raised by the agent.\n"
+    "Configure instance_url, username, password, ci_class, and thresholds under\n"
+    "'servicenow:'.",
+    push_mode='issues')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2915,6 +2926,7 @@ cli.add_command(notion, name='notion')
 cli.add_command(gdrive, name='gdrive')
 cli.add_command(box, name='box')
 cli.add_command(jira, name='jira')
+cli.add_command(servicenow, name='servicenow')
 
 
 # --- audit trail hook ------------------------------------------------------

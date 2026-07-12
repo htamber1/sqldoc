@@ -96,7 +96,7 @@ class Client:
         body += f"\n\n(Raised automatically by sqldoc. Database: {event.database}.)"
         return body
 
-    def create_issues(self, events) -> dict:
+    def create_issues(self, events, metrics=None) -> dict:
         self._need()
         created, skipped = [], 0
         for ev in events:
