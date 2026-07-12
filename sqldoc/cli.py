@@ -3213,6 +3213,52 @@ def access_jira(config, ticket, user_override, transition_to, no_comment, mode, 
             click.echo(f"JSON written to {json_out}")
 
 
+@access.command('review')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--inactive-days', default=None, type=int,
+              help='Flag accounts inactive for more than this many days (default: 90 or config)')
+@click.option('--output', default='access-review.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_review(config, inactive_days, output, json_out):
+    """Review all logins + role memberships and flag access risks.
+
+    Flags inactive accounts, over-privileged accounts (vs AD job title),
+    separation-of-duties violations, orphaned Windows logins, and service
+    accounts with excessive permissions — each with a generated fix script,
+    prioritized most-severe first.
+    """
+    from sqldoc.access.review import review_access
+    from sqldoc.access import config as access_config
+    from sqldoc.access.render import render_review_html, build_review_json
+    cfg = _access_cfg(config)
+    days = inactive_days if inactive_days is not None else int(access_config.review_config(cfg).get("inactive_days", 90))
+
+    click.echo(f"\nsqldoc v{__version__}  -  access review")
+    click.echo(f"{'='*44}")
+    click.echo(f"Scanning logins + role memberships (inactive threshold: {days} days)...")
+    findings = review_access(cfg, inactive_days=days)
+
+    counts = {s: sum(1 for f in findings if f.severity == s) for s in ("HIGH", "MEDIUM", "LOW")}
+    click.echo(f"\n{len(findings)} finding(s): "
+               + click.style(f"{counts['HIGH']} HIGH", fg='red') + ", "
+               + click.style(f"{counts['MEDIUM']} MEDIUM", fg='yellow') + ", "
+               + click.style(f"{counts['LOW']} LOW", fg='cyan'))
+    for f in findings[:20]:
+        color = {'HIGH': 'red', 'MEDIUM': 'yellow', 'LOW': 'cyan'}.get(f.severity)
+        click.echo("  " + click.style(f"[{f.severity}] {f.category}", fg=color)
+                   + f"  {f.principal or f.server}: {f.summary}")
+    if len(findings) > 20:
+        click.echo(f"  ... and {len(findings) - 20} more (see the report)")
+
+    render_review_html(findings, output)
+    click.echo(f"\nReport written to {output}")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump(build_review_json(findings), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""

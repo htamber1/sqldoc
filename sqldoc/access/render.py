@@ -208,3 +208,50 @@ def render_script_html(gs, output_path):
         impact += "<p class='muted'>No PII-flagged tables among the accessible objects.</p>"
     impact += "</div>"
     _write(output_path, _doc(f"Access script — {gs.database}", head + grant + roll + impact))
+
+
+# --- review ----------------------------------------------------------------
+
+_CAT_LABEL = {
+    "inactive": "Inactive account", "over_privileged": "Over-privileged",
+    "sod": "Separation-of-duties", "orphaned": "Orphaned login",
+    "service_account": "Service account", "error": "Scan note",
+}
+
+
+def build_review_json(findings) -> dict:
+    return {
+        "report_type": "access-review",
+        "total": len(findings),
+        "by_severity": {s: sum(1 for f in findings if f.severity == s)
+                        for s in ("HIGH", "MEDIUM", "LOW")},
+        "findings": [{
+            "category": f.category, "severity": f.severity, "principal": f.principal,
+            "server": f.server, "database": f.database, "summary": f.summary,
+            "detail": f.detail, "fix_sql": f.fix_sql,
+        } for f in findings],
+    }
+
+
+def render_review_html(findings, output_path):
+    counts = {s: sum(1 for f in findings if f.severity == s) for s in ("HIGH", "MEDIUM", "LOW")}
+    head = ("<div class='card'><h2 style='margin-top:0'>Access review</h2>"
+            f"<p>{len(findings)} finding(s): "
+            f"<span class='pill HIGH'>{counts['HIGH']} HIGH</span> "
+            f"<span class='pill MEDIUM'>{counts['MEDIUM']} MEDIUM</span> "
+            f"<span class='pill LOW'>{counts['LOW']} LOW</span></p>"
+            "<p class='muted'>Prioritized remediation list — each finding includes a fix script.</p></div>")
+    if not findings:
+        _write(output_path, _doc("Access review", head +
+               "<div class='card'><p class='muted'>No issues found.</p></div>"))
+        return
+    cards = []
+    for f in findings:
+        loc = f"{_e(f.server)}" + (f" / {_e(f.database)}" if f.database else "")
+        fix = f"<pre>{_e(f.fix_sql)}</pre>" if f.fix_sql else ""
+        cards.append(
+            f"<div class='card'><h2 style='margin-top:0'>"
+            f"<span class='pill {_e(f.severity)}'>{_e(f.severity)}</span> "
+            f"{_e(_CAT_LABEL.get(f.category, f.category))} — <span class='mono'>{_e(f.principal)}</span></h2>"
+            f"<p class='muted'>{loc}</p><p>{_e(f.summary)}</p><p class='muted'>{_e(f.detail)}</p>{fix}</div>")
+    _write(output_path, _doc("Access review", head + "".join(cards)))
