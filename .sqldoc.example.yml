@@ -26,6 +26,11 @@ mode: local                   # local (Ollama) or cloud (Anthropic)
                               #   gemini    -> GOOGLE_API_KEY   (pip install sqldoc[gemini])
 # model: llama3.1:8b          # defaults per backend if omitted
                               # (llama3.1:8b / claude-haiku-4-5 / gpt-4o / gemini-1.5-flash)
+# industry: healthcare        # tune AI descriptions, PII sensitivity + compliance
+                              # focus for a vertical: healthcare (HIPAA/PHI) /
+                              # finance (PCI-DSS + SOX) / retail (PCI-DSS + GDPR) /
+                              # government (FedRAMP + retention). Applies to
+                              # doc / scan / insights / comply.
 # schemas: HumanResources,Sales   # comma-separated allowlist; omit for all
 no_ai: false                  # true = schema-only, skip all LLM calls
 concurrency: 8                # parallel AI calls during enrichment (1-64)

@@ -213,6 +213,18 @@ def set_backend(name):
     _ACTIVE_BACKEND = name or None
 
 
+# Process-wide industry guidance, set once from --industry so every AI prompt
+# (table/column/view/proc descriptions, glossary, NL-to-SQL) is framed for the
+# chosen vertical without threading it through every enrich signature.
+_INDUSTRY_GUIDANCE = ""
+
+
+def set_industry_guidance(text):
+    """Record the --industry AI guidance for the process ('' clears it)."""
+    global _INDUSTRY_GUIDANCE
+    _INDUSTRY_GUIDANCE = text or ""
+
+
 def resolve_backend(mode="local", backend=None):
     """Pick the backend: explicit arg > --ai-backend override > derived from mode."""
     if backend:
@@ -237,6 +249,8 @@ def dispatch(prompt: str, mode: str = "local", model: str = None,
     """Call the effective AI backend with a single prompt and return its text.
     The one entry point every AI feature funnels through."""
     backend = resolve_backend(mode, backend)
+    if _INDUSTRY_GUIDANCE:
+        prompt = f"{_INDUSTRY_GUIDANCE}\n\n{prompt}"
     if not model or (backend != "ollama" and model in BACKEND_MODELS.values() and model != BACKEND_MODELS[backend]):
         # No model given, or a different backend's default model leaked through
         # (mode-derived defaulting) — use this backend's own default.

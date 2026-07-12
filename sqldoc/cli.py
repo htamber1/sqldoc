@@ -8,6 +8,7 @@ from sqldoc.extractor import build_connection_string
 from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError, DIALECT_CHOICES
 from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
+from sqldoc import industry as industry_mod
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.json_renderer import render_json
@@ -63,7 +64,7 @@ load_dotenv()
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'dialect', 'output',
-    'mode', 'model', 'ai_backend', 'schemas', 'no_ai', 'concurrency', 'format',
+    'mode', 'model', 'ai_backend', 'industry', 'schemas', 'no_ai', 'concurrency', 'format',
     'include_definitions',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
@@ -182,6 +183,32 @@ def ai_backend_option(fn):
         help='AI backend: ollama (local) / anthropic / openai / gemini '
              '(default: derived from --mode). Cloud backends need the matching '
              'API key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY.')(fn)
+
+
+def industry_option(fn):
+    """Shared --industry option for vertical-tuned commands."""
+    return click.option(
+        '--industry', 'industry', default=None,
+        type=click.Choice(list(industry_mod.INDUSTRY_CHOICES)),
+        help='Tune AI descriptions, PII sensitivity, and compliance focus for a '
+             'vertical: healthcare (HIPAA/PHI) / finance (PCI-DSS + SOX) / retail '
+             '(PCI-DSS + GDPR) / government (FedRAMP + retention).')(fn)
+
+
+def resolve_industry(resolve, industry):
+    """Resolve --industry (flag > config), record its AI guidance process-wide
+    via ai.set_industry_guidance, echo the vertical note, and return the
+    IndustryProfile (or None)."""
+    key = resolve('industry', industry, param='industry')
+    try:
+        profile = industry_mod.get_industry(key)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    ai.set_industry_guidance(profile.ai_guidance if profile else "")
+    if profile:
+        click.echo(click.style(f"Industry: {profile.label}", fg='cyan')
+                   + f"  -  {profile.pii_note}")
+    return profile
 
 
 def default_ai_model(mode, ai_backend, model):
@@ -346,6 +373,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
 @click.option('--model', default=None, help='Model to use (default: per backend — llama3.1:8b / claude-haiku-4-5 / gpt-4o / gemini-1.5-flash)')
 @ai_backend_option
+@industry_option
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
@@ -358,7 +386,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
-def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
+def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -383,6 +411,7 @@ def main(config, server, database, username, password, connection_string, dialec
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
+    industry = resolve_industry(resolve, industry)
     schemas = resolve('schemas', schemas)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
@@ -568,6 +597,7 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for --sample confirmation')
 @click.option('--model', default=None, help='Model for --sample confirmation (default per mode)')
 @ai_backend_option
+@industry_option
 @click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
@@ -579,7 +609,7 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
+def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -597,6 +627,7 @@ def scan(config, server, database, username, password, connection_string, dialec
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
+    industry = resolve_industry(resolve, industry)
     sample = resolve('sample', sample)
     baseline = resolve('baseline', baseline)
     no_baseline = resolve('no_baseline', no_baseline)
@@ -649,6 +680,12 @@ def scan(config, server, database, username, password, connection_string, dialec
     if custom_cats:
         click.echo(f"Loaded {len(custom_cats)} custom PII pattern(s) from config.")
     findings = scan_tables(tables, extra_categories=custom_cats)
+
+    # Vertical tuning: escalate the risk of categories most sensitive to the
+    # chosen industry (e.g. PHI identifiers under healthcare) and tag them with
+    # its flagship regulation, before drift/gate/report.
+    if industry:
+        industry_mod.apply_to_findings(findings, industry)
 
     # Suppress known-safe columns before anything else (so they are never
     # sampled, reported, gated on, or written to the baseline).
@@ -1157,12 +1194,13 @@ def intel(config, server, database, username, password, connection_string, diale
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
 @click.option('--model', default=None, help='Model to use (default per mode)')
 @ai_backend_option
+@industry_option
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI parts (NL-to-SQL + glossary); still runs anomaly + relationship analysis')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls for glossary generation (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, no_ai, concurrency, yes, verify_offline):
+def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, industry, no_ai, concurrency, yes, verify_offline):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -1184,6 +1222,7 @@ def insights(config, server, database, username, password, connection_string, di
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
+    industry = resolve_industry(resolve, industry)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
     yes = resolve('yes', yes)
@@ -1338,13 +1377,14 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
 @click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
 @click.option('--output', default='compliance-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
+@industry_option
 @click.option('--no-access-audit', 'no_access_audit', is_flag=True, default=False,
               help='Skip reading sys.database_permissions (use if the account lacks VIEW DEFINITION)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @click.option('--all-databases', 'all_databases', is_flag=True, default=False,
               help='Board-level report: audit every database in the .sqldoc.yml "databases:" list and show each user/role and their access across all of them side by side')
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit, verify_offline, all_databases):
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1363,6 +1403,9 @@ def comply(config, server, database, username, password, connection_string, dial
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
+    industry = resolve_industry(resolve, industry)
+    if industry:
+        click.echo(click.style(f"Compliance focus: {industry.compliance_focus}", fg='cyan'))
 
     try:
         custom_cats = load_custom_categories(cfg.get('pii_patterns'))
@@ -1405,6 +1448,8 @@ def comply(config, server, database, username, password, connection_string, dial
         procedures = [p for p in procedures if p.schema in allow]
 
     findings = scan_tables(tables, extra_categories=custom_cats)
+    if industry:
+        industry_mod.apply_to_findings(findings, industry)
     if allowlist:
         findings, suppressed = apply_allowlist(findings, allowlist)
         if suppressed:
