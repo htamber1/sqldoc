@@ -114,6 +114,13 @@ class AgentConfig:
     nl_alerts: list = field(default_factory=list)
     # Scheduled weekly email digest (emailed on the configured weekday/hour).
     weekly_report: WeeklyReportConfig = field(default_factory=WeeklyReportConfig)
+    # Integration auto-push: names of configured report connectors (sharepoint,
+    # confluence, notion, ...) to push docs to on a fixed cadence.
+    integrations: list = field(default_factory=list)
+    push_interval_hours: float = 24.0
+    # The full .sqldoc.yml mapping, so the push loop can read the top-level
+    # integration config sections (they live outside the `agent:` block).
+    raw_config: dict = None
 
 
 def _resolve_connection(entry: dict) -> tuple:
@@ -173,6 +180,19 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     nl_alerts = [a.strip() for a in raw_alerts if a.strip()]
     weekly_report = _parse_weekly(agent.get("weekly_report"))
 
+    from sqldoc.integrations import _MODULES as _INTEGRATION_MODULES
+    raw_integrations = agent.get("integrations") or []
+    if not isinstance(raw_integrations, list):
+        raise ValueError("agent.integrations must be a list of connector names.")
+    bad_int = [i for i in raw_integrations if i not in _INTEGRATION_MODULES]
+    if bad_int:
+        raise ValueError(
+            f"unknown agent.integrations {bad_int}; choose from "
+            f"{sorted(_INTEGRATION_MODULES)}.")
+    push_interval_hours = float(agent.get("push_interval_hours", 24.0))
+    if push_interval_hours < 1:
+        raise ValueError("agent.push_interval_hours must be at least 1.")
+
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
         raise ValueError("agent.databases must be a non-empty list of database entries.")
@@ -213,4 +233,6 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         backup_monitoring=backup_monitoring, backup_max_age_hours=backup_max_age_hours,
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
         nl_alerts=nl_alerts, weekly_report=weekly_report,
+        integrations=list(raw_integrations), push_interval_hours=push_interval_hours,
+        raw_config=cfg,
     )

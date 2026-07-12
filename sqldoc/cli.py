@@ -2696,6 +2696,126 @@ def audit(command_filter, database, user, since, limit, out_format, export_path,
             + "  " + click.style(res or '-', fg=colr))
 
 
+# --- integration commands --------------------------------------------------
+# Every publishing/ticketing connector shares one shape: --test verifies
+# connectivity/auth; --push collects the database once and hands the bundle to
+# the connector (as rendered reports, flat metrics, or actionable issues). The
+# factory below stamps out that shape so each connector module only implements
+# its client.
+
+def _integration_thresholds(sec):
+    """Issue-tracker thresholds from a connector's config section."""
+    out = {}
+    for k in ("security_min", "health_min", "backup_max_age_hours"):
+        if sec.get(k) is not None:
+            out[k] = sec[k]
+    return out
+
+
+def _run_integration(name, push_mode, config, server, database, username, password,
+                     connection_string, dialect, schemas, do_test, do_push, kinds):
+    from sqldoc.integrations import get_client, section, IntegrationError
+    from sqldoc.integrations.reports import (
+        gather, render_artifacts, metrics as _metrics, finding_events)
+
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+    sec = section(cfg, name)
+
+    if not do_test and not do_push:
+        raise click.UsageError(
+            f"Specify --test (verify connectivity) or --push (collect + publish) "
+            f"for 'sqldoc {name}'.")
+
+    try:
+        client = get_client(name, sec)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\nsqldoc v{__version__}  -  {name} integration")
+    click.echo(f"{'='*44}")
+
+    if do_test:
+        click.echo(f"Testing {name} connectivity...")
+        try:
+            res = client.test()
+        except IntegrationError as e:
+            click.echo(click.style(f"  x {e}", fg='red'), err=True)
+            raise SystemExit(1)
+        click.echo(click.style(f"  ok  {res.get('detail')}", fg='green'))
+        if not do_push:
+            return
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    click.echo(f"Collecting {database} from {adapter.display_name}...")
+    try:
+        bundle = gather(adapter, database, schemas=resolve('schemas', schemas))
+    except Exception as e:
+        click.echo(click.style(f"Collection failed: {e}", fg='red'), err=True)
+        raise click.Abort()
+    for note in bundle.notes:
+        click.echo(click.style(f"  ! {note}", fg='yellow'), err=True)
+
+    try:
+        if push_mode == 'metrics':
+            res = client.push_metrics(_metrics(bundle))
+        elif push_mode == 'issues':
+            events = finding_events(bundle, _integration_thresholds(sec))
+            if not events:
+                click.echo(click.style("  No findings exceeded the configured thresholds; "
+                                       "no issues created.", fg='green'))
+                return
+            res = client.create_issues(events)
+        else:  # 'reports'
+            kinds_list = [k.strip() for k in kinds.split(',')] if kinds else None
+            artifacts = render_artifacts(bundle, kinds_list)
+            res = client.push_reports(artifacts, metrics=_metrics(bundle))
+    except IntegrationError as e:
+        click.echo(click.style(f"  x push failed: {e}", fg='red'), err=True)
+        raise SystemExit(1)
+
+    click.echo(click.style(f"  ok  {res.get('detail')}", fg='green'))
+    if res.get("url"):
+        click.echo(f"  {res['url']}")
+
+
+def make_integration_command(name, summary, push_mode):
+    @click.command(name=name)
+    @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+    @click.option('--server', default=None, help='Database hostname or IP (for --push)')
+    @click.option('--database', default=None, help='Database name (for --push)')
+    @click.option('--username', default=None, help='Database username (for --push)')
+    @click.option('--password', default=None, help='Database password (for --push)')
+    @click.option('--connection-string', default=None, help='Full connection string (for --push)')
+    @click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES), help='Database dialect')
+    @click.option('--schemas', default=None, help='Comma-separated schema allowlist (for --push)')
+    @click.option('--test', 'do_test', is_flag=True, default=False, help='Verify connectivity/auth and exit')
+    @click.option('--push', 'do_push', is_flag=True, default=False,
+                  help='Collect the database and publish reports/metrics/issues to ' + name)
+    @click.option('--kinds', default=None,
+                  help='Comma-separated report kinds to publish (default: all) — '
+                       'doc_html, doc_pdf, executive_html, pii_html, pii_json, health_json, metrics_json')
+    def _cmd(config, server, database, username, password, connection_string, dialect,
+             schemas, do_test, do_push, kinds):
+        _run_integration(name, push_mode, config, server, database, username, password,
+                         connection_string, dialect, schemas, do_test, do_push, kinds)
+    _cmd.__doc__ = summary
+    return _cmd
+
+
+sharepoint = make_integration_command(
+    'sharepoint',
+    "Publish sqldoc reports to SharePoint Online (Microsoft Graph API).\n\n"
+    "--test verifies the Azure AD app + site access. --push uploads the HTML / PDF /\n"
+    "executive / PII reports plus the structured JSON to a document library and adds\n"
+    "a structured summary row (metrics) to a SharePoint List. Configure tenant_id,\n"
+    "client_id, client_secret, site_id, folder, and list_name under 'sharepoint:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2735,6 +2855,7 @@ cli.add_command(baseline, name='baseline')
 cli.add_command(executive, name='executive')
 cli.add_command(serve, name='serve')
 cli.add_command(audit, name='audit')
+cli.add_command(sharepoint, name='sharepoint')
 
 
 # --- audit trail hook ------------------------------------------------------

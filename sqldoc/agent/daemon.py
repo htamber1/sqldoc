@@ -12,6 +12,7 @@ import time
 from sqldoc.agent.dashboard import make_server
 from sqldoc.agent.poller import poll_database
 from sqldoc.agent.weekly import maybe_send_weekly_report
+from sqldoc.agent.integrations_push import maybe_push as maybe_push_integrations
 
 
 _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
@@ -66,6 +67,20 @@ def weekly_report_loop(store, agent_config, stop_event, log, check_seconds=900):
             break
 
 
+def integration_push_loop(store, agent_config, stop_event, log, check_seconds=1800):
+    """Every check_seconds, auto-push docs to any integration whose push interval
+    has elapsed. Runs only when agent.integrations is non-empty."""
+    if not getattr(agent_config, "integrations", None):
+        return
+    while not stop_event.is_set():
+        try:
+            maybe_push_integrations(agent_config, store, log=log)
+        except Exception as e:
+            log(f"integration push scheduler crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(check_seconds):
+            break
+
+
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
                host="127.0.0.1", poll_fn=None, authn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
@@ -97,6 +112,15 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         log(f"weekly digest scheduled for {_WEEKDAY_NAMES[wr.weekday]} "
             f"{wr.hour:02d}:00 (emailed to the notifications address)")
 
+    push_thread = None
+    if getattr(agent_config, "integrations", None):
+        push_thread = threading.Thread(
+            target=integration_push_loop, args=(store, agent_config, stop_event, log),
+            name="integration-push", daemon=True)
+        push_thread.start()
+        log(f"integration auto-push scheduled every {agent_config.push_interval_hours}h "
+            f"to: {', '.join(agent_config.integrations)}")
+
     stop_event.wait()
     log("stopping agent...")
     server.shutdown()
@@ -104,6 +128,8 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         t.join(timeout=15)
     if weekly_thread is not None:
         weekly_thread.join(timeout=5)
+    if push_thread is not None:
+        push_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port
