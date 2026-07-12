@@ -19,6 +19,7 @@ from sqldoc.adapters.snowflake import SnowflakeAdapter
 from sqldoc.adapters.oracle import OracleAdapter
 from sqldoc.adapters.azure_mi import AzureMiAdapter
 from sqldoc.adapters.synapse import SynapseAdapter
+from sqldoc.adapters.redshift import RedshiftAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -35,6 +36,7 @@ DIALECTS: dict = {
     "azuresql": SqlServerAdapter,
     "azure_managed_instance": AzureMiAdapter,
     "synapse": SynapseAdapter,
+    "redshift": RedshiftAdapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
@@ -58,6 +60,8 @@ def detect_dialect(connection_string: str) -> str:
     cs = (connection_string or "").lower()
     if "sql.azuresynapse.net" in cs or "database.windows.net/synapse" in cs:
         return "synapse"
+    if "redshift.amazonaws.com" in cs or cs.startswith("redshift://"):
+        return "redshift"
     if "database.windows.net" in cs:
         # Managed Instance hosts carry an MI marker (".mi." / "managedinstance");
         # a plain Azure host is Azure SQL Database.
@@ -103,7 +107,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
-    "OracleAdapter", "AzureMiAdapter", "SynapseAdapter",
+    "OracleAdapter", "AzureMiAdapter", "SynapseAdapter", "RedshiftAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

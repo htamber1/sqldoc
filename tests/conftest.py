@@ -201,6 +201,12 @@ class FakeCursor:
             self._last = "synapse_dist"
         elif "workload_management_workload_groups" in sql:
             self._last = "synapse_workload"
+        elif "svv_table_info" in sql:
+            self._last = "rs_tableinfo"
+        elif "stv_wlm_service_class_config" in sql:
+            self._last = "rs_wlm"
+        elif "stl_alert_event_log" in sql:
+            self._last = "rs_alerts"
         elif "backupset" in sql:
             self._last = "backups"
         elif "'archive_mode'" in sql:
