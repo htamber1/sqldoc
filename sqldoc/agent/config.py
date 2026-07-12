@@ -34,7 +34,7 @@ from sqldoc.adapters import DIALECTS, detect_dialect
 
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
-               "backup_stale"]
+               "backup_stale", "replica_lag"]
 
 
 @dataclass
@@ -71,6 +71,9 @@ class AgentConfig:
     # Backup monitoring (all dialects with a backup/PITR mechanism).
     backup_monitoring: bool = False
     backup_max_age_hours: float = 24.0       # alert when a database's last backup is older
+    # HA / replication monitoring (all dialects with a replication mechanism).
+    ha_monitoring: bool = False
+    replica_lag_threshold_seconds: float = 30.0  # alert when a replica lags more than this
 
 
 def _resolve_connection(entry: dict) -> tuple:
@@ -121,6 +124,8 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     errorlog_severity = int(agent.get("errorlog_severity", 17))
     backup_monitoring = bool(agent.get("backup_monitoring", False))
     backup_max_age_hours = float(agent.get("backup_max_age_hours", 24.0))
+    ha_monitoring = bool(agent.get("ha_monitoring", False))
+    replica_lag_threshold = float(agent.get("replica_lag_threshold_seconds", 30.0))
 
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
@@ -160,4 +165,5 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         server_monitoring=server_monitoring, disk_threshold_percent=disk_threshold,
         errorlog_severity=errorlog_severity,
         backup_monitoring=backup_monitoring, backup_max_age_hours=backup_max_age_hours,
+        ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
     )

@@ -96,6 +96,9 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   # Backup / point-in-time-recovery monitoring (SQL Server, PostgreSQL, MySQL).
 #   backup_monitoring: true       # alert on stale/never-backed-up databases + PITR off
 #   backup_max_age_hours: 24      # a database's last backup older than this is "stale"
+#   # HA / replication monitoring (SQL Server AGs, PostgreSQL streaming, MySQL).
+#   ha_monitoring: true           # alert when a replica is unhealthy or lagging
+#   replica_lag_threshold_seconds: 30
 #   databases:                    # monitor as many as you like, simultaneously
 #     - name: prod-sqlserver
 #       server: localhost
@@ -117,4 +120,4 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #       from: sqldoc@example.com
 #       to: [dba@example.com]
 #     # which events to send (server_monitoring adds the last four)
-#     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down, backup_stale]
+#     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down, backup_stale, replica_lag]

@@ -208,6 +208,14 @@ class FakeCursor:
             self._last = "pglocks"
         elif "events_waits_summary_global_by_event_name" in sql:
             self._last = "mysql_waits"
+        elif "dm_hadr_availability_replica_states" in sql:
+            self._last = "mssql_ha"
+        elif "pg_stat_replication" in sql:
+            self._last = "pg_repl"
+        elif "pg_stat_wal_receiver" in sql:
+            self._last = "pg_walrecv"
+        elif "REPLICA STATUS" in sql or "SLAVE STATUS" in sql:
+            self._last = "mysql_repl"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -347,6 +355,49 @@ def fake_health_rows():
             FakeRow(schema_name="Sales", procedure_name="uspLegacyExport",
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_mssql_ha_rows():
+    return {
+        "mssql_ha": [
+            FakeRow(ag_name="AG1", replica_server_name="SQLNODE1", role_desc="PRIMARY",
+                    operational_state_desc="ONLINE", synchronization_health_desc="HEALTHY",
+                    connected_state_desc="CONNECTED", log_send_queue_kb=0, redo_queue_kb=0,
+                    sync_state="SYNCHRONIZED"),
+            FakeRow(ag_name="AG1", replica_server_name="SQLNODE2", role_desc="SECONDARY",
+                    operational_state_desc="ONLINE", synchronization_health_desc="HEALTHY",
+                    connected_state_desc="CONNECTED", log_send_queue_kb=100, redo_queue_kb=50,
+                    sync_state="SYNCHRONIZED"),
+            FakeRow(ag_name="AG1", replica_server_name="SQLNODE3", role_desc="SECONDARY",
+                    operational_state_desc="", synchronization_health_desc="NOT_HEALTHY",
+                    connected_state_desc="DISCONNECTED", log_send_queue_kb=5000, redo_queue_kb=2000,
+                    sync_state="NOT SYNCHRONIZING"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_pg_ha_rows():
+    return {
+        "pg_repl": [
+            FakeRow(application_name="standby1", client_addr="10.0.0.2", state="streaming",
+                    sync_state="sync", replay_lag_seconds=0.5, lag_bytes=1024),
+            FakeRow(application_name="standby2", client_addr="10.0.0.3", state="streaming",
+                    sync_state="async", replay_lag_seconds=120.0, lag_bytes=5000000),   # lagging
+        ],
+        "pg_walrecv": [],
+    }
+
+
+@pytest.fixture
+def fake_mysql_ha_rows():
+    return {
+        "mysql_repl": [
+            FakeRow(Source_Host="10.0.0.1", Replica_IO_Running="Yes", Replica_SQL_Running="Yes",
+                    Seconds_Behind_Source=45),                # healthy but lagging 45s
         ],
     }
 

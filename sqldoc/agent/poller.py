@@ -30,6 +30,7 @@ from sqldoc.server import collect_server
 from sqldoc.logs import collect_logs
 from sqldoc.intel import collect_linked_servers
 from sqldoc.backup import collect_backups, stale_databases, BACKUP_DIALECTS
+from sqldoc.ha import collect_ha, behind_replicas, HA_DIALECTS
 
 
 def pii_score(high: int, medium: int, low: int) -> float:
@@ -163,6 +164,10 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
         if getattr(agent_config, "backup_monitoring", False) and getattr(adapter, "dialect", "") in BACKUP_DIALECTS:
             _poll_backups(store, name, adapter, agent_config, notifier, result)
 
+        # --- HA / replication monitoring ---
+        if getattr(agent_config, "ha_monitoring", False) and getattr(adapter, "dialect", "") in HA_DIALECTS:
+            _poll_ha(store, name, adapter, agent_config, notifier, result)
+
         store.finish_run(run_id, "ok")
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
@@ -255,6 +260,29 @@ def _poll_backups(store, name, adapter, agent_config, notifier, result):
         result["notifications"] += notifier.notify(
             "backup_stale", f"{name}: backup/PITR issue", headline)
         result["backup_stale"] = len(stale)
+
+
+def _poll_ha(store, name, adapter, agent_config, notifier, result):
+    """Alert when a replica is unhealthy or lagging beyond the threshold.
+    No-op when HA isn't configured on the instance."""
+    try:
+        report = collect_ha(adapter)
+    except Exception as e:
+        store.add_event(name, "error", f"HA check skipped: {type(e).__name__}: {e}")
+        return
+    if not report.ha_enabled:
+        return
+    behind = behind_replicas(report, agent_config.replica_lag_threshold_seconds)
+    if behind:
+        parts = []
+        for r in behind:
+            lag = f"{r.lag_seconds}s behind" if r.lag_seconds is not None else "unhealthy"
+            parts.append(f"{r.server or r.role} ({lag})")
+        headline = f"{len(behind)} replica(s) lagging/unhealthy: " + "; ".join(parts[:10])
+        store.add_event(name, "replica_lag", headline)
+        result["notifications"] += notifier.notify(
+            "replica_lag", f"{name}: replica lag/health", headline)
+        result["replica_lag"] = len(behind)
 
 
 def _headline(diff) -> str:

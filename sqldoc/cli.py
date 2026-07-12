@@ -44,6 +44,8 @@ from sqldoc.secure import collect_security, summarize as secure_summarize
 from sqldoc.secure_renderer import render_secure_html, build_secure_json
 from sqldoc.waits import collect_waits, explain_waits, summarize as waits_summarize
 from sqldoc.waits_renderer import render_waits_html, build_waits_json
+from sqldoc.ha import collect_ha, summarize as ha_summarize
+from sqldoc.ha_renderer import render_ha_html, build_ha_json
 
 load_dotenv()
 
@@ -1729,6 +1731,75 @@ def waits(config, server, database, username, password, connection_string, diale
     click.echo(f"Open {output} in your browser for the full wait-statistics report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='Database hostname or IP')
+@click.option('--database', default='master', help='Database to connect through')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (SQL Server / PostgreSQL / MySQL)')
+@click.option('--output', default='ha-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the HA report as machine-readable JSON to this path')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def ha(config, server, database, username, password, connection_string, dialect,
+       output, json_out, verify_offline):
+    """Monitor high-availability / replication: roles, sync state, and lag.
+
+    Reports the Always On availability group / streaming replication / replica
+    topology for the connected instance (SQL Server / PostgreSQL / MySQL),
+    including each replica's role, synchronization state, and lag. Reads only
+    replication catalog metadata — never table row data.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'infra_monitoring', 'ha')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  High-availability monitoring")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and reading replication state...")
+    try:
+        report = collect_ha(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
+    s = ha_summarize(report)
+    if not report.ha_enabled:
+        click.echo(click.style(f"No replication configured ({report.mechanism}).", fg='yellow'))
+    else:
+        lag = f"{s['max_lag_seconds']}s" if s['max_lag_seconds'] is not None else "n/a"
+        click.echo(
+            click.style(f"Replicas: {s['replicas']}", fg='blue')
+            + click.style(f"    Unhealthy: {s['unhealthy']}", fg='red' if s['unhealthy'] else 'green')
+            + f"    Max lag: {lag}"
+        )
+
+    click.echo("\nRendering report...")
+    render_ha_html(label, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_ha_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable HA report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the full HA report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1758,6 +1829,7 @@ cli.add_command(server, name='server')
 cli.add_command(logs, name='logs')
 cli.add_command(secure, name='secure')
 cli.add_command(waits, name='waits')
+cli.add_command(ha, name='ha')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

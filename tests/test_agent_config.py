@@ -64,6 +64,20 @@ def test_server_monitoring_defaults_off():
     cfg = {"agent": {"databases": [{"name": "a", "connection_string": "x"}]}}
     ac = parse_agent_config(cfg)
     assert ac.server_monitoring is False and ac.disk_threshold_percent == 10.0
+    assert ac.backup_monitoring is False and ac.ha_monitoring is False
+
+
+def test_parse_backup_and_ha_options():
+    cfg = {"agent": {
+        "databases": [{"name": "a", "connection_string": "postgresql://u:p@h/db"}],
+        "backup_monitoring": True, "backup_max_age_hours": 12,
+        "ha_monitoring": True, "replica_lag_threshold_seconds": 60,
+        "notifications": {"on": ["backup_stale", "replica_lag"]},
+    }}
+    ac = parse_agent_config(cfg)
+    assert ac.backup_monitoring and ac.backup_max_age_hours == 12.0
+    assert ac.ha_monitoring and ac.replica_lag_threshold_seconds == 60.0
+    assert "replica_lag" in ac.notify.on
 
 
 @pytest.mark.parametrize("cfg, msg", [

@@ -15,6 +15,7 @@ from sqldoc.server_renderer import SERVER_TEMPLATE
 from sqldoc.logs_renderer import LOGS_TEMPLATE
 from sqldoc.secure_renderer import SECURE_TEMPLATE
 from sqldoc.waits_renderer import WAITS_TEMPLATE
+from sqldoc.ha_renderer import HA_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -76,6 +77,7 @@ _TEMPLATES = {
     "logs": LOGS_TEMPLATE,
     "secure": SECURE_TEMPLATE,
     "waits": WAITS_TEMPLATE,
+    "ha": HA_TEMPLATE,
 }
 
 

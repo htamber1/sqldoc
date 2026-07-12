@@ -196,6 +196,19 @@ def test_backup_monitoring_off_by_default(monkeypatch, store, fake_backup_rows):
     assert "backup_stale" not in r
 
 
+def test_replica_lag_alert(monkeypatch, store, fake_mssql_ha_rows):
+    from sqldoc.agent.config import EVENT_TYPES
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_mssql_ha_rows))
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=True)
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(on=EVENT_TYPES),
+                     ha_monitoring=True, replica_lag_threshold_seconds=30)
+    notifier = RecNotifier(on=EVENT_TYPES)
+    r = poll_database(store, db, ac, notifier)
+    assert r.get("replica_lag") == 1                  # SQLNODE3 unhealthy
+    assert any(c[0] == "replica_lag" for c in notifier.calls)
+
+
 def test_linked_server_down_alert(monkeypatch, store):
     from sqldoc.agent.config import EVENT_TYPES
     from sqldoc.intel import LinkedServer, LinkedServerReport
