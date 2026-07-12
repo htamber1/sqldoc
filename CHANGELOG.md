@@ -4,6 +4,82 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] — 2026-07-12
+
+**Integration suite: publish documentation and route findings to the systems
+teams already use.** Ten new CLI connectors, three new notification channels, and
+an enterprise alert-management overhaul. No breaking changes; every connector and
+channel is an optional dependency and is off unless configured.
+
+### Added — publishing / documentation connectors
+Each ships a `sqldoc <name> --test` (verify connectivity/auth) and, where it
+applies, `--push` (collect the database once, then publish). All third-party SDKs
+are optional extras.
+- **SharePoint** (`sqldoc sharepoint`) — Microsoft Graph API, app-only MSAL
+  client-credentials auth. Uploads the HTML/PDF/executive/PII reports plus the
+  structured JSON to a document library and appends a structured metrics row to a
+  SharePoint List. `pip install sqldoc[sharepoint]`.
+- **Confluence** (`sqldoc confluence`) — REST API v2, API-token auth. Maintains
+  one living page per database (executive scorecard, PII-findings table, health
+  summary, doc stats) under a configured `space_key`/`parent_page_id`, and
+  attaches the full HTML reports. Re-push updates the page in place.
+  `pip install sqldoc[confluence]`.
+- **Notion** (`sqldoc notion`) — official API, integration token. Creates a doc
+  page per database, a child "PII Findings" database (one row per sensitive
+  column), and upserts a metrics-tracker row with the scores as properties.
+  `pip install sqldoc[notion]`.
+- **Google Drive** (`sqldoc gdrive`) — Drive API v3, service account. Uploads the
+  reports under consistent names (re-push keeps Drive revision history) and shares
+  them with configured emails. `pip install sqldoc[gdrive]`.
+- **Box** (`sqldoc box`) — Box SDK, JWT app auth (preferred in healthcare/
+  finance). Uploads with version history, sets a shared link, and tags files with
+  database + scan-date metadata. `pip install sqldoc[box]`.
+- **Azure DevOps** (`sqldoc azuredevops`) — REST API, PAT auth. Attaches reports
+  to a per-database work item and creates deduped work items for findings; ships
+  `azure-pipelines/sqldoc.yml` to run sqldoc in a pipeline and publish native
+  pipeline artifacts (the ADO alternative to the GitHub Action).
+  `pip install sqldoc[azuredevops]`.
+
+### Added — ticketing connectors
+- **Jira** (`sqldoc jira`) — REST v3, API-token. Turns threshold-exceeding
+  findings into issues routed by kind (HIGH PII → Security, failed health → Bug,
+  backup staleness → Task; all configurable), deduped against open issues, with a
+  link back to the report. `pip install sqldoc[jira]`.
+- **ServiceNow** (`sqldoc servicenow`) — REST Table API. Opens incidents for
+  critical findings, refreshes the database's CMDB CI record with documentation
+  metadata every scan, and raises change requests for schema changes on
+  production databases (agent-driven). `pip install sqldoc[servicenow]`.
+
+### Added — metrics + generic
+- **Power BI** (`sqldoc powerbi`) — pushes a timestamped row of scores to a
+  streaming dataset for live executive dashboards, via a streaming push URL or an
+  Azure AD service principal (MSAL). `pip install sqldoc[powerbi]`.
+- **Generic webhook** (`sqldoc webhook`) — POSTs a JSON payload built from the
+  scan to any HTTP endpoint, with a configurable `payload_template`
+  (`{placeholder}` substitution) for systems not explicitly supported.
+
+### Added — notification channels + enterprise alert management
+- **Microsoft Teams**, **Cisco Webex**, **PagerDuty**, and **OpsGenie** as agent
+  notification/incident channels, alongside the existing Slack + email. Teams now
+  also receives **document-update** notifications (new `doc_updated` event), not
+  just alerts.
+- **Enterprise alert management** (`alerting:` config, `sqldoc/agent/alerting.py`)
+  — severity classification + routing, maintenance windows (recurring or
+  absolute), deduplication, escalation paths (re-notify a tier-2 channel set for
+  unacked critical/high alerts), and a **30-day alert history** on the agent
+  dashboard (`/alerts`).
+
+### Added — agent auto-push
+- `agent.integrations` + `agent.push_interval_hours` (default 24h): the daemon
+  auto-pushes documentation to the named report connectors on a fixed cadence and
+  fires a `doc_updated` notification on success.
+
+### Notes
+- New optional extras: `sharepoint`, `confluence`, `notion`, `gdrive`, `box`,
+  `jira`, `servicenow`, `azuredevops`, `powerbi`, and a bundle `integrations`.
+- All connectors are mock-tested (no live SaaS/network in the suite); transport
+  and SDK factories are module-level for injection. Test count: 757.
+
 ## [2.4.0] — 2026-07-12
 
 **Enterprise & platform features: more AI backends, vertical tuning, an

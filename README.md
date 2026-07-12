@@ -302,6 +302,35 @@ State lives in a local SQLite database (`~/.sqldoc/agent.db`); nothing about the
 monitoring itself leaves your machine (AI descriptions follow the same
 local-first boundary as the rest of sqldoc).
 
+## Integrations (v2.5)
+
+Publish documentation and route findings straight into the systems your team
+already uses. Every connector is an **optional dependency**, off unless you
+configure it, and offers `--test` (verify connectivity/auth) plus, where it
+applies, `--push` (collect the database once, then publish):
+
+| Connector | What `--push` does | Extra |
+|---|---|---|
+| `sqldoc sharepoint` | Upload HTML/PDF/executive/PII + JSON to a library; metrics row to a List | `[sharepoint]` |
+| `sqldoc confluence` | One living page per DB (scorecard, PII table, health) + attached reports | `[confluence]` |
+| `sqldoc notion` | Doc page + a "PII Findings" database + a metrics-tracker row | `[notion]` |
+| `sqldoc gdrive` | Upload to a folder (consistent names → revision history) + auto-share | `[gdrive]` |
+| `sqldoc box` | Upload with version history + shared link + database/scan-date tags | `[box]` |
+| `sqldoc azuredevops` | Attach reports to a work item + create finding work items; pipeline template | `[azuredevops]` |
+| `sqldoc jira` | Issues from threshold findings, routed by kind, deduped, linked back | `[jira]` |
+| `sqldoc servicenow` | Incidents for critical findings + CMDB CI update + change requests | `[servicenow]` |
+| `sqldoc powerbi` | Push a metrics row to a streaming dataset for live dashboards | `[powerbi]` |
+| `sqldoc webhook` | POST a customizable JSON payload to any HTTP endpoint | — |
+
+Configure each under its own top-level section in `.sqldoc.yml`. The **agent**
+can auto-push docs on a fixed cadence (`agent.integrations` +
+`push_interval_hours`, default 24h).
+
+**Enterprise alerting & notifications** — beyond Slack/email, the agent now sends
+to **Microsoft Teams**, **Cisco Webex**, **PagerDuty**, and **OpsGenie**, with an
+`alerting:` layer for severity routing, maintenance windows, deduplication,
+escalation paths, and a 30-day alert history on the dashboard.
+
 ## How does it compare?
 
 sqldoc overlaps with commercial documentation and data-catalog tools but takes a
