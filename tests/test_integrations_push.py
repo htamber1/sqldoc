@@ -132,3 +132,23 @@ def test_maybe_push_respects_interval(monkeypatch, store):
 def test_maybe_push_noop_without_integrations(store):
     ac = parse_agent_config(BASE_CFG)
     assert ip.maybe_push(ac, store, log=lambda *a: None, now=0.0) == []
+
+
+class _RecNotifier:
+    def __init__(self):
+        self.events = []
+
+    def notify(self, event_type, title, text):
+        self.events.append((event_type, title, text))
+        return []
+
+
+def test_push_once_sends_doc_updated_notification(monkeypatch, store):
+    holder = []
+    _patch_collection(monkeypatch, holder)
+    notifier = _RecNotifier()
+    ac = parse_agent_config({"agent": {**BASE_CFG["agent"], "integrations": ["sharepoint"]},
+                             "sharepoint": BASE_CFG["sharepoint"]})
+    ip.push_once(ac, store, log=lambda *a: None, notifier=notifier)
+    assert notifier.events and notifier.events[0][0] == "doc_updated"
+    assert "sharepoint" in notifier.events[0][1]

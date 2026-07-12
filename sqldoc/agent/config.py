@@ -34,7 +34,8 @@ from sqldoc.adapters import DIALECTS, detect_dialect
 
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
-               "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert"]
+               "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert",
+               "doc_updated"]
 
 
 @dataclass
@@ -50,6 +51,7 @@ class DatabaseConfig:
 @dataclass
 class NotifyConfig:
     slack_webhook: str = None
+    teams_webhook: str = None
     smtp: dict = None
     on: list = field(default_factory=lambda: list(EVENT_TYPES))
 
@@ -221,6 +223,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
             f"unknown notification event(s) {bad}; choose from {EVENT_TYPES}.")
     notify = NotifyConfig(
         slack_webhook=n.get("slack_webhook"),
+        teams_webhook=n.get("teams_webhook"),
         smtp=n.get("email"),
         on=list(on),
     )

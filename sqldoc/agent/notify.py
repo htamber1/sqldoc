@@ -16,6 +16,22 @@ def send_slack(webhook: str, text: str, timeout: float = 10.0):
     resp.raise_for_status()
 
 
+def send_teams(webhook: str, title: str, text: str, timeout: float = 10.0,
+               color: str = "0076D7"):
+    """POST a Microsoft Teams Incoming Webhook message (legacy MessageCard, which
+    every Teams connector accepts). Blank lines become Markdown paragraph breaks."""
+    card = {
+        "@type": "MessageCard",
+        "@context": "http://schema.org/extensions",
+        "summary": title or "sqldoc",
+        "themeColor": color,
+        "title": title,
+        "text": (text or "").replace("\n", "\n\n"),
+    }
+    resp = requests.post(webhook, json=card, timeout=timeout)
+    resp.raise_for_status()
+
+
 def _send(smtp: dict, msg, recipients, sender):
     host = smtp.get("smtp_host")
     port = int(smtp.get("smtp_port", 587))
@@ -93,6 +109,15 @@ class Notifier:
                 results.append(("slack", True, None))
             except Exception as e:
                 results.append(("slack", False, f"{type(e).__name__}: {e}"))
+
+        if getattr(self.cfg, "teams_webhook", None):
+            try:
+                # Colour document updates blue-green, everything else red-orange.
+                color = "2EB67D" if event_type == "doc_updated" else "D93F0B"
+                send_teams(self.cfg.teams_webhook, f"[sqldoc] {title}", text, color=color)
+                results.append(("teams", True, None))
+            except Exception as e:
+                results.append(("teams", False, f"{type(e).__name__}: {e}"))
 
         if self.cfg.smtp:
             try:

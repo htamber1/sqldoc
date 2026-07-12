@@ -131,3 +131,23 @@ def test_notifier_isolates_channel_failures(monkeypatch):
     n = Notifier(NotifyConfig(slack_webhook="https://hook"))
     results = n.notify("schema_change", "x", "y")
     assert results == [("slack", False, "RuntimeError: network down")]
+
+
+def test_notifier_dispatches_teams(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notifymod, "send_teams",
+                        lambda wh, title, text, color="0076D7": sent.append((wh, title, text, color)))
+    n = Notifier(NotifyConfig(teams_webhook="https://outlook.office.com/webhook/x"))
+    results = n.notify("doc_updated", "Docs published", "SharePoint updated")
+    assert ("teams", True, None) in results
+    # doc updates get the green theme colour
+    assert sent[0][3] == "2EB67D" and "Docs published" in sent[0][1]
+
+
+def test_parse_teams_webhook():
+    cfg = {"agent": {
+        "databases": [{"name": "a", "connection_string": "mysql://u:p@h/db"}],
+        "notifications": {"teams_webhook": "https://outlook.office.com/webhook/y"},
+    }}
+    ac = parse_agent_config(cfg)
+    assert ac.notify.teams_webhook == "https://outlook.office.com/webhook/y"

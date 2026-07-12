@@ -2904,6 +2904,16 @@ powerbi = make_integration_command(
     push_mode='metrics')
 
 
+webhook = make_integration_command(
+    'webhook',
+    "Post sqldoc results to any HTTP endpoint (generic webhook).\n\n"
+    "--test sends a ping; --push POSTs a JSON payload built from the scan. Use the\n"
+    "default envelope or a custom payload_template with {placeholder} substitution\n"
+    "({database}, {overall_score}, {pii_high}, ...) to match any receiving system.\n"
+    "Configure url, method, headers, and payload_template under 'webhook:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2952,6 +2962,7 @@ cli.add_command(jira, name='jira')
 cli.add_command(servicenow, name='servicenow')
 cli.add_command(azuredevops, name='azuredevops')
 cli.add_command(powerbi, name='powerbi')
+cli.add_command(webhook, name='webhook')
 
 
 # --- audit trail hook ------------------------------------------------------

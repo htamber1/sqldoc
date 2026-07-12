@@ -35,9 +35,10 @@ def _due(store, name: str, interval_seconds: float, now: float) -> bool:
         return True
 
 
-def push_once(agent_config, store, log=print) -> list:
+def push_once(agent_config, store, log=print, notifier=None) -> list:
     """Push reports for every database to every configured connector, ignoring
-    the schedule. Returns a list of per-(connector, db) result dicts."""
+    the schedule. Returns a list of per-(connector, db) result dicts. On a
+    successful push a ``doc_updated`` notification is sent (Teams/Slack/email)."""
     cfg = agent_config.raw_config or {}
     results = []
     for name in agent_config.integrations:
@@ -59,6 +60,15 @@ def push_once(agent_config, store, log=print) -> list:
                 log(f"[{db.name}] pushed to {name}: {res.get('detail')}")
                 store.add_event(db.name, "integration_push",
                                 f"pushed to {name}", {"detail": res.get("detail")})
+                if notifier is not None:
+                    detail = res.get("detail", "documentation updated")
+                    if res.get("url"):
+                        detail += f"\n{res['url']}"
+                    try:
+                        notifier.notify("doc_updated",
+                                        f"{db.name}: documentation published to {name}", detail)
+                    except Exception:
+                        pass
                 results.append({"integration": name, "db": db.name, "ok": True,
                                 "detail": res.get("detail")})
             except Exception as e:
@@ -70,7 +80,7 @@ def push_once(agent_config, store, log=print) -> list:
     return results
 
 
-def maybe_push(agent_config, store, log=print, now=None) -> list:
+def maybe_push(agent_config, store, log=print, now=None, notifier=None) -> list:
     """Push to each connector whose interval has elapsed; update its timestamp."""
     if not agent_config.integrations:
         return []
@@ -81,7 +91,7 @@ def maybe_push(agent_config, store, log=print, now=None) -> list:
         if not _due(store, name, interval, now):
             continue
         # Push this connector for all databases, then stamp its timestamp.
-        one = [r for r in push_once(_only(agent_config, name), store, log)]
+        one = [r for r in push_once(_only(agent_config, name), store, log, notifier=notifier)]
         results.extend(one)
         store.set_meta(_meta_key(name), str(now))
     return results

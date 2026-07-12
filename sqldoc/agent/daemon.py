@@ -67,14 +67,15 @@ def weekly_report_loop(store, agent_config, stop_event, log, check_seconds=900):
             break
 
 
-def integration_push_loop(store, agent_config, stop_event, log, check_seconds=1800):
+def integration_push_loop(store, agent_config, stop_event, log, notifier=None,
+                          check_seconds=1800):
     """Every check_seconds, auto-push docs to any integration whose push interval
     has elapsed. Runs only when agent.integrations is non-empty."""
     if not getattr(agent_config, "integrations", None):
         return
     while not stop_event.is_set():
         try:
-            maybe_push_integrations(agent_config, store, log=log)
+            maybe_push_integrations(agent_config, store, log=log, notifier=notifier)
         except Exception as e:
             log(f"integration push scheduler crashed: {type(e).__name__}: {e}")
         if stop_event.wait(check_seconds):
@@ -115,7 +116,8 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
     push_thread = None
     if getattr(agent_config, "integrations", None):
         push_thread = threading.Thread(
-            target=integration_push_loop, args=(store, agent_config, stop_event, log),
+            target=integration_push_loop,
+            args=(store, agent_config, stop_event, log, notifier),
             name="integration-push", daemon=True)
         push_thread.start()
         log(f"integration auto-push scheduled every {agent_config.push_interval_hours}h "
