@@ -61,9 +61,13 @@ azuredevops = ["requests>=2.31"]
 powerbi = ["msal>=1.24"]
 integrations = ["msal>=1.24", "google-api-python-client>=2.100",
                 "google-auth>=2.20", "boxsdk[jwt]>=3.9"]
-# Active Directory / Entra ID lookup for the `sqldoc access` suite. ldap3 is pure
-# Python (no native deps); msal covers the Entra ID / Graph alternative.
+# Identity providers for the `sqldoc access` suite. ldap3 is pure Python (AD +
+# generic LDAP); msal covers Entra ID / hybrid; Okta / JumpCloud speak REST via
+# the core `requests`; Google Workspace uses the Admin SDK.
 activedirectory = ["ldap3>=2.9", "msal>=1.24"]
+okta = ["requests>=2.31"]
+jumpcloud = ["requests>=2.31"]
+google-workspace = ["google-api-python-client>=2.100", "google-auth>=2.20"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
 all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",
