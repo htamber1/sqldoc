@@ -2848,6 +2848,17 @@ gdrive = make_integration_command(
     push_mode='reports')
 
 
+box = make_integration_command(
+    'box',
+    "Upload sqldoc reports to Box (Box SDK, JWT app auth).\n\n"
+    "--test verifies the JWT app + folder; --push uploads the reports to the folder\n"
+    "(re-push updates in place, keeping Box version history), sets a shared link at\n"
+    "the configured access level, and tags each file with database + scan_date\n"
+    "metadata. Configure jwt_config_file (or jwt_config), folder_id, and\n"
+    "shared_link_access under 'box:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2891,6 +2902,7 @@ cli.add_command(sharepoint, name='sharepoint')
 cli.add_command(confluence, name='confluence')
 cli.add_command(notion, name='notion')
 cli.add_command(gdrive, name='gdrive')
+cli.add_command(box, name='box')
 
 
 # --- audit trail hook ------------------------------------------------------
