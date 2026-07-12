@@ -4,6 +4,48 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] — 2026-07-11
+
+**Ecosystem reach: VS Code, dbt, and a board-level cross-database report.**
+Three integrations that meet teams where they already work.
+
+### Added — VS Code extension
+- New `vscode-extension/` (plain CommonJS, no build step). Right-click a `.sql`
+  file or folder (or use the Command Palette) for a **sqldoc** submenu:
+  **Document This Database**, **Scan for PII**, **Run Health Check**, **View
+  Documentation**. Results open in a **webview panel** using sqldoc's existing
+  dark-themed self-contained HTML (a local-only CSP is injected so the report's
+  inline styles/scripts run without any network access).
+- Connection resolves from settings → a workspace `.sqldoc.yml` → a prompt.
+  Settings: `sqldoc.connectionString`, `sqldoc.dialect`, `sqldoc.sqldocPath`,
+  `sqldoc.documentArgs` (default `--no-ai`).
+- `build-vsix.py` packages a valid `.vsix` without npm/vsce; ships
+  **`sqldoc-vscode.vsix`** (install with `code --install-extension`).
+
+### Added — dbt integration (`sqldoc dbt`)
+- Auto-detects a dbt project (`dbt_project.yml` in the current directory or an
+  immediate subdirectory; `--project-dir` to override).
+- Parses each model's description, column descriptions, and tests from the
+  `schema.yml` files under the project's model paths.
+- **Merges dbt metadata with the live database schema** from sqldoc, matching
+  models to tables and classifying every column as *matched* /
+  *db-only* (undocumented) / *dbt-only* (drift), with a documentation-coverage
+  percentage. Runs dbt-only with `--no-db` or when no connection is configured.
+- Dark self-contained HTML + `--json` + `--verify-offline`. Metadata only.
+
+### Added — multi-database access report (`sqldoc comply --all-databases`)
+- Reads the top-level **`databases:`** list in `.sqldoc.yml` (each entry a name
+  plus a connection string or discrete parts + optional dialect) and renders
+  **one board-level report**: a *principal × database* matrix showing every
+  user/role and their read/write/admin access to regulated data across the whole
+  estate, side by side. Sorted by reach then risk.
+- Each database is audited independently — a failure on one is recorded, not
+  fatal. Dark self-contained HTML matrix + `--json` (`report_type`
+  `compliance-multi`). Config example added to `.sqldoc.example.yml`.
+
+### Notes
+- 332 tests passing (all mocked). No breaking changes — all additions.
+
 ## [1.8.0] — 2026-07-11
 
 **Deeper compliance, health, CI, and air-gap support.** Four feature areas that
