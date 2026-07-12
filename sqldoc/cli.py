@@ -3043,6 +3043,104 @@ def access_request(config, identifier, request_text, mode, model, ai_backend, no
         click.echo(f"JSON written to {json_out}")
 
 
+def _access_tables_for(cfg, database):
+    """Best-effort extract of a database's tables + PII findings for impact
+    analysis. Returns (tables, pii_findings, server_name, note)."""
+    from sqldoc.access import config as access_config
+    from sqldoc.access.checker import build_db_adapter
+    from sqldoc.pii import scan_tables
+    for entry in access_config.servers(cfg):
+        if any(db.lower() == (database or "").lower() for db in entry["databases"]):
+            try:
+                adapter = build_db_adapter(entry, database)
+                tables = adapter.extract_metadata()
+                return tables, scan_tables(tables), entry["name"], None
+            except Exception as e:
+                return [], [], entry["name"], f"{type(e).__name__}: {e}"
+    return [], [], "", f"database '{database}' not found in access.servers"
+
+
+@access.command('script')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--user', 'identifier', required=True, help='Username, email, or AD login')
+@click.option('--request', 'request_text', default=None, help='Plain-English access request')
+@click.option('--database', default=None, help='Target database (if not using --request)')
+@click.option('--level', default=None, type=click.Choice(['read', 'write', 'admin']),
+              help='Access level (if not using --request)')
+@click.option('--login', 'login_override', default=None, help='Force a specific login/group to grant to')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for parsing')
+@click.option('--model', default=None, help='AI model for parsing')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic parser (no AI)')
+@click.option('--output', default='access-script.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+@click.option('--sql-out', default=None, help='Write the grant script to this .sql file (rollback alongside)')
+def access_script(config, identifier, request_text, database, level, login_override,
+                  mode, model, ai_backend, no_ai, output, json_out, sql_out):
+    """Generate the grant + rollback SQL for an access request.
+
+    Follows SQL Server best practices: check-then-create the login (Windows group
+    preferred), add to the least-privilege role, comment every statement, and
+    emit a matching rollback. Includes an impact analysis flagging PII tables.
+    """
+    from sqldoc.access.checker import check_access
+    from sqldoc.access.parse import parse_request, ParsedRequest
+    from sqldoc.access.gap import analyze_gap
+    from sqldoc.access import config as access_config
+    from sqldoc.access.script import generate_script
+    from sqldoc.access.render import render_script_html, build_script_json
+    from sqldoc.integrations.base import IntegrationError
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    resolve = _make_resolver(ctx, cfg)
+    backend = resolve_ai_backend(resolve, ai_backend)
+
+    known = [db for s in access_config.servers(cfg) for db in s["databases"]]
+    if request_text:
+        parsed = parse_request(request_text, known_databases=known, mode=mode, model=model,
+                               backend=backend, no_ai=no_ai)
+    elif database and level:
+        parsed = ParsedRequest(raw=f"{level} access to {database}", database=database,
+                               level=level, note="explicit flags")
+    else:
+        raise click.UsageError("Provide --request, or both --database and --level.")
+
+    click.echo(f"\nsqldoc v{__version__}  -  access script")
+    click.echo(f"{'='*44}")
+    click.echo(f"Request: {parsed.level} access to {parsed.database or '(unspecified)'}")
+    try:
+        report = check_access(cfg, identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+
+    tables, pii, server_name, note = _access_tables_for(cfg, parsed.database)
+    if note:
+        click.echo(click.style(f"  ! impact analysis limited: {note}", fg='yellow'), err=True)
+
+    gs = generate_script(report, parsed, server_name or "(server)", parsed.database,
+                         tables=tables, pii_findings=pii, login_override=login_override)
+
+    click.echo(f"\nGrantee: {gs.login_name}  ({'Windows group' if gs.uses_windows_group else 'individual login'})")
+    click.echo(click.style(gs.note, fg='cyan'))
+    click.echo("\n--- grant script ---")
+    click.echo(gs.grant_sql)
+
+    render_script_html(gs, output)
+    click.echo(f"Report written to {output}")
+    if sql_out:
+        with open(sql_out, 'w', encoding='utf-8') as f:
+            f.write(gs.grant_sql)
+        rb = sql_out.rsplit('.', 1)[0] + '.rollback.sql'
+        with open(rb, 'w', encoding='utf-8') as f:
+            f.write(gs.rollback_sql)
+        click.echo(f"SQL written to {sql_out} (+ {rb})")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump(build_script_json(gs), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""

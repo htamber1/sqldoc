@@ -170,3 +170,41 @@ def render_request_html(report, parsed, gap, output_path):
                    "".join(f"<li>{_e(m)}</li>" for m in gap.missing) + "</ul>"
     verdict += "</div>"
     _write(output_path, _doc(f"Access request — {u.display_name or u.identifier}", req + verdict))
+
+
+# --- script ----------------------------------------------------------------
+
+def build_script_json(gs) -> dict:
+    return {
+        "report_type": "access-script",
+        "server": gs.server, "database": gs.database, "login": gs.login_name,
+        "role": gs.role, "uses_windows_group": gs.uses_windows_group, "note": gs.note,
+        "grant_sql": gs.grant_sql, "rollback_sql": gs.rollback_sql,
+        "impact": gs.impact,
+        "pii_exposed": [{"schema": s, "table": t, "risk": r, "regulations": g}
+                        for (s, t, r, g) in gs.pii_exposed],
+    }
+
+
+def render_script_html(gs, output_path):
+    grp = ("<span class='pill read'>Windows group</span>" if gs.uses_windows_group
+           else "<span class='pill write'>individual login</span>")
+    head = (f"<div class='card'><h2 style='margin-top:0'>Grant script</h2>"
+            f"<p>Run on <strong>{_e(gs.server)}</strong> / <strong>{_e(gs.database)}</strong> "
+            f"for <span class='mono'>{_e(gs.login_name)}</span> {grp}</p>"
+            f"<p class='muted'>{_e(gs.note)}</p></div>")
+    grant = f"<div class='card'><h2 style='margin-top:0'>Grant SQL</h2><pre>{_e(gs.grant_sql)}</pre></div>"
+    roll = f"<div class='card'><h2 style='margin-top:0'>Rollback SQL</h2><pre>{_e(gs.rollback_sql)}</pre></div>"
+
+    impact = "<div class='card'><h2 style='margin-top:0'>Impact analysis</h2>"
+    impact += f"<p>{_e(len(gs.impact))} object(s) become accessible.</p>"
+    if gs.pii_exposed:
+        rows = "".join(f"<tr><td class='mono'>{_e(s)}.{_e(t)}</td>"
+                       f"<td><span class='pill {_e(r)}'>{_e(r)}</span></td><td>{_e(', '.join(g))}</td></tr>"
+                       for (s, t, r, g) in gs.pii_exposed)
+        impact += ("<p class='HIGH'><strong>PII-flagged tables that become accessible:</strong></p>"
+                   "<table><tr><th>Table</th><th>Risk</th><th>Regulations</th></tr>" + rows + "</table>")
+    else:
+        impact += "<p class='muted'>No PII-flagged tables among the accessible objects.</p>"
+    impact += "</div>"
+    _write(output_path, _doc(f"Access script — {gs.database}", head + grant + roll + impact))
