@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS audit (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    at       TEXT NOT NULL,
+    command  TEXT NOT NULL,
+    dialect  TEXT,
+    database TEXT,
+    user     TEXT,
+    options  TEXT,
+    result   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_audit_at ON audit(at);
 CREATE INDEX IF NOT EXISTS ix_events_db_at ON events(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_metrics_db_at ON metrics(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_runs_db ON runs(db_name, id);
@@ -256,6 +267,32 @@ class AgentStore:
             c.execute("INSERT INTO kv(key, value) VALUES (?,?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (key, value))
+
+    # --- audit trail -------------------------------------------------------
+
+    def add_audit(self, at, command, dialect=None, database=None, user=None,
+                  options=None, result=None):
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO audit(at, command, dialect, database, user, options, result) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (at, command, dialect, database, user,
+                 json.dumps(options) if options is not None else None, result))
+
+    def query_audit(self, command=None, database=None, since=None, limit=1000) -> list:
+        clauses, params = [], []
+        if command:
+            clauses.append("command=?"); params.append(command)
+        if database:
+            clauses.append("database=?"); params.append(database)
+        if since:
+            clauses.append("at >= ?"); params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        with self._conn() as c:
+            rows = c.execute(
+                f"SELECT * FROM audit{where} ORDER BY id DESC LIMIT ?", params).fetchall()
+        return [dict(r) for r in rows]
 
     # --- metrics (trends) --------------------------------------------------
 

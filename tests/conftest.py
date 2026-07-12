@@ -1,10 +1,22 @@
 """Shared fixtures + a tiny fake-pyodbc layer so tests never touch a real DB."""
+import os
+
 import pytest
 
 from sqldoc.extractor import (
     Table, Column, Index, Trigger, View, Parameter, StoredProcedure,
     CheckConstraint, UniqueConstraint,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sqldoc_home(tmp_path, monkeypatch):
+    """Keep the CLI audit trail (and any agent-home writes) out of the real
+    ~/.sqldoc during tests: default SQLDOC_AGENT_HOME to a per-test temp dir
+    unless the test sets its own."""
+    if not os.environ.get("SQLDOC_AGENT_HOME"):
+        monkeypatch.setenv("SQLDOC_AGENT_HOME", str(tmp_path / "_home"))
+    yield
 
 
 # --- In-memory schema fixtures (no database required) ----------------------

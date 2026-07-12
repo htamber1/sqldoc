@@ -9,6 +9,7 @@ from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError
 from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc import industry as industry_mod
+from sqldoc import audit as audit_mod
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.json_renderer import render_json
@@ -2615,6 +2616,82 @@ def serve(config, api, host, port, server, database, username, password, connect
         httpd.shutdown()
 
 
+@click.command()
+@click.option('--command', 'command_filter', default=None, help='Only show runs of this command (e.g. scan)')
+@click.option('--database', default=None, help='Only show runs against this database')
+@click.option('--user', default=None, help='Only show runs by this OS user')
+@click.option('--since', default=None, help='Only show runs at/after this ISO timestamp (e.g. 2026-07-01)')
+@click.option('--limit', default=50, type=int, help='Max entries to show (default: 50)')
+@click.option('--format', 'out_format', default='table', type=click.Choice(['table', 'json', 'csv']),
+              help='Output format for --export or stdout (default: table)')
+@click.option('--export', 'export_path', default=None, help='Write the (filtered) trail to this file')
+@click.option('--summary', is_flag=True, default=False, help='Show aggregate counts (by command / database / user) instead of rows')
+def audit(command_filter, database, user, since, limit, out_format, export_path, summary):
+    """Query and export the audit trail of sqldoc command runs.
+
+    Every sqldoc command that runs against a database is logged to
+    ~/.sqldoc/audit.log (and the agent store) with a timestamp, command,
+    dialect, database, OS user, the options used (secrets redacted), and a
+    result summary. This command reads that trail back, filtered and exported.
+    """
+    entries = audit_mod.read_entries()
+    entries = audit_mod.query(entries, command=command_filter, database=database,
+                              user=user, since=since)
+
+    if summary:
+        s = audit_mod.summarize(entries)
+        click.echo(click.style(f"\nAudit trail: {s['total']} run(s), {s['errors']} error(s)", bold=True))
+        click.echo("\nBy command:")
+        for k, v in s['by_command'].items():
+            click.echo(f"  {v:>5}  {k}")
+        if s['by_database']:
+            click.echo("\nBy database:")
+            for k, v in s['by_database'].items():
+                click.echo(f"  {v:>5}  {k}")
+        if s['by_user']:
+            click.echo("\nBy user:")
+            for k, v in s['by_user'].items():
+                click.echo(f"  {v:>5}  {k}")
+        return
+
+    # Newest first, capped.
+    shown = list(reversed(entries))[:limit]
+
+    if export_path:
+        import json as _json
+        if out_format == 'csv' or export_path.lower().endswith('.csv'):
+            data = audit_mod.to_csv(shown)
+        else:
+            data = _json.dumps(shown, indent=2, default=str)
+        with open(export_path, 'w', encoding='utf-8') as f:
+            f.write(data)
+        click.echo(f"Exported {len(shown)} audit entr(y/ies) to {export_path}")
+        return
+
+    if out_format == 'json':
+        import json as _json
+        click.echo(_json.dumps(shown, indent=2, default=str))
+        return
+    if out_format == 'csv':
+        click.echo(audit_mod.to_csv(shown))
+        return
+
+    if not shown:
+        click.echo("No audit entries match. (Runs are recorded to ~/.sqldoc/audit.log.)")
+        return
+    click.echo(click.style(f"\n{len(shown)} audit entr(y/ies) (newest first):\n", bold=True))
+    for e in shown:
+        res = e.get('result') or ''
+        colr = 'red' if str(res).startswith('error') else 'green'
+        click.echo(
+            click.style(e.get('at', '?'), fg='cyan')
+            + "  " + click.style(f"{e.get('command', '?'):<12}", bold=True)
+            + f" db={e.get('database') or '-'}"
+            + f" dialect={e.get('dialect') or '-'}"
+            + f" user={e.get('user') or '-'}"
+            + "  " + click.style(res or '-', fg=colr))
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2653,6 +2730,58 @@ cli.add_command(capacity, name='capacity')
 cli.add_command(baseline, name='baseline')
 cli.add_command(executive, name='executive')
 cli.add_command(serve, name='serve')
+cli.add_command(audit, name='audit')
+
+
+# --- audit trail hook ------------------------------------------------------
+# Wrap every command's callback so each run is recorded (timestamp, command,
+# dialect, database, user, options, result) to ~/.sqldoc/audit.log + the agent
+# store. Recording is best-effort and never breaks the command. `audit` itself
+# and the daemon-control `agent` subgroup are not recorded (they don't run
+# against a database).
+import functools as _functools  # noqa: E402
+
+_AUDIT_SKIP = {'audit'}
+
+
+def _wrap_command_for_audit(command_obj, name):
+    orig = command_obj.callback
+    if orig is None or getattr(orig, '_sqldoc_audited', False):
+        return
+    @_functools.wraps(orig)
+    def wrapper(*args, **kwargs):
+        result = "ok"
+        try:
+            return orig(*args, **kwargs)
+        except SystemExit as e:
+            code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            result = "ok" if code == 0 else f"exit {code}"
+            raise
+        except click.exceptions.Exit as e:
+            code = getattr(e, 'exit_code', 0)
+            result = "ok" if code == 0 else f"exit {code}"
+            raise
+        except click.Abort:
+            result = "aborted"
+            raise
+        except click.ClickException as e:
+            result = f"error: {e.format_message()}"
+            raise
+        except Exception as e:
+            result = f"error: {type(e).__name__}: {e}"
+            raise
+        finally:
+            try:
+                audit_mod.record_command(name, kwargs, result=result)
+            except Exception:
+                pass
+    wrapper._sqldoc_audited = True
+    command_obj.callback = wrapper
+
+
+for _name, _cmd in list(cli.commands.items()):
+    if _name not in _AUDIT_SKIP and isinstance(_cmd, click.Command) and not isinstance(_cmd, click.Group):
+        _wrap_command_for_audit(_cmd, _name)
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.
