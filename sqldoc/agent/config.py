@@ -52,6 +52,7 @@ class DatabaseConfig:
 class NotifyConfig:
     slack_webhook: str = None
     teams_webhook: str = None
+    webex: dict = None            # {token, room_id}
     smtp: dict = None
     on: list = field(default_factory=lambda: list(EVENT_TYPES))
 
@@ -224,6 +225,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     notify = NotifyConfig(
         slack_webhook=n.get("slack_webhook"),
         teams_webhook=n.get("teams_webhook"),
+        webex=n.get("webex"),
         smtp=n.get("email"),
         on=list(on),
     )

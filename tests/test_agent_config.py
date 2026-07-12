@@ -151,3 +151,28 @@ def test_parse_teams_webhook():
     }}
     ac = parse_agent_config(cfg)
     assert ac.notify.teams_webhook == "https://outlook.office.com/webhook/y"
+
+
+def test_notifier_dispatches_webex(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notifymod, "send_webex",
+                        lambda cfg, title, text: sent.append((cfg, title, text)))
+    n = Notifier(NotifyConfig(webex={"token": "T", "room_id": "R"}))
+    results = n.notify("disk_low", "Disk low", "5% free")
+    assert ("webex", True, None) in results
+    assert sent[0][0] == {"token": "T", "room_id": "R"}
+
+
+def test_parse_webex():
+    cfg = {"agent": {
+        "databases": [{"name": "a", "connection_string": "mysql://u:p@h/db"}],
+        "notifications": {"webex": {"token": "T", "room_id": "R"}},
+    }}
+    ac = parse_agent_config(cfg)
+    assert ac.notify.webex == {"token": "T", "room_id": "R"}
+
+
+def test_send_webex_requires_token_and_room(monkeypatch):
+    import pytest
+    with pytest.raises(ValueError):
+        notifymod.send_webex({"token": "T"}, "t", "x")   # missing room_id

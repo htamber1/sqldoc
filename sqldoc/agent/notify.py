@@ -32,6 +32,20 @@ def send_teams(webhook: str, title: str, text: str, timeout: float = 10.0,
     resp.raise_for_status()
 
 
+def send_webex(config: dict, title: str, text: str, timeout: float = 10.0):
+    """Post a message to a Cisco Webex space via the Messages API. `config` keys:
+    token (bot/user access token) + room_id (target space). Preferred by
+    government / large-enterprise deployments standardised on Webex."""
+    token = config.get("token")
+    room_id = config.get("room_id")
+    if not token or not room_id:
+        raise ValueError("webex notification config needs both 'token' and 'room_id'.")
+    body = {"roomId": room_id, "markdown": f"**{title}**\n\n{text}"}
+    resp = requests.post("https://webexapis.com/v1/messages", json=body,
+                         headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
+    resp.raise_for_status()
+
+
 def _send(smtp: dict, msg, recipients, sender):
     host = smtp.get("smtp_host")
     port = int(smtp.get("smtp_port", 587))
@@ -118,6 +132,13 @@ class Notifier:
                 results.append(("teams", True, None))
             except Exception as e:
                 results.append(("teams", False, f"{type(e).__name__}: {e}"))
+
+        if getattr(self.cfg, "webex", None):
+            try:
+                send_webex(self.cfg.webex, f"[sqldoc] {title}", text)
+                results.append(("webex", True, None))
+            except Exception as e:
+                results.append(("webex", False, f"{type(e).__name__}: {e}"))
 
         if self.cfg.smtp:
             try:
