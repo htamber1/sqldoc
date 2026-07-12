@@ -25,8 +25,13 @@ from sqldoc.intel import collect_intel, summarize as intel_summarize
 from sqldoc.intel_renderer import render_intel_html, build_intel_json
 from sqldoc.insights import collect_insights, summarize as insights_summarize
 from sqldoc.insights_renderer import render_insights_html, build_insights_json
-from sqldoc.comply import collect_compliance, summarize as comply_summarize
+from sqldoc.comply import (collect_compliance, summarize as comply_summarize,
+                           extract_permissions as comply_extract_permissions,
+                           extract_role_members as comply_extract_role_members)
 from sqldoc.comply_renderer import render_comply_html, build_comply_json
+from sqldoc.comply_multi import (collect_database_access, build_cross_db, summarize_multi,
+                                 DatabaseAccess)
+from sqldoc.comply_multi_renderer import render_multi_comply_html, build_multi_comply_json
 from sqldoc.offline import verify_file, blocking_refs
 from sqldoc.dbt import find_dbt_project, parse_dbt_project, merge as dbt_merge, summarize as dbt_summarize
 from sqldoc.dbt_renderer import render_dbt_html, build_dbt_json
@@ -45,6 +50,7 @@ CONFIG_KEYS = {
     'top_values', 'no_duplicates', 'no_glossary',
     'verify_offline',
     'project_dir', 'no_db',
+    'databases', 'all_databases',
     'agent',
 }
 
@@ -141,6 +147,36 @@ def open_adapter(resolve, conn_str, dialect):
         return get_adapter(conn_str, dialect)
     except UnsupportedDialectError as e:
         raise click.UsageError(str(e))
+
+
+def _adapter_from_db_entry(entry):
+    """Build (name, adapter) from one `.sqldoc.yml` `databases:` entry.
+
+    An entry is a mapping with a `name` plus either a `connection_string` or the
+    discrete `server`/`database`/`username`/`password`, and an optional
+    `dialect`. Returns (name, adapter, conn_str)."""
+    if not isinstance(entry, dict):
+        raise click.UsageError("Each item under 'databases:' must be a mapping.")
+    name = entry.get('name') or entry.get('database') or 'database'
+    dialect = entry.get('dialect')
+    conn_str = entry.get('connection_string')
+    if not conn_str:
+        server = entry.get('server')
+        database = entry.get('database')
+        username = entry.get('username')
+        password = entry.get('password')
+        missing = [n for n, v in (('server', server), ('database', database),
+                                  ('username', username), ('password', password)) if not v]
+        if missing:
+            raise click.UsageError(
+                f"Database '{name}' is missing connection settings: {', '.join(missing)} "
+                f"(or provide a connection_string).")
+        conn_str = build_connection_string(server, database, username, password)
+    try:
+        adapter = get_adapter(conn_str, dialect)
+    except UnsupportedDialectError as e:
+        raise click.UsageError(str(e))
+    return name, adapter, conn_str
 
 
 def _require_capability(adapter, flag, command):
@@ -1047,6 +1083,71 @@ def insights(config, server, database, username, password, connection_string, di
     click.echo(f"Open {output} in your browser for the full insights report.")
 
 
+def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
+                          allowlist, verify_offline):
+    """Board-level cross-database access report driven by the .sqldoc.yml
+    'databases:' list. Each database is audited independently (a failure on one
+    is recorded, not fatal), then merged into one principal x database matrix."""
+    db_entries = cfg.get('databases')
+    if not db_entries or not isinstance(db_entries, list):
+        raise click.UsageError(
+            "--all-databases needs a 'databases:' list in your .sqldoc.yml — each "
+            "entry a mapping with a name + connection_string (or "
+            "server/database/username/password) and an optional dialect.")
+
+    click.echo(f"\nsqldoc v{__version__}  -  Cross-database compliance report")
+    click.echo(f"{'='*44}")
+    click.echo(f"Databases: {len(db_entries)}")
+    click.echo(f"Output:    {output}")
+    click.echo(f"{'='*44}\n")
+
+    schema_allow = [s.strip() for s in schemas.split(',')] if schemas else None
+    db_access_list = []
+    for entry in db_entries:
+        name, adapter, _conn_str = _adapter_from_db_entry(entry)
+        click.echo(f"[{name}] connecting to {adapter.display_name}...")
+        try:
+            tables = extract_metadata(adapter)
+            if schema_allow:
+                tables = [t for t in tables if t.schema in schema_allow]
+            findings = scan_tables(tables, extra_categories=custom_cats)
+            if allowlist:
+                findings, _suppressed = apply_allowlist(findings, allowlist)
+            if adapter.capabilities.access_audit:
+                permissions = comply_extract_permissions(adapter)
+                role_members = comply_extract_role_members(adapter)
+            else:
+                permissions, role_members = [], []
+                click.echo(click.style(
+                    f"  ! [{name}] access audit not available on {adapter.display_name}; "
+                    f"grants skipped.", fg='yellow'), err=True)
+            da = collect_database_access(name, findings, permissions, role_members)
+            click.echo(f"  [{name}] {len(da.principals)} principal(s), {len(findings)} PII finding(s).")
+        except Exception as e:
+            da = DatabaseAccess(database=name, error=f"{type(e).__name__}: {e}")
+            click.echo(click.style(f"  ! [{name}] failed: {e}", fg='yellow'), err=True)
+        db_access_list.append(da)
+
+    report = build_cross_db(db_access_list)
+    s = summarize_multi(report)
+    click.echo(
+        click.style(f"\nPrincipals: {s['principals']}", fg='cyan')
+        + f"    Cross-DB: {s['cross_db_principals']}"
+        + click.style(f"    With PII access: {s['principals_with_pii']}", fg='yellow')
+        + click.style(f"    HIGH-risk: {s['high_risk_principals']}", fg='red')
+    )
+
+    click.echo("\nRendering report...")
+    render_multi_comply_html(report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_multi_comply_json(report), f, indent=2, default=str)
+        click.echo(f"Machine-readable report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the cross-database compliance report.")
+
+
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
@@ -1063,21 +1164,24 @@ def insights(config, server, database, username, password, connection_string, di
               help='Skip reading sys.database_permissions (use if the account lacks VIEW DEFINITION)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit, verify_offline):
+@click.option('--all-databases', 'all_databases', is_flag=True, default=False,
+              help='Board-level report: audit every database in the .sqldoc.yml "databases:" list and show each user/role and their access across all of them side by side')
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, no_access_audit, verify_offline, all_databases):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
     traces data lineage through view/procedure definitions, and cross-references
     object grants (sys.database_permissions) against tables holding regulated
     data. Reads schema + catalog metadata only — never table row data.
+
+    With --all-databases, reads the connection strings under the .sqldoc.yml
+    "databases:" list and renders ONE cross-database access matrix (every
+    principal x every database) instead of the single-database report.
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
 
-    conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
-    adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
@@ -1089,6 +1193,16 @@ def comply(config, server, database, username, password, connection_string, dial
     allowlist = cfg.get('pii_allowlist') or []
     if not isinstance(allowlist, list):
         raise click.UsageError("pii_allowlist in config must be a list of column patterns.")
+
+    all_databases = resolve('all_databases', all_databases)
+    if all_databases:
+        _comply_all_databases(cfg, resolve, output, json_out, schemas,
+                              custom_cats, allowlist, verify_offline)
+        return
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
 
     click.echo(f"\nsqldoc v{__version__}  -  Compliance report")
     click.echo(f"{'='*44}")

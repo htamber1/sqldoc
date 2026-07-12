@@ -56,6 +56,25 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   - "*.TestSSN"                    # any column named TestSSN
 #   - dbo.Staging.*                  # everything in a staging table
 
+# --- Multiple databases for `sqldoc comply --all-databases` (optional) ---
+# The board-level cross-database access report audits every database listed here
+# and shows each user/role and their read/write/admin access to regulated data
+# side by side. Each entry: a name + a connection_string (or the discrete
+# server/database/username/password) and an optional dialect.
+# databases:
+#   - name: Sales (SQL Server)
+#     server: localhost
+#     database: Sales
+#     username: sa
+#     password: "***"
+#     dialect: sqlserver
+#   - name: Analytics (Postgres)
+#     connection_string: "postgresql://user:pw@warehouse:5432/analytics"
+#     dialect: postgres
+#   - name: HR (MySQL)
+#     connection_string: "mysql://user:pw@hrhost:3306/hr"
+#     dialect: mysql
+
 # --- Background monitoring agent for `sqldoc agent` (optional) ---
 # `sqldoc agent start` launches a persistent daemon that polls each database
 # below, diffs the schema, re-documents only changed objects (reusing the AI
