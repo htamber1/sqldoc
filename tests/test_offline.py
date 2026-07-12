@@ -14,6 +14,7 @@ from sqldoc.comply_multi_renderer import MULTI_TEMPLATE
 from sqldoc.server_renderer import SERVER_TEMPLATE
 from sqldoc.logs_renderer import LOGS_TEMPLATE
 from sqldoc.secure_renderer import SECURE_TEMPLATE
+from sqldoc.waits_renderer import WAITS_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -74,6 +75,7 @@ _TEMPLATES = {
     "server": SERVER_TEMPLATE,
     "logs": LOGS_TEMPLATE,
     "secure": SECURE_TEMPLATE,
+    "waits": WAITS_TEMPLATE,
 }
 
 

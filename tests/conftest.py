@@ -200,6 +200,14 @@ class FakeCursor:
             self._last = "mysql_fileprivs"
         elif "@@secure_file_priv" in sql:
             self._last = "mysql_sfp"
+        elif "dm_os_wait_stats" in sql:
+            self._last = "mssql_waits"
+        elif "wait_event_type" in sql:
+            self._last = "pgwaits"
+        elif "NOT granted" in sql:
+            self._last = "pglocks"
+        elif "events_waits_summary_global_by_event_name" in sql:
+            self._last = "mysql_waits"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -339,6 +347,45 @@ def fake_health_rows():
             FakeRow(schema_name="Sales", procedure_name="uspLegacyExport",
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_mssql_waits_rows():
+    return {
+        "mssql_waits": [
+            FakeRow(wait_type="PAGEIOLATCH_SH", wait_time_ms=50000, waiting_tasks_count=800),    # IO
+            FakeRow(wait_type="LCK_M_X", wait_time_ms=30000, waiting_tasks_count=120),            # Lock
+            FakeRow(wait_type="SOS_SCHEDULER_YIELD", wait_time_ms=15000, waiting_tasks_count=9000),  # CPU
+            FakeRow(wait_type="RESOURCE_SEMAPHORE", wait_time_ms=4000, waiting_tasks_count=20),   # Memory
+            FakeRow(wait_type="ASYNC_NETWORK_IO", wait_time_ms=1000, waiting_tasks_count=300),    # Network
+        ],
+    }
+
+
+@pytest.fixture
+def fake_pg_waits_rows():
+    return {
+        "pgwaits": [
+            FakeRow(wait_event_type="IO", wait_event="DataFileRead", n=5),
+            FakeRow(wait_event_type="Lock", wait_event="relation", n=3),
+            FakeRow(wait_event_type="Client", wait_event="ClientRead", n=2),
+        ],
+        "pglocks": [FakeRow(blocked=2)],
+    }
+
+
+@pytest.fixture
+def fake_mysql_waits_rows():
+    return {
+        "mysql_waits": [
+            FakeRow(event_name="wait/io/file/innodb/innodb_data_file",
+                    count_star=10000, sum_timer_wait=60_000_000_000_000),   # 60000 ms, IO
+            FakeRow(event_name="wait/lock/table/sql/handler",
+                    count_star=500, sum_timer_wait=20_000_000_000_000),     # 20000 ms, Lock
+            FakeRow(event_name="wait/synch/mutex/innodb/log_sys_mutex",
+                    count_star=3000, sum_timer_wait=5_000_000_000_000),     # 5000 ms, CPU
         ],
     }
 
