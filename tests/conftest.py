@@ -124,9 +124,13 @@ class FakeCursor:
         self._last = None
 
     def execute(self, sql, *params):
+        # `plans` joins dm_exec_query_stats + dm_exec_query_plan; check the plan
+        # token first so it doesn't misroute to the health "slow" branch below.
+        if "dm_exec_query_plan" in sql:
+            self._last = "mssql_plans"
         # Health DMV queries first — the dead-tables query aliases `p.rows AS
         # row_count`, which would otherwise misroute to the extractor branch.
-        if "dm_exec_query_stats" in sql:
+        elif "dm_exec_query_stats" in sql:
             self._last = "slow"
         elif "dm_db_index_usage_stats" in sql:
             self._last = "dead"
@@ -224,6 +228,10 @@ class FakeCursor:
             self._last = "pg_deadlock_count"
         elif "events_errors_summary_global_by_error" in sql:
             self._last = "mysql_deadlocks"
+        elif "pg_stat_statements" in sql:
+            self._last = "pg_plans"
+        elif "events_statements_summary_by_digest" in sql:
+            self._last = "mysql_plans"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -365,6 +373,49 @@ def fake_health_rows():
                     create_date="2021-01-01", modify_date="2021-01-01"),
         ],
     }
+
+
+# A minimal SQL Server showplan XML with several anti-patterns.
+_PLAN_XML = """<?xml version="1.0"?>
+<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">
+ <BatchSequence><Batch><Statements><StmtSimple>
+  <QueryPlan>
+   <MissingIndexes><MissingIndexGroup Impact="87.5"><MissingIndex/></MissingIndexGroup></MissingIndexes>
+   <RelOp PhysicalOp="Table Scan" EstimateRows="500000"/>
+   <RelOp PhysicalOp="Key Lookup" EstimateRows="1200"/>
+   <RelOp PhysicalOp="Clustered Index Scan" EstimateRows="50000"/>
+   <Warnings><SpillToTempDb SpillLevel="1"/><PlanAffectingConvert ConvertIssue="Seek Plan"/></Warnings>
+  </QueryPlan>
+ </StmtSimple></Statements></Batch></BatchSequence>
+</ShowPlanXML>"""
+
+
+@pytest.fixture
+def fake_mssql_plans_rows():
+    return {"mssql_plans": [
+        FakeRow(avg_elapsed_ms=1200.5, execution_count=340, total_elapsed_ms=408170.0,
+                avg_reads=90000, query_text="SELECT * FROM Sales.Orders WHERE CustomerId = 5",
+                plan_xml=_PLAN_XML),
+        FakeRow(avg_elapsed_ms=80.0, execution_count=10, total_elapsed_ms=800.0,
+                avg_reads=50, query_text="SELECT COUNT(*) FROM Sales.Orders",
+                plan_xml="<ShowPlanXML/>"),
+    ]}
+
+
+@pytest.fixture
+def fake_pg_plans_rows():
+    return {"pg_plans": [
+        FakeRow(query="SELECT * FROM film WHERE title = $1", calls=500,
+                total_ms=45000.0, avg_ms=90.0, avg_reads=12000),
+    ]}
+
+
+@pytest.fixture
+def fake_mysql_plans_rows():
+    return {"mysql_plans": [
+        FakeRow(query="SELECT * FROM rental WHERE customer_id = ?", calls=8000,
+                total_ms=60000.0, avg_ms=7.5, rows_examined=4000000, no_index_used=8000),
+    ]}
 
 
 _DEADLOCK_XML = """<RingBufferTarget>
