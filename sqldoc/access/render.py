@@ -132,3 +132,41 @@ def render_check_html(report, output_path):
 
     _write(output_path, _doc(f"Access check — {u.display_name or u.identifier}",
                              header + access + errs))
+
+
+# --- request / gap ---------------------------------------------------------
+
+def build_request_json(report, parsed, gap) -> dict:
+    return {
+        "report_type": "access-request",
+        "user": {"identifier": report.user.identifier,
+                 "display_name": report.user.display_name},
+        "request": {"raw": parsed.raw, "database": parsed.database, "schema": parsed.schema,
+                    "level": parsed.level, "objects": parsed.objects,
+                    "confidence": parsed.confidence, "note": parsed.note},
+        "verdict": gap.verdict,
+        "have_level": gap.have_level, "needs_level": gap.needs_level,
+        "explanation": gap.explanation,
+        "current": gap.current, "missing": gap.missing,
+    }
+
+
+def render_request_html(report, parsed, gap, output_path):
+    u = report.user
+    badge = f"<span class='pill {_e(gap.verdict)}' style='font-size:14px'>{_e(gap.verdict)}</span>"
+    req = (f"<div class='card'><h2 style='margin-top:0'>Request</h2>"
+           f"<p class='muted'>“{_e(parsed.raw)}”</p>"
+           f"<p>Parsed as: <strong>{_e(parsed.level)}</strong> access to "
+           f"<strong>{_e(parsed.database or '(unspecified)')}</strong>"
+           + (f" schema <strong>{_e(parsed.schema)}</strong>" if parsed.schema else "")
+           + f" <span class='muted'>({_e(parsed.note)}, confidence {parsed.confidence:.0%})</span></p></div>")
+    verdict = (f"<div class='card'><h2 style='margin-top:0'>{badge} "
+               f"{_e(u.display_name or u.identifier)}</h2><p>{_e(gap.explanation)}</p>")
+    if gap.current:
+        verdict += "<p><strong>Currently has:</strong></p><ul>" + \
+                   "".join(f"<li>{_e(c)}</li>" for c in gap.current) + "</ul>"
+    if gap.missing:
+        verdict += "<p><strong>Missing:</strong></p><ul>" + \
+                   "".join(f"<li>{_e(m)}</li>" for m in gap.missing) + "</ul>"
+    verdict += "</div>"
+    _write(output_path, _doc(f"Access request — {u.display_name or u.identifier}", req + verdict))

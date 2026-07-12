@@ -2986,6 +2986,63 @@ def access_check(config, identifier, output, json_out):
         click.echo(f"JSON written to {json_out}")
 
 
+@access.command('request')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--user', 'identifier', required=True, help='Username, email, or AD login')
+@click.option('--request', 'request_text', required=True,
+              help='Plain-English access request, e.g. "read access to the Sales database"')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for parsing')
+@click.option('--model', default=None, help='AI model for parsing')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic parser (no AI)')
+@click.option('--output', default='access-request.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_request(config, identifier, request_text, mode, model, ai_backend, no_ai, output, json_out):
+    """Evaluate a plain-English access request against current access.
+
+    AI parses the request into database / schema / level, then it is compared to
+    what the user already has. Outputs one of: ALREADY HAS ACCESS, PARTIAL ACCESS
+    (with the gap), or NO ACCESS (with a full gap analysis).
+    """
+    from sqldoc.access.checker import check_access
+    from sqldoc.access.parse import parse_request
+    from sqldoc.access.gap import analyze_gap
+    from sqldoc.access import config as access_config
+    from sqldoc.access.render import render_request_html, build_request_json
+    from sqldoc.integrations.base import IntegrationError
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    resolve = _make_resolver(ctx, cfg)
+    backend = resolve_ai_backend(resolve, ai_backend)
+
+    known = [db for s in access_config.servers(cfg) for db in s["databases"]]
+    parsed = parse_request(request_text, known_databases=known, mode=mode, model=model,
+                           backend=backend, no_ai=no_ai)
+    click.echo(f"\nsqldoc v{__version__}  -  access request")
+    click.echo(f"{'='*44}")
+    click.echo(f"Parsed: {parsed.level} access to {parsed.database or '(unspecified)'}"
+               + (f" schema {parsed.schema}" if parsed.schema else "")
+               + f"  ({parsed.note})")
+    try:
+        report = check_access(cfg, identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+    gap = analyze_gap(parsed, report)
+
+    color = {'ALREADY': 'green', 'PARTIAL': 'yellow', 'NONE': 'red'}.get(gap.verdict)
+    click.echo("\n" + click.style(gap.verdict, fg=color, bold=True) + f"  {gap.explanation}")
+    for m in gap.missing:
+        click.echo(click.style(f"  missing: {m}", fg='yellow'))
+
+    render_request_html(report, parsed, gap, output)
+    click.echo(f"\nReport written to {output}")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump(build_request_json(report, parsed, gap), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
