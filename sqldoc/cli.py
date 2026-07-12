@@ -2881,6 +2881,18 @@ servicenow = make_integration_command(
     push_mode='issues')
 
 
+azuredevops = make_integration_command(
+    'azuredevops',
+    "Publish sqldoc to Azure DevOps (REST API, PAT auth).\n\n"
+    "--test verifies the project; --push attaches the reports to a per-database\n"
+    "documentation work item (reused on re-push) and creates deduped work items for\n"
+    "threshold findings. Inside a pipeline, azure-pipelines/sqldoc.yml runs sqldoc\n"
+    "and publishes native pipeline artifacts (the ADO alternative to the GitHub\n"
+    "Action). Configure organization (or org_url), project, and pat under\n"
+    "'azuredevops:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2927,6 +2939,7 @@ cli.add_command(gdrive, name='gdrive')
 cli.add_command(box, name='box')
 cli.add_command(jira, name='jira')
 cli.add_command(servicenow, name='servicenow')
+cli.add_command(azuredevops, name='azuredevops')
 
 
 # --- audit trail hook ------------------------------------------------------

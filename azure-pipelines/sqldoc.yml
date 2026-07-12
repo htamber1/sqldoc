@@ -1,0 +1,84 @@
+# Azure DevOps pipeline template — the ADO alternative to the sqldoc GitHub Action.
+#
+# Runs sqldoc against a database, publishes the reports as native pipeline
+# artifacts, and (optionally) pushes findings to Azure Boards / other connectors
+# via `sqldoc azuredevops --push`.
+#
+# Usage in your azure-pipelines.yml:
+#
+#   resources:
+#     repositories:
+#       - repository: sqldoc
+#         type: github
+#         name: htamber1/sqldoc
+#         endpoint: github
+#   stages:
+#     - template: azure-pipelines/sqldoc.yml@sqldoc
+#       parameters:
+#         command: doc                       # doc | scan | health | secure | executive
+#         connectionString: $(DB_CONN)       # store as a secret pipeline variable
+#         dialect: sqlserver
+#         extraArgs: '--no-ai'
+
+parameters:
+  - name: command
+    type: string
+    default: doc
+  - name: connectionString
+    type: string
+  - name: dialect
+    type: string
+    default: sqlserver
+  - name: output
+    type: string
+    default: '$(Build.ArtifactStagingDirectory)/sqldoc-report.html'
+  - name: extraArgs
+    type: string
+    default: ''
+  - name: pythonVersion
+    type: string
+    default: '3.11'
+  - name: sqldocVersion
+    type: string
+    default: ''            # empty = latest on PyPI
+  - name: artifactName
+    type: string
+    default: sqldoc-reports
+  - name: failOnHighPii
+    type: boolean
+    default: false
+
+stages:
+  - stage: sqldoc
+    displayName: 'sqldoc documentation & compliance'
+    jobs:
+      - job: run
+        displayName: 'Run sqldoc (${{ parameters.command }})'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+
+          - script: |
+              set -e
+              if [ -n "${{ parameters.sqldocVersion }}" ]; then
+                pip install "sqldoc[all]==${{ parameters.sqldocVersion }}"
+              else
+                pip install "sqldoc[all]"
+              fi
+            displayName: 'Install sqldoc'
+
+          - script: |
+              set -e
+              ARGS="--connection-string '${{ parameters.connectionString }}' --dialect ${{ parameters.dialect }} --output '${{ parameters.output }}'"
+              if [ "${{ parameters.failOnHighPii }}" = "True" ]; then ARGS="$ARGS --fail-on high"; fi
+              eval sqldoc ${{ parameters.command }} $ARGS ${{ parameters.extraArgs }}
+            displayName: 'Generate report'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish reports as a pipeline artifact'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifact: '${{ parameters.artifactName }}'
