@@ -47,6 +47,20 @@ gemini = ["google-generativeai>=0.5"]
 # Optional SSO for the dashboard + REST API (OIDC bearer / SAML assertion).
 sso = ["PyJWT[crypto]>=2.8"]
 saml = ["signxml>=3.2", "defusedxml>=0.7"]
+# Optional publishing / ticketing integrations. Connectors that only speak REST
+# reuse the core `requests` dependency; the rest pull their vendor SDK. Install
+# just the one you use, e.g. `pip install sqldoc[confluence]`.
+sharepoint = ["msal>=1.24"]
+confluence = ["requests>=2.31"]
+notion = ["requests>=2.31"]
+gdrive = ["google-api-python-client>=2.100", "google-auth>=2.20"]
+box = ["boxsdk[jwt]>=3.9"]
+jira = ["requests>=2.31"]
+servicenow = ["requests>=2.31"]
+azuredevops = ["requests>=2.31"]
+powerbi = ["msal>=1.24"]
+integrations = ["msal>=1.24", "google-api-python-client>=2.100",
+                "google-auth>=2.20", "boxsdk[jwt]>=3.9"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
 all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",
@@ -63,7 +77,7 @@ Repository = "https://github.com/htamber1/sqldoc"
 sqldoc = "sqldoc.cli:cli"
 
 [tool.setuptools]
-packages = ["sqldoc", "sqldoc.adapters", "sqldoc.agent"]
+packages = ["sqldoc", "sqldoc.adapters", "sqldoc.agent", "sqldoc.integrations"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

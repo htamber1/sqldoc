@@ -80,6 +80,10 @@ CONFIG_KEYS = {
     'databases', 'all_databases',
     'api_key', 'api', 'host', 'port', 'tenants', 'auth',
     'agent',
+    # Integration suite: each connector owns a top-level config section.
+    'sharepoint', 'confluence', 'notion', 'gdrive', 'box', 'jira',
+    'servicenow', 'azuredevops', 'powerbi', 'webhook', 'webex',
+    'test', 'push', 'kinds',
 }
 
 
