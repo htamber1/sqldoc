@@ -3141,6 +3141,78 @@ def access_script(config, identifier, request_text, database, level, login_overr
         click.echo(f"JSON written to {json_out}")
 
 
+@access.command('jira')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--ticket', required=True, help='Jira ticket key, e.g. TICKET-1234')
+@click.option('--user', 'user_override', default=None, help='Override the user who needs access')
+@click.option('--transition', 'transition_to', default=None,
+              help='Move the ticket to this status after processing (e.g. "In Review")')
+@click.option('--no-comment', is_flag=True, default=False, help='Do not post a comment (dry run)')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode')
+@click.option('--model', default=None, help='AI model')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic extractor (no AI)')
+@click.option('--output', default='access-jira.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_jira(config, ticket, user_override, transition_to, no_comment, mode, model,
+                ai_backend, no_ai, output, json_out):
+    """Process a Jira access-request ticket end-to-end.
+
+    Pulls the ticket, extracts who needs what access (AI), runs the check +
+    script-generation workflow, and posts the generated script + impact analysis
+    + execution instructions back as a comment (optionally transitioning the
+    ticket). Uses the existing 'jira:' integration config.
+    """
+    from sqldoc.integrations import get_client, section, IntegrationError
+    from sqldoc.access.jira_flow import process_ticket
+    from sqldoc.access.render import render_script_html, build_script_json
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    resolve = _make_resolver(ctx, cfg)
+    backend = resolve_ai_backend(resolve, ai_backend)
+
+    try:
+        jira_client = get_client('jira', section(cfg, 'jira'))
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+
+    click.echo(f"\nsqldoc v{__version__}  -  access jira  ({ticket})")
+    click.echo(f"{'='*44}")
+    try:
+        result = process_ticket(cfg, ticket, jira_client, post_comment=not no_comment,
+                                transition_to=transition_to, user_override=user_override,
+                                mode=mode, model=model, backend=backend, no_ai=no_ai)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+    except Exception as e:
+        click.echo(click.style(f"Failed to process {ticket}: {e}", fg='red'), err=True)
+        raise click.Abort()
+
+    ex = result.extracted
+    click.echo(f"Extracted: user={ex.user or '?'}  {ex.level} access to {ex.database or '?'}  ({ex.note})")
+    if result.note:
+        click.echo(click.style(f"  {result.note}", fg='yellow'))
+    if result.gap is not None:
+        color = {'ALREADY': 'green', 'PARTIAL': 'yellow', 'NONE': 'red'}.get(result.gap.verdict)
+        click.echo(click.style(f"  {result.gap.verdict}", fg=color, bold=True) + f"  {result.gap.explanation}")
+    click.echo(f"  comment posted: {result.comment_posted}   "
+               f"transitioned: {result.transitioned}")
+
+    if result.script is not None:
+        render_script_html(result.script, output)
+        click.echo(f"\nReport written to {output}")
+        if json_out:
+            with open(json_out, 'w', encoding='utf-8') as f:
+                import json as _json
+                data = build_script_json(result.script)
+                data["ticket"] = ticket
+                data["extracted"] = {"user": ex.user, "database": ex.database,
+                                     "level": ex.level, "justification": ex.justification}
+                data["verdict"] = result.gap.verdict if result.gap else None
+                _json.dump(data, f, indent=2, default=str)
+            click.echo(f"JSON written to {json_out}")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
