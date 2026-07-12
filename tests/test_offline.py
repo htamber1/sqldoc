@@ -18,6 +18,7 @@ from sqldoc.waits_renderer import WAITS_TEMPLATE
 from sqldoc.ha_renderer import HA_TEMPLATE
 from sqldoc.deadlocks_renderer import DEADLOCK_TEMPLATE
 from sqldoc.plans_renderer import PLANS_TEMPLATE
+from sqldoc.capacity_renderer import CAPACITY_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -82,6 +83,7 @@ _TEMPLATES = {
     "ha": HA_TEMPLATE,
     "deadlocks": DEADLOCK_TEMPLATE,
     "plans": PLANS_TEMPLATE,
+    "capacity": CAPACITY_TEMPLATE,
 }
 
 

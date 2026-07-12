@@ -50,6 +50,8 @@ from sqldoc.deadlocks import collect_deadlocks, explain_deadlock, summarize as d
 from sqldoc.deadlocks_renderer import render_deadlocks_html, build_deadlocks_json
 from sqldoc.plans import collect_plans, explain_plans, summarize as plans_summarize
 from sqldoc.plans_renderer import render_plans_html, build_plans_json
+from sqldoc.capacity import project_capacity, summarize as capacity_summarize
+from sqldoc.capacity_renderer import render_capacity_html, build_capacity_json
 
 load_dotenv()
 
@@ -1988,6 +1990,71 @@ def plans(config, server, database, username, password, connection_string, diale
     click.echo(f"Open {output} in your browser for the full query-plan report.")
 
 
+@click.command()
+@click.option('--store', 'store_path', default=None, help='Path to the agent SQLite store (default: ~/.sqldoc/agent.db)')
+@click.option('--database', default=None, help='Only project this database (default: all monitored databases)')
+@click.option('--output', default='capacity-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the capacity report as machine-readable JSON to this path')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def capacity(store_path, database, output, json_out, verify_offline):
+    """Project capacity + growth trends from the agent's recorded history.
+
+    Reads the sqldoc agent's metric history and projects: days until disk full,
+    days until the database reaches its max size, the fastest-growing tables with
+    30/60/90-day projections, and the fragmentation trend — with SVG sparklines.
+    Requires the agent to have completed at least two polling cycles.
+    """
+    from sqldoc.agent.store import AgentStore
+    from sqldoc.agent import db_path
+
+    path = store_path or db_path()
+    if not os.path.exists(path):
+        raise click.UsageError(
+            f"Agent store not found at {path}. Start the agent (sqldoc agent start) so it "
+            f"records metrics, or pass --store PATH.")
+    store = AgentStore(path)
+    databases = [database] if database else store.list_databases()
+
+    click.echo(f"\nsqldoc v{__version__}  -  Capacity planning")
+    click.echo(f"{'='*44}")
+    click.echo(f"Store:     {path}")
+    click.echo(f"Databases: {len(databases)}")
+    click.echo(f"{'='*44}\n")
+
+    if not databases:
+        click.echo(click.style("No monitored databases found in the agent store.", fg='yellow'))
+
+    reports = []
+    for name in databases:
+        history = store.metrics_history(name)
+        table_history = store.table_size_history(name)
+        report = project_capacity(name, history, table_history)
+        reports.append(report)
+        s = capacity_summarize(report)
+        if not report.sufficient:
+            click.echo(click.style(f"{name}: insufficient history ({report.points} point(s)).", fg='yellow'))
+        else:
+            dfull = s['disk_days_until_full']
+            dmax = s['db_days_until_max']
+            click.echo(
+                click.style(f"{name}: {report.points} points / {report.span_days}d", fg='cyan')
+                + f"    Disk full in: {dfull if dfull is not None else 'n/a'} d"
+                + f"    Max size in: {dmax if dmax is not None else 'n/a'} d"
+                + click.style(f"    Growing tables: {s['growing_tables']}", fg='blue')
+            )
+
+    click.echo("\nRendering report...")
+    render_capacity_html(reports, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_capacity_json(reports), f, indent=2, default=str)
+        click.echo(f"Machine-readable capacity report written to {json_out}")
+    _verify_offline(output, verify_offline)
+    click.echo(f"Open {output} in your browser for the full capacity report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2020,6 +2087,7 @@ cli.add_command(waits, name='waits')
 cli.add_command(ha, name='ha')
 cli.add_command(deadlocks, name='deadlocks')
 cli.add_command(plans, name='plans')
+cli.add_command(capacity, name='capacity')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

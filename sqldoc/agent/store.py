@@ -69,10 +69,28 @@ CREATE TABLE IF NOT EXISTS metrics (
     health_issues  INTEGER,
     health_degraded INTEGER
 );
+CREATE TABLE IF NOT EXISTS table_sizes (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    db_name  TEXT NOT NULL,
+    at       TEXT NOT NULL,
+    obj      TEXT NOT NULL,
+    size_mb  REAL,
+    rows     INTEGER
+);
 CREATE INDEX IF NOT EXISTS ix_events_db_at ON events(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_metrics_db_at ON metrics(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_runs_db ON runs(db_name, id);
+CREATE INDEX IF NOT EXISTS ix_tablesizes_db_at ON table_sizes(db_name, at);
 """
+
+# Capacity columns added to `metrics` after the fact (see _migrate).
+_METRIC_MIGRATIONS = [
+    ("database_size_mb", "REAL"),
+    ("disk_free_mb", "REAL"),
+    ("disk_total_mb", "REAL"),
+    ("max_size_mb", "REAL"),
+    ("fragmentation_avg", "REAL"),
+]
 
 
 class AgentStore:
@@ -80,6 +98,14 @@ class AgentStore:
         self.path = path
         with self._conn() as c:
             c.executescript(_SCHEMA)
+            self._migrate(c)
+
+    def _migrate(self, c):
+        """Add capacity columns to `metrics` on existing databases."""
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(metrics)").fetchall()}
+        for name, typ in _METRIC_MIGRATIONS:
+            if name not in cols:
+                c.execute(f"ALTER TABLE metrics ADD COLUMN {name} {typ}")
 
     @contextmanager
     def _conn(self):
@@ -195,14 +221,33 @@ class AgentStore:
     # --- metrics (trends) --------------------------------------------------
 
     def add_metric(self, db_name: str, tables=0, columns=0, pii_high=0, pii_medium=0,
-                   pii_low=0, pii_score=0.0, health_issues=0, health_degraded=0):
+                   pii_low=0, pii_score=0.0, health_issues=0, health_degraded=0,
+                   database_size_mb=None, disk_free_mb=None, disk_total_mb=None,
+                   max_size_mb=None, fragmentation_avg=None):
         with self._conn() as c:
             c.execute(
                 "INSERT INTO metrics(db_name, at, tables, columns, pii_high, pii_medium, "
-                "pii_low, pii_score, health_issues, health_degraded) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "pii_low, pii_score, health_issues, health_degraded, database_size_mb, "
+                "disk_free_mb, disk_total_mb, max_size_mb, fragmentation_avg) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (db_name, _now(), tables, columns, pii_high, pii_medium, pii_low,
-                 pii_score, health_issues, health_degraded))
+                 pii_score, health_issues, health_degraded, database_size_mb,
+                 disk_free_mb, disk_total_mb, max_size_mb, fragmentation_avg))
+
+    def add_table_sizes(self, db_name: str, sizes: list):
+        """`sizes` is a list of (obj, size_mb, rows) tuples for one poll."""
+        at = _now()
+        with self._conn() as c:
+            c.executemany(
+                "INSERT INTO table_sizes(db_name, at, obj, size_mb, rows) VALUES (?,?,?,?,?)",
+                [(db_name, at, obj, size_mb, rows) for obj, size_mb, rows in sizes])
+
+    def table_size_history(self, db_name: str, limit: int = 5000) -> list:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT at, obj, size_mb, rows FROM table_sizes WHERE db_name=? "
+                "ORDER BY id ASC LIMIT ?", (db_name, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def metrics_history(self, db_name: str, limit: int = 200) -> list:
         with self._conn() as c:
@@ -223,6 +268,7 @@ class AgentStore:
     def list_databases(self) -> list:
         with self._conn() as c:
             rows = c.execute(
-                "SELECT DISTINCT db_name FROM runs "
-                "UNION SELECT db_name FROM snapshots ORDER BY db_name").fetchall()
+                "SELECT db_name FROM runs "
+                "UNION SELECT db_name FROM snapshots "
+                "UNION SELECT db_name FROM metrics ORDER BY db_name").fetchall()
         return [r["db_name"] for r in rows]

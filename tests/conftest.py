@@ -124,9 +124,18 @@ class FakeCursor:
         self._last = None
 
     def execute(self, sql, *params):
+        # Capacity queries carry marker comments; route them first because they
+        # reuse tokens (dm_os_volume_stats / dm_db_index_physical_stats) that
+        # match the server/health branches below.
+        if "CAPACITY_SIZE" in sql:
+            self._last = "cap_size"
+        elif "CAPACITY_FRAG" in sql:
+            self._last = "cap_frag"
+        elif "CAPACITY_TABLES" in sql:
+            self._last = "cap_tables"
         # `plans` joins dm_exec_query_stats + dm_exec_query_plan; check the plan
         # token first so it doesn't misroute to the health "slow" branch below.
-        if "dm_exec_query_plan" in sql:
+        elif "dm_exec_query_plan" in sql:
             self._last = "mssql_plans"
         # Health DMV queries first — the dead-tables query aliases `p.rows AS
         # row_count`, which would otherwise misroute to the extractor branch.
@@ -398,6 +407,27 @@ _PLAN_XML = """<?xml version="1.0"?>
   </QueryPlan>
  </StmtSimple></Statements></Batch></BatchSequence>
 </ShowPlanXML>"""
+
+
+@pytest.fixture
+def fake_mssql_capacity_rows():
+    return {
+        "cap_size": [FakeRow(db_mb=20480.0, max_mb=51200.0,
+                             disk_free_mb=40960.0, disk_total_mb=204800.0)],
+        "cap_frag": [FakeRow(frag=23.4)],
+        "cap_tables": [
+            FakeRow(obj="Sales.Orders", size_mb=8000.0, row_count=5000000),
+            FakeRow(obj="Sales.OrderLines", size_mb=12000.0, row_count=40000000),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_pg_capacity_rows():
+    return {
+        "cap_size": [FakeRow(db_mb=5120.0)],
+        "cap_tables": [FakeRow(obj="public.film", size_mb=200.0, row_count=1000)],
+    }
 
 
 @pytest.fixture

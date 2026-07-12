@@ -31,6 +31,7 @@ from sqldoc.logs import collect_logs
 from sqldoc.intel import collect_linked_servers
 from sqldoc.backup import collect_backups, stale_databases, BACKUP_DIALECTS
 from sqldoc.ha import collect_ha, behind_replicas, HA_DIALECTS
+from sqldoc.capacity import collect_capacity_snapshot
 
 
 def pii_score(high: int, medium: int, low: int) -> float:
@@ -128,10 +129,27 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
             except Exception as e:
                 store.add_event(name, "error", f"Health check skipped: {type(e).__name__}: {e}")
 
+        # --- capacity snapshot (size / disk / fragmentation + table sizes) ---
+        cap = {}
+        try:
+            cap = collect_capacity_snapshot(adapter)
+        except Exception as e:
+            store.add_event(name, "error", f"Capacity snapshot skipped: {type(e).__name__}: {e}")
+
         store.add_metric(name, tables=len(tables),
                          columns=sum(len(t.columns) for t in tables),
                          pii_high=high, pii_medium=medium, pii_low=low, pii_score=score,
-                         health_issues=health_issues, health_degraded=health_degraded)
+                         health_issues=health_issues, health_degraded=health_degraded,
+                         database_size_mb=cap.get("database_size_mb"),
+                         disk_free_mb=cap.get("disk_free_mb"),
+                         disk_total_mb=cap.get("disk_total_mb"),
+                         max_size_mb=cap.get("max_size_mb"),
+                         fragmentation_avg=cap.get("fragmentation_avg"))
+        if cap.get("top_tables"):
+            try:
+                store.add_table_sizes(name, cap["top_tables"])
+            except Exception:
+                pass
         store.save_snapshot(name, new_snap)
 
         # --- events + notifications ---
