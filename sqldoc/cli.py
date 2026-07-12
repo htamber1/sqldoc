@@ -1071,6 +1071,7 @@ def comply(config, server, database, username, password, connection_string, dial
         + click.style(f"    GDPR: {s['gdpr']}", fg='yellow')
         + click.style(f"    PCI-DSS: {s['pci_dss']}", fg='blue')
         + f"    Lineage flows: {s['lineage_flows']}    Access alerts: {s['access_alerts']}"
+        + f"    Principals: {s['principals']} ({s['roles']} roles)"
     )
 
     click.echo("\nRendering report...")

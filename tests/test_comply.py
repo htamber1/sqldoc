@@ -5,7 +5,8 @@ from click.testing import CliRunner
 
 from sqldoc import comply, cli
 from sqldoc.comply import (build_regulation_sections, build_lineage, extract_permissions,
-                           build_access_alerts, collect_compliance)
+                           build_access_alerts, collect_compliance, classify_permission,
+                           extract_role_members, build_principal_summary, Permission)
 from sqldoc.comply_renderer import build_comply_json, render_comply_html
 from sqldoc.pii import scan_tables
 from sqldoc.extractor import Table, Column, View, StoredProcedure
@@ -104,6 +105,56 @@ def test_build_access_alerts_flags_grants_on_pii_tables():
     assert "National ID / SSN" in a.categories
 
 
+# --- enhanced access audit: levels, roles, principal summary ----------------
+
+def test_classify_permission_levels():
+    assert classify_permission("SELECT") == "read"
+    assert classify_permission("REFERENCES") == "read"
+    assert classify_permission("INSERT") == "write"
+    assert classify_permission("EXECUTE") == "write"
+    assert classify_permission("DELETE") == "write"
+    assert classify_permission("ALTER") == "admin"
+    assert classify_permission("CONTROL") == "admin"
+    # GRANT WITH GRANT OPTION escalates even a read permission to admin
+    assert classify_permission("SELECT", "GRANT_WITH_GRANT_OPTION") == "admin"
+
+
+def test_extract_role_members_sqlserver(fake_role_member_rows):
+    members = extract_role_members(FakeAdapter(FakeConnection(fake_role_member_rows)))
+    assert len(members) == 3
+    assert members[0].role == "db_datareader" and members[0].member == "app_reader"
+
+
+def test_extract_role_members_unsupported_dialect_returns_empty():
+    assert extract_role_members(FakeAdapter(FakeConnection({}), dialect="mysql")) == []
+    assert extract_role_members(FakeAdapter(FakeConnection({}), dialect="sqlite")) == []
+
+
+def test_build_principal_summary_aggregates_levels_and_pii():
+    findings = scan_tables([_table("People", [_c("NationalID")])])  # dbo.People HIGH PII
+    perms = [
+        Permission("app_reader", "SQL_USER", "SELECT", "GRANT", "dbo", "People", "USER_TABLE"),
+        Permission("app_reader", "SQL_USER", "INSERT", "GRANT", "dbo", "People", "USER_TABLE"),
+        Permission("app_reader", "SQL_USER", "SELECT", "GRANT", "dbo", "Products", "USER_TABLE"),
+        Permission("analyst", "SQL_USER", "SELECT", "DENY", "dbo", "People", "USER_TABLE"),
+    ]
+    from sqldoc.comply import RoleMember
+    roles = [RoleMember("db_datareader", "app_reader", "SQL_USER")]
+    summary = {p.principal: p for p in build_principal_summary(perms, findings, roles)}
+
+    reader = summary["app_reader"]
+    assert reader.levels == ["read", "write"]           # SELECT + INSERT, ordered
+    assert reader.object_count == 2                      # People + Products
+    assert reader.pii_object_count == 1                  # only People holds PII
+    assert reader.max_risk == "HIGH"
+
+    # analyst's grant was DENY-only -> excluded entirely
+    assert "analyst" not in summary
+    # the role itself appears with its expanded members
+    role = summary["db_datareader"]
+    assert role.is_role and role.members == ["app_reader"]
+
+
 # --- orchestration + degrade -----------------------------------------------
 
 class _BoomAdapter:
@@ -125,20 +176,29 @@ def test_collect_compliance_degrades_without_permission():
 
 # --- JSON + render ----------------------------------------------------------
 
-def test_build_and_render(fake_permission_rows, tmp_path):
+def test_build_and_render(fake_permission_rows, fake_role_member_rows, tmp_path):
     tables = [_table("People", [_c("NationalID"), _c("CardNumber")])]
     findings = scan_tables(tables)
+    # merge grants + role memberships into one fake connection
+    rows = {**fake_permission_rows, **fake_role_member_rows}
     report = collect_compliance("DB", tables, findings,
-                                adapter=FakeAdapter(FakeConnection(fake_permission_rows)))
+                                adapter=FakeAdapter(FakeConnection(rows)))
     data = build_comply_json("DB", report)
     assert data["report_type"] == "compliance"
     assert data["summary"]["pci_dss"] >= 1
     assert any(a["table"] == "People" for a in data["access_alerts"])
+    # new: unified per-principal view + expanded role membership
+    assert data["summary"]["principals"] >= 1
+    assert data["summary"]["roles"] >= 1
+    assert any(p["principal"] == "app_reader" and "read" in p["levels"]
+               for p in data["principals"])
+    assert any(rm["role"] == "db_datareader" for rm in data["role_members"])
 
     out = tmp_path / "c.html"
     render_comply_html("DB", report, str(out))
     h = out.read_text(encoding="utf-8")
     assert "HIPAA" in h and "PCI-DSS" in h and "Data lineage" in h and "Access audit" in h
+    assert "Access by principal" in h and "db_datareader" in h and "member(s)" in h
 
 
 # --- CLI --------------------------------------------------------------------

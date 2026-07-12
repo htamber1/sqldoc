@@ -134,6 +134,10 @@ class FakeCursor:
             self._last = "missing"
         elif "dm_db_index_physical_stats" in sql:
             self._last = "frag"
+        elif "database_role_members" in sql:
+            self._last = "rolemembers"
+        elif "pg_auth_members" in sql:
+            self._last = "pgrolemembers"
         elif "database_permissions" in sql:
             self._last = "perms"
         elif "table_privileges" in sql:
@@ -195,6 +199,18 @@ def fake_permission_rows():
             FakeRow(principal_name="app_reader", principal_type="SQL_USER",
                     permission_name="SELECT", state_desc="GRANT",
                     schema_name="dbo", object_name="Products", object_type="USER_TABLE"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_role_member_rows():
+    """Rows sys.database_role_members would return (SQL Server role membership)."""
+    return {
+        "rolemembers": [
+            FakeRow(role_name="db_datareader", member_name="app_reader", member_type="SQL_USER"),
+            FakeRow(role_name="db_datareader", member_name="analyst", member_type="SQL_USER"),
+            FakeRow(role_name="db_owner", member_name="dba", member_type="SQL_USER"),
         ],
     }
 

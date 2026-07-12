@@ -91,6 +91,29 @@ class Permission:
 
 
 @dataclass
+class RoleMember:
+    role: str
+    member: str
+    member_type: str = ""
+
+
+@dataclass
+class PrincipalAccess:
+    """One unified row per principal (user OR role) aggregating every grant it
+    holds across all objects in the database."""
+    principal: str
+    principal_type: str = ""
+    is_role: bool = False
+    levels: list = field(default_factory=list)        # subset of read/write/admin
+    permissions: list = field(default_factory=list)   # distinct permission names
+    object_count: int = 0                             # objects it can touch
+    pii_object_count: int = 0                         # of those, ones holding PII
+    max_risk: str = "NONE"
+    regulations: list = field(default_factory=list)
+    members: list = field(default_factory=list)       # expanded role members (names)
+
+
+@dataclass
 class AccessAlert:
     principal: str
     permission: str
@@ -108,6 +131,8 @@ class ComplianceReport:
     lineage: list = field(default_factory=list)
     permissions: list = field(default_factory=list)
     access_alerts: list = field(default_factory=list)
+    role_members: list = field(default_factory=list)   # RoleMember rows
+    principals: list = field(default_factory=list)     # PrincipalAccess rows
     errors: list = field(default_factory=list)
 
 
@@ -278,6 +303,152 @@ def build_access_alerts(permissions, findings) -> list:
     return alerts
 
 
+# --- permission level + role membership ------------------------------------
+
+LEVELS = ["read", "write", "admin"]
+_LEVEL_ORDER = {"read": 0, "write": 1, "admin": 2}
+
+# Object-level permission names, bucketed into a coarse read/write/admin level.
+_WRITE_PERMS = {"INSERT", "UPDATE", "DELETE", "EXECUTE", "TRUNCATE", "TRIGGER"}
+# Admin/DDL-ish rights that let a principal reshape or fully own an object.
+_ADMIN_PERMS = {"CONTROL", "ALTER", "TAKE OWNERSHIP", "OWNERSHIP", "ALL"}
+
+
+def classify_permission(permission, state="") -> str:
+    """Bucket an object-level permission into read / write / admin.
+
+    GRANT WITH GRANT OPTION is treated as admin (the principal can re-grant).
+    Anything not clearly write or admin (SELECT, REFERENCES, VIEW DEFINITION, …)
+    counts as read.
+    """
+    p = (permission or "").strip().upper()
+    if state and "WITH_GRANT" in state.upper():
+        return "admin"
+    if p in _ADMIN_PERMS:
+        return "admin"
+    if p in _WRITE_PERMS:
+        return "write"
+    return "read"
+
+
+# Role/group membership. SQL Server exposes sys.database_role_members;
+# PostgreSQL exposes pg_auth_members. MySQL role edges are version-specific and
+# not read here (its access audit is table-grant only).
+_SQLSERVER_ROLE_MEMBERS = """
+    SELECT r.name AS role_name, m.name AS member_name, m.type_desc AS member_type
+    FROM sys.database_role_members rm
+    INNER JOIN sys.database_principals r ON rm.role_principal_id = r.principal_id
+    INNER JOIN sys.database_principals m ON rm.member_principal_id = m.principal_id
+    ORDER BY r.name, m.name
+"""
+
+_PG_ROLE_MEMBERS = """
+    SELECT r.rolname AS role_name, m.rolname AS member_name, 'ROLE' AS member_type
+    FROM pg_auth_members am
+    INNER JOIN pg_roles r ON am.roleid = r.oid
+    INNER JOIN pg_roles m ON am.member = m.oid
+    ORDER BY r.rolname, m.rolname
+"""
+
+
+def extract_role_members(adapter) -> list:
+    """Database role/group memberships for the adapter's dialect.
+
+    SQL Server and PostgreSQL are supported; other dialects return []. Read-only
+    catalog access — no row data.
+    """
+    dialect = getattr(adapter, "dialect", "sqlserver")
+    if dialect not in ("sqlserver", "azuresql", "postgres"):
+        return []
+    conn = adapter.connect()
+    cursor = adapter.cursor(conn)
+    try:
+        sql = _SQLSERVER_ROLE_MEMBERS if dialect in ("sqlserver", "azuresql") else _PG_ROLE_MEMBERS
+        cursor.execute(sql)
+        return [
+            RoleMember(role=cell(r, "role_name"), member=cell(r, "member_name"),
+                       member_type=cell(r, "member_type"))
+            for r in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def build_principal_summary(permissions, findings, role_members=None) -> list:
+    """Collapse the object-level grants into one unified row per principal.
+
+    Each principal gets its read/write/admin levels, distinct permission names,
+    the count of objects it can touch (and how many hold PII, with the worst
+    risk + regulations across them), and — if it is a database role — the
+    expanded list of its members. DENY grants are excluded.
+    """
+    role_members = role_members or []
+    members_by_role = {}
+    for rm in role_members:
+        members_by_role.setdefault(rm.role, []).append(rm.member)
+    role_names = set(members_by_role)
+
+    # PII risk per table, mirroring build_access_alerts.
+    by_table = {}
+    for f in findings:
+        info = by_table.setdefault((f.schema, f.table),
+                                   {"risk": "LOW", "regs": set()})
+        if RISK_ORDER.get(f.risk, 0) > RISK_ORDER.get(info["risk"], 0):
+            info["risk"] = f.risk
+        info["regs"].update(f.regulations)
+
+    aggs = {}
+
+    def _agg(name, ptype=""):
+        a = aggs.get(name)
+        if a is None:
+            a = {"principal": name, "type": ptype, "levels": set(),
+                 "perms": set(), "objects": set(), "pii_objects": set(),
+                 "risk": "NONE", "regs": set()}
+            aggs[name] = a
+        elif ptype and not a["type"]:
+            a["type"] = ptype
+        return a
+
+    for p in permissions:
+        if p.state.startswith("DENY"):
+            continue
+        a = _agg(p.principal, p.principal_type)
+        a["levels"].add(classify_permission(p.permission, p.state))
+        a["perms"].add(p.permission)
+        a["objects"].add((p.schema, p.object))
+        info = by_table.get((p.schema, p.object))
+        if info:
+            a["pii_objects"].add((p.schema, p.object))
+            if RISK_ORDER.get(info["risk"], 0) > RISK_ORDER.get(a["risk"], 0):
+                a["risk"] = info["risk"]
+            a["regs"].update(info["regs"])
+
+    # Roles with members but no direct grants still deserve a row (so their
+    # membership is visible in the expansion).
+    for role in role_names:
+        _agg(role, "ROLE")
+
+    summary = []
+    for name, a in aggs.items():
+        summary.append(PrincipalAccess(
+            principal=name,
+            principal_type=a["type"],
+            is_role=name in role_names,
+            levels=sorted(a["levels"], key=lambda l: _LEVEL_ORDER[l]),
+            permissions=sorted(a["perms"]),
+            object_count=len(a["objects"]),
+            pii_object_count=len(a["pii_objects"]),
+            max_risk=a["risk"],
+            regulations=sorted(a["regs"]),
+            members=sorted(members_by_role.get(name, [])),
+        ))
+    # Riskiest, widest-reaching principals first.
+    summary.sort(key=lambda pa: (-RISK_ORDER.get(pa.max_risk, 0),
+                                 -pa.pii_object_count, -pa.object_count, pa.principal))
+    return summary
+
+
 # --- orchestration ---------------------------------------------------------
 
 def collect_compliance(database, tables, findings, views=None, procedures=None,
@@ -291,7 +462,14 @@ def collect_compliance(database, tables, findings, views=None, procedures=None,
         except Exception as e:
             report.errors.append(("Access audit (object grants)",
                                   f"{type(e).__name__}: {e}"))
+        try:
+            report.role_members = extract_role_members(adapter)
+        except Exception as e:
+            report.errors.append(("Role membership expansion",
+                                  f"{type(e).__name__}: {e}"))
     report.access_alerts = build_access_alerts(report.permissions, findings)
+    report.principals = build_principal_summary(
+        report.permissions, findings, report.role_members)
     return report
 
 
@@ -304,5 +482,8 @@ def summarize(report: ComplianceReport) -> dict:
         "lineage_flows": len(report.lineage),
         "access_alerts": len(report.access_alerts),
         "high_risk_grants": sum(1 for a in report.access_alerts if a.max_risk == "HIGH"),
+        "principals": len(report.principals),
+        "roles": sum(1 for p in report.principals if p.is_role),
+        "principals_with_pii": sum(1 for p in report.principals if p.pii_object_count),
         "degraded": len(report.errors),
     }

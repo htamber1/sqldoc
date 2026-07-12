@@ -40,7 +40,7 @@ COMPLY_TEMPLATE = """
         .stat-card .number { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em; }
         .stat-card .label { color: var(--muted); font-size: 0.74rem; margin-top: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
         .c-red .number { color: var(--red); } .c-amber .number { color: var(--amber); }
-        .c-blue .number { color: var(--blue); } .c-green .number { color: var(--green); }
+        .c-blue .number { color: var(--blue); } .c-green .number { color: var(--green); } .c-violet .number { color: var(--violet); }
         h2.section { font-size: 1.15rem; font-weight: 700; color: var(--text-strong); margin: 30px 0 12px; display: flex; align-items: center; gap: 10px; }
         h2.section .n { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
         .reg { background: var(--card); border: 1px solid var(--border); border-radius: 14px; margin-bottom: 18px; overflow: hidden; }
@@ -76,6 +76,18 @@ COMPLY_TEMPLATE = """
         .risk.HIGH { background: var(--high-bg); color: var(--red); border: 1px solid var(--high-bd); }
         .risk.MEDIUM { background: var(--med-bg); color: var(--amber); border: 1px solid var(--med-bd); }
         .risk.LOW { background: var(--low-bg); color: var(--muted); border: 1px solid var(--low-bd); }
+        .level { display: inline-block; padding: 2px 9px; border-radius: 5px; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+        .level.read { background: rgba(96,165,250,0.14); color: var(--blue); border: 1px solid rgba(96,165,250,0.3); }
+        .level.write { background: var(--med-bg); color: var(--amber); border: 1px solid var(--med-bd); }
+        .level.admin { background: var(--high-bg); color: var(--red); border: 1px solid var(--high-bd); }
+        .ptype { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 0.66rem; font-weight: 700; background: rgba(192,132,252,0.14); color: var(--violet); border: 1px solid rgba(192,132,252,0.3); margin-left: 6px; }
+        details.roleexp { margin-top: 6px; }
+        details.roleexp > summary { cursor: pointer; color: var(--blue); font-size: 0.78rem; list-style: none; user-select: none; }
+        details.roleexp > summary::-webkit-details-marker { display: none; }
+        details.roleexp > summary::before { content: "\\25b8 "; color: var(--muted); }
+        details.roleexp[open] > summary::before { content: "\\25be "; }
+        details.roleexp .members { margin-top: 6px; padding-left: 14px; }
+        details.roleexp .members .m { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 0.75rem; font-family: 'Consolas', monospace; margin: 2px 4px 2px 0; background: rgba(255,255,255,0.05); border: 1px solid var(--border); }
         .warn { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.3); border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; color: var(--amber); font-size: 0.83rem; }
         .empty { text-align: center; color: var(--faint); padding: 26px; font-size: 0.85rem; }
         .footer { max-width: 1200px; margin: 30px auto 0; padding: 20px; color: var(--faint); font-size: 0.8rem; line-height: 1.6; border-top: 1px solid var(--border); }
@@ -93,6 +105,7 @@ COMPLY_TEMPLATE = """
             <div class="stat-card c-amber"><div class="number">{{ summary.gdpr }}</div><div class="label">GDPR columns</div></div>
             <div class="stat-card c-blue"><div class="number">{{ summary.pci_dss }}</div><div class="label">PCI-DSS columns</div></div>
             <div class="stat-card c-green"><div class="number">{{ summary.access_alerts }}</div><div class="label">Access alerts</div></div>
+            <div class="stat-card c-violet"><div class="number">{{ summary.principals }}</div><div class="label">Principals ({{ summary.roles }} roles)</div></div>
         </div>
 
         <h2 class="section">Regulatory scope <span class="n">what each regime covers + required controls</span></h2>
@@ -136,6 +149,36 @@ COMPLY_TEMPLATE = """
             {% if not report.lineage %}<div class="empty">No data flows detected in view/procedure definitions.</div>{% endif %}
         </div>
 
+        <h2 class="section">Access by principal <span class="n">unified view per user/role across all objects</span></h2>
+        {% if report.role_members %}
+        <p style="color: var(--muted); font-size: 0.82rem; margin-bottom: 12px;">{{ report.role_members|length }} role membership(s) resolved &mdash; expand a role to see its members.</p>
+        {% endif %}
+        <div class="panel">
+            <table>
+                <thead><tr><th>Principal</th><th>Access level</th><th>Objects</th><th>PII objects</th><th>Max risk</th><th>Regulations</th></tr></thead>
+                <tbody>
+                    {% for pa in report.principals %}
+                    <tr>
+                        <td class="loc">{{ pa.principal }}{% if pa.is_role %}<span class="ptype">ROLE</span>{% elif pa.principal_type %}<span class="ptype">{{ pa.principal_type }}</span>{% endif %}
+                            {% if pa.is_role %}
+                            <details class="roleexp">
+                                <summary>{{ pa.members|length }} member(s)</summary>
+                                <div class="members">{% for m in pa.members %}<span class="m">{{ m }}</span>{% endfor %}{% if not pa.members %}<span class="muted">No members.</span>{% endif %}</div>
+                            </details>
+                            {% endif %}
+                        </td>
+                        <td>{% for lv in pa.levels %}<span class="level {{ lv }}">{{ lv }}</span>{% endfor %}{% if not pa.levels %}<span class="muted">&mdash;</span>{% endif %}</td>
+                        <td>{{ pa.object_count }}</td>
+                        <td>{% if pa.pii_object_count %}<span class="risk {{ pa.max_risk }}">{{ pa.pii_object_count }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                        <td>{% if pa.pii_object_count %}<span class="risk {{ pa.max_risk }}">{{ pa.max_risk }}</span>{% else %}<span class="muted">&mdash;</span>{% endif %}</td>
+                        <td class="muted">{{ pa.regulations|join(', ') if pa.regulations else '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if not report.principals %}<div class="empty">No principals with object grants{{ ' (or permissions could not be read)' if report.errors else '' }}.</div>{% endif %}
+        </div>
+
         <h2 class="section">Access audit <span class="n">grants on tables holding regulated data</span></h2>
         {% if report.errors %}
         <div class="warn">
@@ -165,7 +208,10 @@ COMPLY_TEMPLATE = """
         <strong>Scope &amp; method.</strong> Regulated columns come from the name/type PII scanner — heuristic, not a legal determination.
         Control lists are representative starting points, not exhaustive compliance requirements. Lineage is inferred by matching table
         names in view/procedure SQL (dynamic SQL can hide flows). Access alerts are object-level GRANTs from
-        <code>sys.database_permissions</code>; role membership and server-level rights are not expanded here. No table row data was read.
+        <code>sys.database_permissions</code> (SQL Server) / <code>information_schema.table_privileges</code> (PostgreSQL/MySQL). The
+        per-principal view aggregates every grant a user/role holds and buckets it into read/write/admin; database role membership is
+        expanded from <code>sys.database_role_members</code> (SQL Server) / <code>pg_auth_members</code> (PostgreSQL). Server-level rights
+        are not resolved here. No table row data was read.
     </div>
 </body>
 </html>
@@ -194,6 +240,8 @@ def build_comply_json(database: str, report) -> dict:
         "lineage": [asdict(fl) for fl in report.lineage],
         "permissions": [asdict(p) for p in report.permissions],
         "access_alerts": [asdict(a) for a in report.access_alerts],
+        "role_members": [asdict(rm) for rm in report.role_members],
+        "principals": [asdict(pa) for pa in report.principals],
         "errors": [{"section": s, "message": m} for s, m in report.errors],
     }
 
