@@ -85,6 +85,7 @@ SERVER_TEMPLATE = """
             <div class="stat-card c-green"><div class="number">{{ summary.sessions }}</div><div class="label">Sessions</div></div>
             <div class="stat-card {{ 'c-red' if summary.blocking_chains else 'c-green' }}"><div class="number">{{ summary.blocking_chains }}</div><div class="label">Blocking chains</div></div>
             <div class="stat-card {{ 'c-red' if summary.low_disk_volumes else 'c-blue' }}"><div class="number">{{ summary.low_disk_volumes }}</div><div class="label">Low-disk volumes</div></div>
+            {% if report.agent_jobs %}<div class="stat-card {{ 'c-red' if summary.failed_jobs_24h else 'c-green' }}"><div class="number">{{ summary.failed_jobs_24h }}</div><div class="label">Failed jobs (24h)</div></div>{% endif %}
         </div>
 
         {% if report.errors %}
@@ -213,6 +214,35 @@ SERVER_TEMPLATE = """
                 </div>
             </div>
         </div>
+
+        {% if report.agent_jobs %}
+        <h2 class="section">SQL Agent jobs <span class="n">last run status, step failures, schedule</span></h2>
+        <div class="panel">
+            <table>
+                <thead><tr><th>Job</th><th>Last status</th><th>Last run</th><th>Duration</th><th>Avg</th><th>Next run</th><th>Flags</th></tr></thead>
+                <tbody>
+                    {% for j in report.agent_jobs %}
+                    <tr{% if j.failed_last_24h %} style="background: rgba(220,38,38,0.09);"{% elif not j.enabled %} style="opacity: 0.6;"{% endif %}>
+                        <td class="mono">{{ j.name }}</td>
+                        <td><span class="pill {{ 'bad' if j.last_run_status == 'Failed' else ('ok' if j.last_run_status == 'Succeeded' else 'warn') }}">{{ j.last_run_status }}</span></td>
+                        <td class="mono">{{ j.last_run_time or '—' }}</td>
+                        <td class="num">{{ j.duration_text }}</td>
+                        <td class="num">{{ j.avg_duration_seconds }}s</td>
+                        <td class="mono">{{ j.next_run_time or '—' }}</td>
+                        <td>
+                            {% if not j.enabled %}<span class="pill warn">disabled</span>{% endif %}
+                            {% if j.is_long_running %}<span class="pill warn">long-running</span>{% endif %}
+                            {% if j.failed_last_24h %}<span class="pill bad">failed 24h</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% for f in j.step_failures %}
+                    <tr><td colspan="7" class="sql" style="color: var(--red); padding-left: 28px;">&rarr; step {{ f.step_id }} ({{ f.step_name }}): {{ f.message }}</td></tr>
+                    {% endfor %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
     </div>
     <div class="footer">
         <strong>About these metrics.</strong> Figures come from server-scoped DMVs

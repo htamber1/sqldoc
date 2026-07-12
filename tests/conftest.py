@@ -150,6 +150,10 @@ class FakeCursor:
             self._last = "srv_info"
         elif "dm_exec_sessions" in sql:
             self._last = "srv_sess"
+        elif "sysjobschedules" in sql:
+            self._last = "agentjobs"
+        elif "sysjobhistory" in sql:
+            self._last = "agentjobsteps"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -331,6 +335,24 @@ def fake_server_rows():
             FakeRow(login_name="app", database_name="Sales", status="running"),
             FakeRow(login_name="app", database_name="Sales", status="sleeping"),
             FakeRow(login_name="rep", database_name="HR", status="running"),
+        ],
+        "agentjobs": [
+            FakeRow(job_id="J1", job_name="Nightly ETL", enabled=1, owner="sa",
+                    category="Data load", last_run_status=0,               # Failed
+                    last_run_time="2026-07-11 02:00:00", run_duration_seconds=3600,
+                    avg_duration_seconds=1200, next_run_datetime="2026-07-12 02:00:00"),
+            FakeRow(job_id="J2", job_name="Backup Full", enabled=1, owner="sa",
+                    category="Backup", last_run_status=1,                  # Succeeded
+                    last_run_time="2026-07-11 01:00:00", run_duration_seconds=300,
+                    avg_duration_seconds=300, next_run_datetime="2026-07-12 01:00:00"),
+            FakeRow(job_id="J3", job_name="Old Cleanup", enabled=0, owner="sa",
+                    category="Maintenance", last_run_status=1,             # Succeeded, disabled
+                    last_run_time="2026-06-01 03:00:00", run_duration_seconds=60,
+                    avg_duration_seconds=60, next_run_datetime=None),
+        ],
+        "agentjobsteps": [
+            FakeRow(job_name="Nightly ETL", step_id=2, step_name="Load facts",
+                    message="Cannot insert duplicate key row in object 'dbo.Fact'."),
         ],
     }
 

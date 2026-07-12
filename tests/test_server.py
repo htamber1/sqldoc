@@ -95,6 +95,66 @@ def test_render_server_html(report, tmp_path):
     assert "Blocking chains" in h and "Disk volumes" in h and "Memory" in h
 
 
+# --- SQL Agent job monitoring -----------------------------------------------
+
+@pytest.fixture
+def report_with_jobs(fake_server_rows):
+    return server.collect_server(FakeAdapter(FakeConnection(fake_server_rows)),
+                                 top=10, include_jobs=True)
+
+
+def test_agent_jobs_parsed(report_with_jobs):
+    jobs = {j.name: j for j in report_with_jobs.agent_jobs}
+    assert set(jobs) == {"Nightly ETL", "Backup Full", "Old Cleanup"}
+    assert jobs["Nightly ETL"].last_run_status == "Failed"
+    assert jobs["Backup Full"].last_run_status == "Succeeded"
+    assert jobs["Old Cleanup"].enabled is False
+
+
+def test_agent_job_failure_and_steps(report_with_jobs):
+    etl = next(j for j in report_with_jobs.agent_jobs if j.name == "Nightly ETL")
+    assert etl.failed_last_24h
+    assert etl.step_failures and etl.step_failures[0].step_id == 2
+    assert "duplicate key" in etl.step_failures[0].message
+
+
+def test_agent_job_long_running(report_with_jobs):
+    etl = next(j for j in report_with_jobs.agent_jobs if j.name == "Nightly ETL")
+    assert etl.is_long_running                       # 3600s vs 1200s avg
+    backup = next(j for j in report_with_jobs.agent_jobs if j.name == "Backup Full")
+    assert not backup.is_long_running                # 300s == avg
+
+
+def test_agent_jobs_summary(report_with_jobs):
+    s = server.summarize(report_with_jobs)
+    assert s["jobs"] == 3
+    assert s["failed_jobs_24h"] == 1
+    assert s["disabled_jobs"] == 1
+    assert s["long_running_jobs"] == 1
+
+
+def test_render_jobs_section(report_with_jobs, tmp_path):
+    out = tmp_path / "server.html"
+    render_server_html("PRODSQL01", report_with_jobs, str(out))
+    h = out.read_text(encoding="utf-8")
+    assert "SQL Agent jobs" in h and "Nightly ETL" in h
+    assert "failed 24h" in h and "long-running" in h and "disabled" in h
+    assert "Load facts" in h                         # step failure message shown
+
+
+def test_server_cli_includes_jobs(monkeypatch, fake_server_rows, tmp_path):
+    monkeypatch.setattr(SqlServerAdapter, "_default_connect",
+                        staticmethod(lambda cs: FakeConnection(fake_server_rows)))
+    out = tmp_path / "server.html"
+    res = CliRunner().invoke(cli.cli, [
+        "server", "--server", "h", "--username", "u", "--password", "p",
+        "--output", str(out),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "Agent jobs: 3" in res.output
+    assert "Failed (24h): 1" in res.output
+
+
 def test_server_cli(monkeypatch, fake_server_rows, tmp_path):
     monkeypatch.setattr(SqlServerAdapter, "_default_connect",
                         staticmethod(lambda cs: FakeConnection(fake_server_rows)))

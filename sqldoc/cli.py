@@ -1373,17 +1373,21 @@ def dbt(config, project_dir, server, database, username, password, connection_st
 @click.option('--output', default='server-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write the server report as machine-readable JSON to this path')
 @click.option('--top', default=10, type=click.IntRange(1, 200), help='How many top running queries to show (default: 10)')
+@click.option('--no-jobs', 'no_jobs', is_flag=True, default=False,
+              help='Skip SQL Server Agent job monitoring (msdb)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 def server(config, server, database, username, password, connection_string, dialect,
-           output, json_out, top, verify_offline):
-    """Instance-level SQL Server health: CPU, memory, disk, connections, blocking.
+           output, json_out, top, no_jobs, verify_offline):
+    """Instance-level SQL Server health + SQL Agent jobs.
 
     Connects at the SQL Server *instance* level (not just one database) and
     reports CPU utilization, memory breakdown (buffer pool / plan cache /
     stolen), disk volume free space + I/O latency, uptime, active connections
-    and blocking chains, and the top queries running right now. Reads only
-    server-scoped DMVs — never table row data. Needs VIEW SERVER STATE.
+    and blocking chains, the top queries running right now, and SQL Server Agent
+    job status (last run, failures in the last 24h, long runners, disabled jobs,
+    next scheduled run). Reads only server-scoped DMVs + msdb job history —
+    never table row data. Needs VIEW SERVER STATE (and msdb access for jobs).
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
@@ -1396,6 +1400,7 @@ def server(config, server, database, username, password, connection_string, dial
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
     top = resolve('top', top)
+    no_jobs = resolve('no_jobs', no_jobs)
 
     label = server_name or database
     click.echo(f"\nsqldoc v{__version__}  -  Server health (instance-level)")
@@ -1406,7 +1411,7 @@ def server(config, server, database, username, password, connection_string, dial
 
     click.echo(f"Connecting to {adapter.display_name} and reading server DMVs...")
     try:
-        report = collect_server(adapter, top=int(top), include_jobs=False)
+        report = collect_server(adapter, top=int(top), include_jobs=not no_jobs)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -1423,6 +1428,12 @@ def server(config, server, database, username, password, connection_string, dial
         + click.style(f"    Blocking: {s['blocking_chains']}", fg='red' if s['blocking_chains'] else 'green')
         + click.style(f"    Low-disk vols: {s['low_disk_volumes']}", fg='red' if s['low_disk_volumes'] else 'green')
     )
+    if not no_jobs:
+        click.echo(
+            click.style(f"Agent jobs: {s['jobs']}", fg='cyan')
+            + click.style(f"    Failed (24h): {s['failed_jobs_24h']}", fg='red' if s['failed_jobs_24h'] else 'green')
+            + f"    Long-running: {s['long_running_jobs']}    Disabled: {s['disabled_jobs']}"
+        )
 
     click.echo("\nRendering report...")
     render_server_html(label, report, output)
