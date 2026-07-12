@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS audit (
     options  TEXT,
     result   TEXT
 );
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    at_epoch    REAL,                -- epoch mirror of `at`, for dedup windows
+    db_name     TEXT,
+    type        TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    detail      TEXT,
+    status      TEXT NOT NULL,       -- fired | suppressed_maintenance | suppressed_dedup | escalated | resolved
+    channels    TEXT,                -- comma-separated channels that accepted
+    dedup_key   TEXT,
+    escalate_at REAL,                -- epoch seconds; when to escalate if still open
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_alerts_at ON alerts(at);
+CREATE INDEX IF NOT EXISTS ix_alerts_dedup ON alerts(dedup_key, at_epoch);
 CREATE INDEX IF NOT EXISTS ix_audit_at ON audit(at);
 CREATE INDEX IF NOT EXISTS ix_events_db_at ON events(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_metrics_db_at ON metrics(db_name, at);
@@ -254,6 +271,61 @@ class AgentStore:
                 "SELECT * FROM metrics WHERE db_name=? AND at >= ? ORDER BY id ASC",
                 (db_name, since_iso)).fetchall()
         return [dict(r) for r in rows]
+
+    # --- enterprise alert history + escalation -----------------------------
+
+    def add_alert(self, db_name, type, severity, summary, detail=None,
+                  status="fired", channels="", dedup_key=None, escalate_at=None,
+                  at_epoch=None) -> int:
+        if at_epoch is None:
+            at_epoch = datetime.now(timezone.utc).timestamp()
+        with self._conn() as c:
+            cur = c.execute(
+                "INSERT INTO alerts(at, at_epoch, db_name, type, severity, summary, detail, "
+                "status, channels, dedup_key, escalate_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (_now(), at_epoch, db_name, type, severity, summary,
+                 json.dumps(detail) if isinstance(detail, (dict, list)) else detail,
+                 status, channels, dedup_key, escalate_at))
+            return cur.lastrowid
+
+    def recent_alert_since(self, dedup_key: str, since_epoch: float):
+        """Most recent *fired/escalated* alert with this dedup key whose epoch is
+        at/after the cutoff (for deduplication)."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM alerts WHERE dedup_key=? AND at_epoch >= ? "
+                "AND status IN ('fired','escalated') ORDER BY id DESC LIMIT 1",
+                (dedup_key, since_epoch)).fetchone()
+        return dict(row) if row else None
+
+    def alerts_since_days(self, days: int = 30, limit: int = 500) -> list:
+        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).replace(
+            microsecond=0).isoformat()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM alerts WHERE at >= ? ORDER BY id DESC LIMIT ?",
+                (cutoff_iso, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def pending_escalations(self, now_epoch: float) -> list:
+        """Fired alerts whose escalate_at has elapsed and aren't yet escalated/resolved."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM alerts WHERE status='fired' AND escalate_at IS NOT NULL "
+                "AND escalate_at <= ? ORDER BY id ASC", (now_epoch,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_alert(self, alert_id: int, status: str, clear_escalation: bool = True):
+        with self._conn() as c:
+            if status == "resolved":
+                c.execute("UPDATE alerts SET status=?, resolved_at=?, escalate_at=NULL "
+                          "WHERE id=?", (status, _now(), alert_id))
+            elif clear_escalation:
+                c.execute("UPDATE alerts SET status=?, escalate_at=NULL WHERE id=?",
+                          (status, alert_id))
+            else:
+                c.execute("UPDATE alerts SET status=? WHERE id=?", (status, alert_id))
 
     # --- key/value meta (agent bookkeeping) --------------------------------
 

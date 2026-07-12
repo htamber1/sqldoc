@@ -48,6 +48,27 @@ def test_render_overview_empty(tmp_path):
     assert "No databases monitored yet" in render_overview(empty)
 
 
+def test_render_alerts_history(store):
+    store.add_alert("prod", "disk_low", "critical", "prod: low disk", "5% free",
+                    status="fired", channels="pagerduty,teams")
+    store.add_alert("prod", "schema_change", "medium", "prod: changed", "x",
+                    status="suppressed_dedup")
+    h = dashboard.render_alerts(store)
+    assert "Alert history" in h
+    assert "critical" in h and "disk_low" in h
+    assert "pagerduty,teams" in h
+    assert "suppressed (duplicate)" in h
+
+
+def test_render_alerts_empty(tmp_path):
+    empty = AgentStore(str(tmp_path / "e.db"))
+    assert "No alerts recorded yet" in dashboard.render_alerts(empty)
+
+
+def test_overview_links_alerts(store):
+    assert "/alerts" in render_overview(store)
+
+
 def test_render_db_page(store):
     h = render_db_page(store, "prod")
     assert "Change timeline" in h and "schema_change" in h and "new_pii" in h

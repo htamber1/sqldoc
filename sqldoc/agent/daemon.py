@@ -82,6 +82,23 @@ def integration_push_loop(store, agent_config, stop_event, log, notifier=None,
             break
 
 
+def escalation_loop(store, notifier, stop_event, log, check_seconds=60):
+    """Every check_seconds, escalate any open critical/high alert past its
+    escalate_at. Runs only when the notifier is an AlertManager with escalation
+    configured."""
+    run = getattr(notifier, "run_escalations", None)
+    a = getattr(notifier, "a", None)
+    if run is None or a is None or a.escalation_after_minutes <= 0:
+        return
+    while not stop_event.is_set():
+        try:
+            run(log=log)
+        except Exception as e:
+            log(f"escalation scheduler crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(check_seconds):
+            break
+
+
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
                host="127.0.0.1", poll_fn=None, authn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
@@ -123,6 +140,17 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         log(f"integration auto-push scheduled every {agent_config.push_interval_hours}h "
             f"to: {', '.join(agent_config.integrations)}")
 
+    escalation_thread = None
+    a = getattr(notifier, "a", None)
+    if a is not None and getattr(a, "escalation_after_minutes", 0) > 0:
+        escalation_thread = threading.Thread(
+            target=escalation_loop, args=(store, notifier, stop_event, log),
+            name="escalation", daemon=True)
+        escalation_thread.start()
+        log(f"alert escalation active: unacked {'/'.join(a.escalation_severities)} "
+            f"alerts escalate after {a.escalation_after_minutes}m to "
+            f"{', '.join(a.escalation_channels) or 'no channels'}")
+
     stop_event.wait()
     log("stopping agent...")
     server.shutdown()
@@ -132,6 +160,8 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         weekly_thread.join(timeout=5)
     if push_thread is not None:
         push_thread.join(timeout=5)
+    if escalation_thread is not None:
+        escalation_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port

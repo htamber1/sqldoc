@@ -121,6 +121,9 @@ class AgentConfig:
     # confluence, notion, ...) to push docs to on a fixed cadence.
     integrations: list = field(default_factory=list)
     push_interval_hours: float = 24.0
+    # Enterprise alert management (parsed AlertingConfig, or None). Read from the
+    # top-level `alerting:` section, outside the `agent:` block.
+    alerting: object = None
     # The full .sqldoc.yml mapping, so the push loop can read the top-level
     # integration config sections (they live outside the `agent:` block).
     raw_config: dict = None
@@ -196,6 +199,9 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     if push_interval_hours < 1:
         raise ValueError("agent.push_interval_hours must be at least 1.")
 
+    from sqldoc.agent.alerting import parse_alerting
+    alerting = parse_alerting(cfg)
+
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
         raise ValueError("agent.databases must be a non-empty list of database entries.")
@@ -239,5 +245,5 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
         nl_alerts=nl_alerts, weekly_report=weekly_report,
         integrations=list(raw_integrations), push_interval_hours=push_interval_hours,
-        raw_config=cfg,
+        alerting=alerting, raw_config=cfg,
     )

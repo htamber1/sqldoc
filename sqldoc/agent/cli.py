@@ -150,10 +150,19 @@ def _run(config):
     _run_foreground(config)
 
 
+def _make_notifier(ac, store):
+    """An AlertManager (enterprise routing/dedup/escalation/incident channels)
+    when the config has an `alerting:` section; otherwise a plain Notifier."""
+    if getattr(ac, "alerting", None):
+        from sqldoc.agent.alerting import AlertManager
+        return AlertManager(ac.notify, store, ac.alerting)
+    return Notifier(ac.notify)
+
+
 def _run_foreground(config):
     ac = _parse(config)
     store = AgentStore(db_path())
-    notifier = Notifier(ac.notify)
+    notifier = _make_notifier(ac, store)
     # Optional SSO gate for the dashboard, from the top-level `auth:` section.
     from sqldoc.authn import build_authenticator
     try:

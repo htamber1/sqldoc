@@ -89,7 +89,8 @@ def render_overview(store) -> str:
             f"<div class='metric'><div class='n'>{m.get('health_issues',0)}</div><div class='l'>health issues</div></div>"
             f"</div><div class='muted' style='font-size:12px'>last run: "
             f"{html.escape(str(run.get('finished_at') or run.get('started_at') or '—'))} · {status_html}</div></div>")
-    return _page("sqldoc agent", f"<div class='grid'>{''.join(cards)}</div>")
+    nav = "<p><a href='/alerts'>&#128276; Alert history (30 days)</a></p>"
+    return _page("sqldoc agent", nav + f"<div class='grid'>{''.join(cards)}</div>")
 
 
 def render_db_page(store, name) -> str:
@@ -132,6 +133,56 @@ def render_db_page(store, name) -> str:
               f"<div class='metric'><div class='n'>{m.get('health_issues',0)}</div><div class='l'>health issues</div></div>"
               f"</div>{doc_link}</div>")
     return _page(f"{name} · sqldoc agent", header + trends + timeline)
+
+
+_ALERT_STATUS_LABEL = {
+    "fired": ("sent", "err"),
+    "escalated": ("escalated", "err"),
+    "suppressed_maintenance": ("suppressed (maintenance)", "muted"),
+    "suppressed_dedup": ("suppressed (duplicate)", "muted"),
+    "resolved": ("resolved", "ok"),
+}
+
+
+def render_alerts(store, days: int = 30) -> str:
+    """30-day alert history: severity, status (sent / suppressed / escalated),
+    and the channels that accepted each alert."""
+    try:
+        alerts = store.alerts_since_days(days)
+    except Exception:
+        alerts = []
+    header = ("<p><a href='/'>&larr; all databases</a></p>"
+              f"<div class='card'><h2>Alert history &middot; last {days} days</h2>")
+    if not alerts:
+        return _page("Alerts · sqldoc agent",
+                     header + "<p class='muted'>No alerts recorded yet.</p></div>")
+    rows = []
+    for a in alerts:
+        label, cls = _ALERT_STATUS_LABEL.get(a.get("status", ""), (a.get("status", ""), "muted"))
+        chans = html.escape(a.get("channels") or "")
+        rows.append(
+            "<li>"
+            f"<span class='t'>{html.escape(str(a.get('at')))}</span>"
+            f"<span class='tag'>{html.escape(str(a.get('severity')))}</span>"
+            f"<span class='tag {html.escape(str(a.get('type')))}'>{html.escape(str(a.get('type')))}</span>"
+            f"<span>{html.escape(str(a.get('summary') or ''))}</span> "
+            f"<span class='{cls}'>[{html.escape(label)}]</span>"
+            + (f" <span class='muted' style='font-size:11px'>&rarr; {chans}</span>" if chans else "")
+            + "</li>")
+    counts = {}
+    for a in alerts:
+        counts[a.get("status")] = counts.get(a.get("status"), 0) + 1
+    summary = " &middot; ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+    body = (header + f"<p class='muted' style='font-size:12px'>{html.escape(summary)}</p>"
+            f"<ul class='timeline'>{''.join(rows)}</ul></div>")
+    return _page("Alerts · sqldoc agent", body)
+
+
+def alerts_json(store, days: int = 30) -> dict:
+    try:
+        return {"alerts": store.alerts_since_days(days)}
+    except Exception:
+        return {"alerts": []}
 
 
 def overview_json(store) -> dict:
@@ -187,6 +238,11 @@ def _make_handler(store, authn=None):
                     self._send(render_overview(store))
                 elif path == "/api/overview":
                     self._send(json.dumps(overview_json(store), indent=2),
+                               "application/json; charset=utf-8")
+                elif path == "/alerts":
+                    self._send(render_alerts(store))
+                elif path == "/api/alerts":
+                    self._send(json.dumps(alerts_json(store), indent=2),
                                "application/json; charset=utf-8")
                 elif path.startswith("/db/") and path.endswith("/doc"):
                     name = path[len("/db/"):-len("/doc")]

@@ -83,7 +83,7 @@ CONFIG_KEYS = {
     # Integration suite: each connector owns a top-level config section.
     'sharepoint', 'confluence', 'notion', 'gdrive', 'box', 'jira',
     'servicenow', 'azuredevops', 'powerbi', 'webhook', 'webex',
-    'test', 'push', 'kinds',
+    'test', 'push', 'kinds', 'alerting',
 }
 
 
