@@ -55,6 +55,7 @@ from sqldoc.capacity_renderer import render_capacity_html, build_capacity_json
 from sqldoc.baseline import (capture_baseline, compare_baseline, to_dict as baseline_to_dict,
                              from_dict as baseline_from_dict, summarize as baseline_summarize)
 from sqldoc.baseline_renderer import render_baseline_html, build_baseline_json
+from sqldoc.api import make_server as make_api_server, ENDPOINTS as API_ENDPOINTS
 
 load_dotenv()
 
@@ -71,6 +72,7 @@ CONFIG_KEYS = {
     'verify_offline',
     'project_dir', 'no_db',
     'databases', 'all_databases',
+    'api_key', 'api', 'host', 'port',
     'agent',
 }
 
@@ -2152,6 +2154,70 @@ def baseline(config, server, database, username, password, connection_string, di
         raise SystemExit(1)
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--api', is_flag=True, default=True, help='Start the JSON REST API server (default mode)')
+@click.option('--host', default='127.0.0.1', help='Bind host (default: 127.0.0.1 — localhost only)')
+@click.option('--port', default=8090, type=int, help='Bind port (default: 8090)')
+@click.option('--server', default=None, help='Database hostname or IP (the API target)')
+@click.option('--database', default=None, help='Database name (the API target)')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string for the API target')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES), help='Database dialect')
+@click.option('--api-key', 'api_key', default=None, help='Require this key via the X-API-Key header (else from .sqldoc.yml api_key)')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for POST /api/query')
+@click.option('--model', default=None, help='Model for POST /api/query')
+def serve(config, api, host, port, server, database, username, password, connection_string,
+          dialect, api_key, mode, model):
+    """Start a local REST API exposing sqldoc commands as JSON endpoints.
+
+    Other tools/dashboards can call GET /api/doc, /api/scan, /api/health,
+    /api/secure, /api/server, /api/waits, /api/plans, /api/ha, /api/backup,
+    POST /api/query (natural-language to SQL), and GET /api/agent/status.
+    Authenticate with an X-API-Key header matching the configured api_key.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    host = resolve('host', host)
+    port = int(resolve('port', port))
+    api_key = api_key or cfg.get('api_key') or (cfg.get('api') or {}).get('key')
+
+    # The API target database (optional — /api/agent/status works without it).
+    conn_str = None
+    resolved_db = None
+    try:
+        conn_str, resolved_db, server = _resolve_connection(
+            resolve, server, database, username, password, connection_string, dialect)
+    except click.UsageError:
+        conn_str = None
+
+    api_ctx = {"conn_str": conn_str, "dialect": resolve('dialect', dialect),
+               "database": resolved_db, "api_key": api_key,
+               "mode": resolve('mode', mode), "model": resolve('model', model)}
+
+    click.echo(f"\nsqldoc v{__version__}  -  REST API server")
+    click.echo(f"{'='*44}")
+    click.echo(f"Listening: http://{host}:{port}/api")
+    click.echo(f"Target:    {resolved_db or '(none — only /api/agent/status)'}")
+    click.echo(f"Auth:      {'X-API-Key required' if api_key else 'OPEN (no api_key configured)'}")
+    click.echo(f"Endpoints: " + ", ".join(sorted(p for _m, p in API_ENDPOINTS)))
+    click.echo(f"{'='*44}\n")
+    if not api_key:
+        click.echo(click.style("  ! No api_key set — the API is unauthenticated. Bind to localhost "
+                               "and/or set api_key in .sqldoc.yml.", fg='yellow'), err=True)
+
+    httpd = make_api_server(host, port, api_ctx)
+    click.echo("Server running. Press Ctrl+C to stop.")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        click.echo("\nShutting down.")
+        httpd.shutdown()
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2186,6 +2252,7 @@ cli.add_command(deadlocks, name='deadlocks')
 cli.add_command(plans, name='plans')
 cli.add_command(capacity, name='capacity')
 cli.add_command(baseline, name='baseline')
+cli.add_command(serve, name='serve')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

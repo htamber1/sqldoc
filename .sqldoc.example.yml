@@ -129,3 +129,13 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #       to: [dba@example.com]
 #     # which events to send (server_monitoring adds the last four)
 #     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down, backup_stale, replica_lag, tempdb_version_store, nl_alert]
+
+# --- REST API server for `sqldoc serve` (optional) ---
+# `sqldoc serve` starts a local JSON REST API exposing the commands as
+# endpoints (GET /api/doc, /api/scan, /api/health, /api/secure, /api/server,
+# /api/waits, /api/plans, /api/ha, /api/backup, POST /api/query, and
+# GET /api/agent/status). Requests must send an X-API-Key header matching the
+# key below. Bind to localhost unless you intend to expose it.
+# api_key: "change-me-to-a-long-random-secret"
+# host: 127.0.0.1
+# port: 8090
