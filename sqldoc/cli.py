@@ -40,6 +40,8 @@ from sqldoc.server import collect_server, summarize as server_summarize
 from sqldoc.server_renderer import render_server_html, build_server_json
 from sqldoc.logs import collect_logs, summarize as logs_summarize
 from sqldoc.logs_renderer import render_logs_html, build_logs_json
+from sqldoc.secure import collect_security, summarize as secure_summarize
+from sqldoc.secure_renderer import render_secure_html, build_secure_json
 
 load_dotenv()
 
@@ -1561,6 +1563,82 @@ def logs(config, server, database, username, password, connection_string, dialec
     click.echo(f"Open {output} in your browser for the full error-log report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default='master', help='Database to connect through')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected; supported: SQL Server, PostgreSQL, MySQL)')
+@click.option('--output', default='security-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the security report as machine-readable JSON to this path')
+@click.option('--fail-under', 'fail_under', default=None, type=click.IntRange(0, 100),
+              help='Exit non-zero if the security score is below this threshold (for CI gating)')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def secure(config, server, database, username, password, connection_string, dialect,
+           output, json_out, fail_under, verify_offline):
+    """Scan for security misconfigurations and score them 0-100.
+
+    Runs dialect-aware hardening checks (SQL Server / PostgreSQL / MySQL) and
+    reports HIGH/MEDIUM/LOW findings with a unified 0-100 security score. Reads
+    only server configuration + catalog metadata — never table row data.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'infra_monitoring', 'secure')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  Security scan")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server_name if server_name else '(connection string)'}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and running hardening checks...")
+    try:
+        report = collect_security(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
+    s = secure_summarize(report)
+    score_color = 'green' if s['score'] >= 75 else ('yellow' if s['score'] >= 40 else 'red')
+    click.echo(
+        click.style(f"Security score: {s['score']}/100 (grade {s['grade']})", fg=score_color)
+        + click.style(f"    HIGH: {s['high']}", fg='red')
+        + click.style(f"    MEDIUM: {s['medium']}", fg='yellow')
+        + click.style(f"    LOW: {s['low']}", fg='blue')
+    )
+
+    click.echo("\nRendering report...")
+    render_secure_html(label, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_secure_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable security report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the full security report.")
+
+    if fail_under is not None and s['score'] < int(fail_under):
+        click.echo(click.style(
+            f"\nSecurity score {s['score']} is below the --fail-under threshold {fail_under}.", fg='red'), err=True)
+        raise SystemExit(1)
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1588,6 +1666,7 @@ cli.add_command(comply, name='comply')
 cli.add_command(dbt, name='dbt')
 cli.add_command(server, name='server')
 cli.add_command(logs, name='logs')
+cli.add_command(secure, name='secure')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

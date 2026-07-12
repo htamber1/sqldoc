@@ -178,6 +178,28 @@ class FakeCursor:
             self._last = "mysqllogbin"
         elif "information_schema.schemata" in sql:
             self._last = "mysqlschemas"
+        elif "sys.sql_logins" in sql:
+            self._last = "mssql_logins"
+        elif "sys.configurations" in sql:
+            self._last = "mssql_config"
+        elif "is_trustworthy_on" in sql:
+            self._last = "mssql_trustworthy"
+        elif "DATABASE_PRINCIPAL_ID('public')" in sql:
+            self._last = "mssql_public"
+        elif "rolsuper" in sql:
+            self._last = "pg_superusers"
+        elif "pg_hba_file_rules" in sql:
+            self._last = "pg_hba"
+        elif "has_schema_privilege" in sql:
+            self._last = "pg_pubschema"
+        elif "'ssl'" in sql:
+            self._last = "pg_ssl"
+        elif "mysql.user" in sql:
+            self._last = "mysql_users"
+        elif "user_privileges" in sql:
+            self._last = "mysql_fileprivs"
+        elif "@@secure_file_priv" in sql:
+            self._last = "mysql_sfp"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -318,6 +340,53 @@ def fake_health_rows():
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
         ],
+    }
+
+
+@pytest.fixture
+def fake_mssql_secure_rows():
+    return {
+        "mssql_logins": [
+            FakeRow(name="sa", is_disabled=0, blank_pw=0),        # SA enabled -> MEDIUM
+            FakeRow(name="app", is_disabled=0, blank_pw=1),       # blank password -> HIGH
+        ],
+        "mssql_config": [
+            FakeRow(name="xp_cmdshell", v=1),                     # HIGH
+            FakeRow(name="clr enabled", v=0),
+        ],
+        "mssql_trustworthy": [FakeRow(name="Payments")],          # HIGH
+        "mssql_public": [FakeRow(n=3)],                           # MEDIUM
+    }
+
+
+@pytest.fixture
+def fake_pg_secure_rows():
+    return {
+        "pg_superusers": [FakeRow(rolname="postgres"), FakeRow(rolname="admin")],  # admin MEDIUM, postgres LOW
+        "pg_hba": [
+            FakeRow(type="host", database="all", user_name="all",
+                    address="0.0.0.0/0", auth_method="trust"),    # HIGH
+            FakeRow(type="host", database="all", user_name="all",
+                    address="10.0.0.0/8", auth_method="password"),  # MEDIUM
+        ],
+        "pg_pubschema": [FakeRow(pub_create=True)],               # MEDIUM
+        "pg_ssl": [FakeRow(setting="off")],                       # MEDIUM
+    }
+
+
+@pytest.fixture
+def fake_mysql_secure_rows():
+    return {
+        "mysql_users": [
+            FakeRow(user="", host="localhost", authentication_string="x",
+                    plugin="mysql_native_password"),              # anonymous -> HIGH
+            FakeRow(user="root", host="%", authentication_string="hash",
+                    plugin="mysql_native_password"),              # remote root -> HIGH
+            FakeRow(user="app", host="%", authentication_string="",
+                    plugin="mysql_native_password"),              # no password -> HIGH
+        ],
+        "mysql_fileprivs": [FakeRow(grantee="'app'@'%'")],        # non-root FILE -> MEDIUM
+        "mysql_sfp": [FakeRow(sfp=None)],                         # unrestricted -> MEDIUM
     }
 
 

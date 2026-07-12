@@ -13,6 +13,7 @@ from sqldoc.dbt_renderer import DBT_TEMPLATE
 from sqldoc.comply_multi_renderer import MULTI_TEMPLATE
 from sqldoc.server_renderer import SERVER_TEMPLATE
 from sqldoc.logs_renderer import LOGS_TEMPLATE
+from sqldoc.secure_renderer import SECURE_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -72,6 +73,7 @@ _TEMPLATES = {
     "comply-multi": MULTI_TEMPLATE,
     "server": SERVER_TEMPLATE,
     "logs": LOGS_TEMPLATE,
+    "secure": SECURE_TEMPLATE,
 }
 
 
