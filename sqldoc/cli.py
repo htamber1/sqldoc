@@ -2826,6 +2826,17 @@ confluence = make_integration_command(
     push_mode='reports')
 
 
+notion = make_integration_command(
+    'notion',
+    "Publish sqldoc docs to Notion (official API, integration token).\n\n"
+    "--test verifies the token; --push creates a doc page per database (executive\n"
+    "scorecard + health as blocks), a child 'PII Findings' database (one row per\n"
+    "sensitive column), and — if a tracker database_id is set — upserts a metrics\n"
+    "row with the scores as properties. Configure token, parent_page_id, and\n"
+    "optionally database_id under 'notion:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2867,6 +2878,7 @@ cli.add_command(serve, name='serve')
 cli.add_command(audit, name='audit')
 cli.add_command(sharepoint, name='sharepoint')
 cli.add_command(confluence, name='confluence')
+cli.add_command(notion, name='notion')
 
 
 # --- audit trail hook ------------------------------------------------------
