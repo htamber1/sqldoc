@@ -2772,7 +2772,7 @@ def _run_integration(name, push_mode, config, server, database, username, passwo
         else:  # 'reports'
             kinds_list = [k.strip() for k in kinds.split(',')] if kinds else None
             artifacts = render_artifacts(bundle, kinds_list)
-            res = client.push_reports(artifacts, metrics=_metrics(bundle))
+            res = client.push_reports(artifacts, metrics=_metrics(bundle), bundle=bundle)
     except IntegrationError as e:
         click.echo(click.style(f"  x push failed: {e}", fg='red'), err=True)
         raise SystemExit(1)
@@ -2816,6 +2816,16 @@ sharepoint = make_integration_command(
     push_mode='reports')
 
 
+confluence = make_integration_command(
+    'confluence',
+    "Publish sqldoc docs to Confluence Cloud (REST API v2, API-token auth).\n\n"
+    "--test verifies the space; --push creates/updates one page per database with\n"
+    "the executive scorecard, a PII findings table, a health summary, and doc stats,\n"
+    "and attaches the full HTML reports. Configure base_url, email, api_token,\n"
+    "space_key, and optionally parent_page_id under 'confluence:'.",
+    push_mode='reports')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2856,6 +2866,7 @@ cli.add_command(executive, name='executive')
 cli.add_command(serve, name='serve')
 cli.add_command(audit, name='audit')
 cli.add_command(sharepoint, name='sharepoint')
+cli.add_command(confluence, name='confluence')
 
 
 # --- audit trail hook ------------------------------------------------------

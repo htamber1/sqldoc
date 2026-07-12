@@ -117,7 +117,7 @@ class Client:
             "POST", f"{GRAPH}/sites/{self.cfg['site_id']}/lists/{list_id}/items",
             token, json={"fields": fields})
 
-    def push_reports(self, artifacts, metrics=None) -> dict:
+    def push_reports(self, artifacts, metrics=None, bundle=None) -> dict:
         """Upload every artifact to the document library and, if a list_name is
         configured, append one structured summary row."""
         self._need()
