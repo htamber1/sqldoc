@@ -2893,6 +2893,17 @@ azuredevops = make_integration_command(
     push_mode='reports')
 
 
+powerbi = make_integration_command(
+    'powerbi',
+    "Push sqldoc metrics to a Power BI streaming dataset.\n\n"
+    "--test verifies the dataset; --push sends a row of scores (health / PII high /\n"
+    "backup / security / overall) with a timestamp, so execs build live dashboards.\n"
+    "Configure either push_url (streaming push URL) or the Azure AD service\n"
+    "principal (tenant_id/client_id/client_secret + group_id + dataset_id) under\n"
+    "'powerbi:'.",
+    push_mode='metrics')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2940,6 +2951,7 @@ cli.add_command(box, name='box')
 cli.add_command(jira, name='jira')
 cli.add_command(servicenow, name='servicenow')
 cli.add_command(azuredevops, name='azuredevops')
+cli.add_command(powerbi, name='powerbi')
 
 
 # --- audit trail hook ------------------------------------------------------
