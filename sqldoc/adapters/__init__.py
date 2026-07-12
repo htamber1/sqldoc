@@ -23,6 +23,7 @@ from sqldoc.adapters.redshift import RedshiftAdapter
 from sqldoc.adapters.databricks import DatabricksAdapter
 from sqldoc.adapters.bigquery import BigQueryAdapter
 from sqldoc.adapters.cockroachdb import CockroachDBAdapter
+from sqldoc.adapters.db2 import Db2Adapter
 
 
 class UnsupportedDialectError(Exception):
@@ -43,6 +44,7 @@ DIALECTS: dict = {
     "databricks": DatabricksAdapter,
     "bigquery": BigQueryAdapter,
     "cockroachdb": CockroachDBAdapter,
+    "db2": Db2Adapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
@@ -73,6 +75,8 @@ def detect_dialect(connection_string: str) -> str:
         return "databricks"
     if cs.startswith("bigquery://"):
         return "bigquery"
+    if cs.startswith(("db2://", "ibm-db2://")):
+        return "db2"
     # CockroachDB Cloud often uses a postgresql:// scheme, so check the host
     # marker before the generic postgres branch below.
     if "cockroachlabs.cloud" in cs or cs.startswith("cockroachdb://"):
@@ -123,7 +127,7 @@ __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
     "OracleAdapter", "AzureMiAdapter", "SynapseAdapter", "RedshiftAdapter",
-    "DatabricksAdapter", "BigQueryAdapter", "CockroachDBAdapter",
+    "DatabricksAdapter", "BigQueryAdapter", "CockroachDBAdapter", "Db2Adapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

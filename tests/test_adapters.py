@@ -95,7 +95,7 @@ def test_get_adapter_mysql():
 
 def test_get_adapter_unknown_dialect_raises():
     with pytest.raises(UnsupportedDialectError) as ei:
-        get_adapter("whatever", dialect="db2")
+        get_adapter("whatever", dialect="notarealdialect")
     assert "Unknown dialect" in str(ei.value)
 
 
