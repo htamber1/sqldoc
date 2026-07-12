@@ -29,6 +29,7 @@ from sqldoc.health import collect_health, summarize as health_summarize
 from sqldoc.server import collect_server
 from sqldoc.logs import collect_logs
 from sqldoc.intel import collect_linked_servers
+from sqldoc.backup import collect_backups, stale_databases, BACKUP_DIALECTS
 
 
 def pii_score(high: int, medium: int, low: int) -> float:
@@ -158,6 +159,10 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
         if getattr(agent_config, "server_monitoring", False) and adapter.capabilities.server_monitoring:
             _poll_server_monitoring(store, name, adapter, agent_config, notifier, result)
 
+        # --- backup monitoring (all dialects with a backup/PITR mechanism) ---
+        if getattr(agent_config, "backup_monitoring", False) and getattr(adapter, "dialect", "") in BACKUP_DIALECTS:
+            _poll_backups(store, name, adapter, agent_config, notifier, result)
+
         store.finish_run(run_id, "ok")
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
@@ -224,6 +229,32 @@ def _poll_server_monitoring(store, name, adapter, agent_config, notifier, result
         store.add_event(name, "error", f"Linked-server check skipped: {type(e).__name__}: {e}")
 
     result["notifications"] += notes
+
+
+def _poll_backups(store, name, adapter, agent_config, notifier, result):
+    """Alert when a database's last backup is older than the configured threshold,
+    when a database has never been backed up, or when point-in-time recovery is
+    disabled. Dialect-aware; isolated so a failure is recorded, not fatal."""
+    try:
+        report = collect_backups(adapter)
+    except Exception as e:
+        store.add_event(name, "error", f"Backup check skipped: {type(e).__name__}: {e}")
+        return
+    if not report.supported:
+        return
+    stale = stale_databases(report, agent_config.backup_max_age_hours)
+    problems = []
+    if not report.pitr_enabled:
+        problems.append(f"point-in-time recovery is OFF ({report.pitr_mechanism})")
+    if stale:
+        names = ", ".join(d.database for d in stale[:10])
+        problems.append(f"{len(stale)} database(s) stale/never backed up: {names}")
+    if problems:
+        headline = "; ".join(problems)
+        store.add_event(name, "backup_stale", headline)
+        result["notifications"] += notifier.notify(
+            "backup_stale", f"{name}: backup/PITR issue", headline)
+        result["backup_stale"] = len(stale)
 
 
 def _headline(diff) -> str:

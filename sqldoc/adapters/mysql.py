@@ -30,7 +30,8 @@ class MySQLAdapter(DatabaseAdapter):
     display_name = "MySQL"
     # Metadata + aggregate profiling (quality) + health via performance_schema +
     # access audit via information_schema.table_privileges.
-    capabilities = Capabilities(quality=True, health=True, access_audit=True)
+    capabilities = Capabilities(quality=True, health=True, access_audit=True,
+                                infra_monitoring=True)
 
     @staticmethod
     def _default_connect(connection_string: str):

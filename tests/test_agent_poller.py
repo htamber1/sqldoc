@@ -173,6 +173,29 @@ def test_server_monitoring_skipped_when_disabled(monkeypatch, store, fake_server
     assert "job_failures" not in r and "disk_low" not in r
 
 
+def test_backup_stale_alert(monkeypatch, store, fake_backup_rows):
+    from sqldoc.agent.config import EVENT_TYPES
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_backup_rows))
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=True)
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(on=EVENT_TYPES),
+                     backup_monitoring=True, backup_max_age_hours=24)
+    notifier = RecNotifier(on=EVENT_TYPES)
+    r = poll_database(store, db, ac, notifier)
+    assert r["status"] == "ok"
+    assert r.get("backup_stale") == 2                 # Staging (never) + Sales (30h)
+    assert any(c[0] == "backup_stale" for c in notifier.calls)
+    assert "backup_stale" in {e["type"] for e in store.recent_events("prod")}
+
+
+def test_backup_monitoring_off_by_default(monkeypatch, store, fake_backup_rows):
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_backup_rows))
+    _use(monkeypatch, adapter)
+    db, ac = _cfg()                                   # backup_monitoring defaults False
+    r = poll_database(store, db, ac, RecNotifier())
+    assert "backup_stale" not in r
+
+
 def test_linked_server_down_alert(monkeypatch, store):
     from sqldoc.agent.config import EVENT_TYPES
     from sqldoc.intel import LinkedServer, LinkedServerReport

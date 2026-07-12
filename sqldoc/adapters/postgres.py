@@ -44,7 +44,8 @@ class PostgresAdapter(DatabaseAdapter):
     display_name = "PostgreSQL"
     # Metadata + aggregate profiling (quality) + health via pg_stat_* views +
     # access audit via information_schema.table_privileges.
-    capabilities = Capabilities(quality=True, health=True, access_audit=True)
+    capabilities = Capabilities(quality=True, health=True, access_audit=True,
+                                infra_monitoring=True)
 
     @staticmethod
     def _default_connect(connection_string: str):

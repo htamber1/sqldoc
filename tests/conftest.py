@@ -166,6 +166,18 @@ class FakeCursor:
             self._last = "linkedprobe"
         elif "sys.servers" in sql:
             self._last = "linkedservers"
+        elif "backupset" in sql:
+            self._last = "backups"
+        elif "'archive_mode'" in sql:
+            self._last = "pgarchmode"
+        elif "pg_stat_archiver" in sql:
+            self._last = "pgarchiver"
+        elif "pg_database" in sql:
+            self._last = "pgdatabases"
+        elif "@@log_bin" in sql:
+            self._last = "mysqllogbin"
+        elif "information_schema.schemata" in sql:
+            self._last = "mysqlschemas"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -306,6 +318,44 @@ def fake_health_rows():
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
         ],
+    }
+
+
+@pytest.fixture
+def fake_backup_rows():
+    """Rows the SQL Server backup query (msdb.dbo.backupset) would return."""
+    return {
+        "backups": [
+            FakeRow(database_name="AdventureWorks2022", recovery_model_desc="FULL",
+                    last_full="2026-07-11 02:00:00", last_diff=None, last_log=None,
+                    full_age_hours=6),                       # FULL but no log backup -> issue
+            FakeRow(database_name="Sales", recovery_model_desc="SIMPLE",
+                    last_full="2026-07-10 02:00:00", last_diff=None, last_log=None,
+                    full_age_hours=30),                      # SIMPLE -> no PITR issue
+            FakeRow(database_name="Staging", recovery_model_desc="FULL",
+                    last_full=None, last_diff=None, last_log=None,
+                    full_age_hours=None),                    # never backed up
+        ],
+    }
+
+
+@pytest.fixture
+def fake_pg_backup_rows():
+    return {
+        "pgarchmode": [FakeRow(setting="on")],
+        "pgarchiver": [FakeRow(last_archived_time="2026-07-11 05:00:00",
+                               last_archived_wal="000000010000000000000042",
+                               archived_count=1200, failed_count=0,
+                               last_failed_time=None, age_hours=2.5)],
+        "pgdatabases": [FakeRow(datname="pagila"), FakeRow(datname="analytics")],
+    }
+
+
+@pytest.fixture
+def fake_mysql_backup_rows():
+    return {
+        "mysqllogbin": [FakeRow(log_bin=1, basename="/var/lib/mysql/binlog")],
+        "mysqlschemas": [FakeRow(schema_name="sakila"), FakeRow(schema_name="app")],
     }
 
 

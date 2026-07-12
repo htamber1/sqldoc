@@ -52,6 +52,7 @@ SERVER_TEMPLATE = """
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: rgba(255,255,255,0.025); }
         .mono { font-family: 'Consolas', monospace; }
+        .muted { color: var(--muted); }
         .num { text-align: right; font-family: 'Consolas', monospace; white-space: nowrap; }
         .sql { font-family: 'Consolas', monospace; font-size: 0.78rem; color: #cbd5e1; white-space: pre-wrap; word-break: break-word; max-width: 480px; }
         .bar-wrap { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
@@ -80,13 +81,24 @@ SERVER_TEMPLATE = """
     </div>
     <div class="container">
         <div class="stats">
+            {% if is_sqlserver %}
             <div class="stat-card c-blue"><div class="number">{{ summary.cpu_sql_percent }}%</div><div class="label">SQL CPU</div></div>
             <div class="stat-card c-violet"><div class="number">{{ (summary.memory_total_mb / 1024)|round(1) }}</div><div class="label">Memory (GB)</div></div>
             <div class="stat-card c-green"><div class="number">{{ summary.sessions }}</div><div class="label">Sessions</div></div>
             <div class="stat-card {{ 'c-red' if summary.blocking_chains else 'c-green' }}"><div class="number">{{ summary.blocking_chains }}</div><div class="label">Blocking chains</div></div>
             <div class="stat-card {{ 'c-red' if summary.low_disk_volumes else 'c-blue' }}"><div class="number">{{ summary.low_disk_volumes }}</div><div class="label">Low-disk volumes</div></div>
             {% if report.agent_jobs %}<div class="stat-card {{ 'c-red' if summary.failed_jobs_24h else 'c-green' }}"><div class="number">{{ summary.failed_jobs_24h }}</div><div class="label">Failed jobs (24h)</div></div>{% endif %}
+            {% endif %}
+            {% if report.backups %}
+            <div class="stat-card {{ 'c-green' if summary.pitr_enabled else 'c-red' }}"><div class="number">{{ 'Yes' if summary.pitr_enabled else 'No' }}</div><div class="label">PITR enabled</div></div>
+            <div class="stat-card {{ 'c-red' if summary.never_backed_up else 'c-blue' }}"><div class="number">{{ summary.never_backed_up }}</div><div class="label">Never backed up</div></div>
+            <div class="stat-card {{ 'c-amber' if summary.backup_issues else 'c-green' }}"><div class="number">{{ summary.backup_issues }}</div><div class="label">Backup issues</div></div>
+            {% endif %}
         </div>
+
+        {% if not is_sqlserver %}
+        <div class="warn" style="color: var(--muted); border-color: var(--border);">Instance CPU / memory / disk metrics are SQL Server only. Showing backup / point-in-time-recovery status for {{ report.dialect }}.</div>
+        {% endif %}
 
         {% if report.errors %}
         <div class="warn">
@@ -95,6 +107,7 @@ SERVER_TEMPLATE = """
         </div>
         {% endif %}
 
+        {% if is_sqlserver %}
         <div class="grid2">
             <div class="panel">
                 <div class="phead">CPU</div>
@@ -243,6 +256,33 @@ SERVER_TEMPLATE = """
             </table>
         </div>
         {% endif %}
+        {% endif %}
+
+        {% if report.backups %}
+        <h2 class="section">Backups &amp; point-in-time recovery <span class="n">{{ report.backups.pitr_mechanism }}</span></h2>
+        {% if report.backups.notes %}
+        <div class="warn" style="color: var(--muted); border-color: var(--border);">{% for n in report.backups.notes %}<div>&bull; {{ n }}</div>{% endfor %}</div>
+        {% endif %}
+        <div class="panel">
+            <table>
+                <thead><tr><th>Database</th><th>Recovery / mode</th><th>Last full backup</th><th>Age (h)</th><th>Last log/WAL</th><th>PITR</th><th>Issues</th></tr></thead>
+                <tbody>
+                    {% for d in report.backups.databases %}
+                    <tr{% if d.never_backed_up or d.issues %} style="background: rgba(220,38,38,0.06);"{% endif %}>
+                        <td class="mono">{{ d.database }}</td>
+                        <td>{{ d.recovery_model }}</td>
+                        <td class="mono">{{ d.last_full_backup or '—' }}</td>
+                        <td class="num">{% if d.last_backup_age_hours is not none %}{{ d.last_backup_age_hours }}{% else %}—{% endif %}</td>
+                        <td class="mono">{{ d.last_log_backup or '—' }}</td>
+                        <td><span class="pill {{ 'ok' if d.pitr_capable else 'bad' }}">{{ 'yes' if d.pitr_capable else 'no' }}</span></td>
+                        <td>{% for i in d.issues %}<div class="mono" style="font-size:0.75rem; color: var(--amber);">{{ i }}</div>{% endfor %}{% if not d.issues %}<span class="muted">—</span>{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if not report.backups.databases %}<div class="empty">No database backup data available.</div>{% endif %}
+        </div>
+        {% endif %}
     </div>
     <div class="footer">
         <strong>About these metrics.</strong> Figures come from server-scoped DMVs
@@ -274,6 +314,14 @@ def build_server_json(server_name: str, report) -> dict:
         "top_queries": [asdict(q) for q in report.top_queries],
         "agent_jobs": [{**asdict(j), "is_long_running": j.is_long_running,
                         "duration_text": j.duration_text} for j in report.agent_jobs],
+        "backups": (None if not report.backups else {
+            "dialect": report.backups.dialect,
+            "pitr_enabled": report.backups.pitr_enabled,
+            "pitr_mechanism": report.backups.pitr_mechanism,
+            "archiver": report.backups.archiver,
+            "notes": report.backups.notes,
+            "databases": [asdict(d) for d in report.backups.databases],
+        }),
         "errors": [{"section": s, "message": m} for s, m in report.errors],
     }
 
@@ -285,6 +333,7 @@ def render_server_html(server_name, report, output_path):
         server_name=server_name,
         report=report,
         summary=summarize(report),
+        is_sqlserver=report.dialect in ("sqlserver", "azuresql"),
         generated_at=datetime.now().strftime("%B %d, %Y at %I:%M %p"),
     )
     with open(output_path, "w", encoding="utf-8") as f:

@@ -143,6 +143,7 @@ class Capabilities:
     health: bool = False             # DMV performance/health checks
     access_audit: bool = False       # comply access audit over object grants
     server_monitoring: bool = False  # instance-level DMVs, SQL Agent, ERRORLOG, linked servers
+    infra_monitoring: bool = False   # cross-dialect infra: backups, waits, HA, security, deadlocks
 
 
 class DatabaseAdapter(ABC):

@@ -197,6 +197,7 @@ class AgentJob:
 @dataclass
 class ServerReport:
     server_name: str
+    dialect: str = "sqlserver"
     info: ServerInfo = None
     cpu: CpuUsage = None
     memory: MemoryBreakdown = None
@@ -205,6 +206,7 @@ class ServerReport:
     blocking_chains: list = field(default_factory=list)
     top_queries: list = field(default_factory=list)      # ActiveRequest
     agent_jobs: list = field(default_factory=list)        # AgentJob
+    backups: object = None                                # BackupReport
     errors: list = field(default_factory=list)            # (section, message)
 
 
@@ -545,11 +547,17 @@ def collect_agent_jobs(cursor) -> list:
 
 # --- orchestration ---------------------------------------------------------
 
-def collect_server(adapter, top: int = 10, include_jobs: bool = True) -> ServerReport:
+def collect_server(adapter, top: int = 10, include_jobs: bool = True,
+                   include_backups: bool = True) -> ServerReport:
     """Run the instance-level checks appropriate to the adapter. Each check is
     isolated so a missing permission (VIEW SERVER STATE / msdb access) degrades
-    to a note in `report.errors` rather than failing the whole run."""
-    report = ServerReport(server_name="")
+    to a note in `report.errors` rather than failing the whole run.
+
+    The CPU/memory/disk/session/job sections are SQL-Server-specific; on other
+    dialects only the cross-dialect sections (backups) are collected."""
+    from sqldoc.backup import collect_backups_from_cursor, BACKUP_DIALECTS
+    dialect = getattr(adapter, "dialect", "sqlserver")
+    report = ServerReport(server_name="", dialect=dialect)
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
 
@@ -561,19 +569,22 @@ def collect_server(adapter, top: int = 10, include_jobs: bool = True) -> ServerR
             return None
 
     try:
-        report.info = run("Server info", lambda: collect_server_info(cursor))
-        report.cpu = run("CPU usage", lambda: collect_cpu(cursor))
-        report.memory = run("Memory", lambda: collect_memory(cursor))
-        report.volumes = run("Disk volumes", lambda: collect_volumes(cursor)) or []
-        report.connections = run("Connections", lambda: collect_connections(cursor))
-        requests = run("Active requests", lambda: collect_active_requests(cursor, top)) or []
-        report.top_queries = requests
-        report.blocking_chains = build_blocking_chains(requests)
-        if report.connections is not None:
-            report.connections.active_requests = len(requests)
-            report.connections.blocked_requests = len(report.blocking_chains)
-        if include_jobs:
-            report.agent_jobs = run("SQL Agent jobs", lambda: collect_agent_jobs(cursor)) or []
+        if dialect in ("sqlserver", "azuresql"):
+            report.info = run("Server info", lambda: collect_server_info(cursor))
+            report.cpu = run("CPU usage", lambda: collect_cpu(cursor))
+            report.memory = run("Memory", lambda: collect_memory(cursor))
+            report.volumes = run("Disk volumes", lambda: collect_volumes(cursor)) or []
+            report.connections = run("Connections", lambda: collect_connections(cursor))
+            requests = run("Active requests", lambda: collect_active_requests(cursor, top)) or []
+            report.top_queries = requests
+            report.blocking_chains = build_blocking_chains(requests)
+            if report.connections is not None:
+                report.connections.active_requests = len(requests)
+                report.connections.blocked_requests = len(report.blocking_chains)
+            if include_jobs:
+                report.agent_jobs = run("SQL Agent jobs", lambda: collect_agent_jobs(cursor)) or []
+        if include_backups and dialect in BACKUP_DIALECTS:
+            report.backups = run("Backups", lambda: collect_backups_from_cursor(dialect, cursor))
     finally:
         conn.close()
     return report
@@ -594,5 +605,11 @@ def summarize(report: ServerReport) -> dict:
         "failed_jobs_24h": sum(1 for j in jobs if j.failed_last_24h),
         "disabled_jobs": sum(1 for j in jobs if not j.enabled),
         "long_running_jobs": sum(1 for j in jobs if j.is_long_running),
+        "backup_databases": len(report.backups.databases) if report.backups else 0,
+        "never_backed_up": (sum(1 for d in report.backups.databases if d.never_backed_up)
+                            if report.backups else 0),
+        "backup_issues": (sum(1 for d in report.backups.databases if d.issues)
+                          if report.backups else 0),
+        "pitr_enabled": report.backups.pitr_enabled if report.backups else False,
         "degraded": len(report.errors),
     }

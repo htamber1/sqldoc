@@ -26,7 +26,7 @@ class SqlServerAdapter(DatabaseAdapter):
     display_name = "SQL Server"
     # SQL Server is the reference implementation: everything is supported.
     capabilities = Capabilities(quality=True, health=True, access_audit=True,
-                                server_monitoring=True)
+                                server_monitoring=True, infra_monitoring=True)
 
     @staticmethod
     def _default_connect(connection_string: str):

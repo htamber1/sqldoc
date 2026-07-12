@@ -1424,7 +1424,7 @@ def server(config, server, database, username, password, connection_string, dial
     conn_str, database, server_name = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
     adapter = open_adapter(resolve, conn_str, dialect)
-    _require_capability(adapter, 'server_monitoring', 'server')
+    _require_capability(adapter, 'infra_monitoring', 'server')
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
     top = resolve('top', top)
@@ -1449,18 +1449,27 @@ def server(config, server, database, username, password, connection_string, dial
         click.echo(click.style(f"  ! skipped {section}: {msg}", fg='yellow'), err=True)
 
     s = server_summarize(report)
-    click.echo(
-        click.style(f"CPU (SQL): {s['cpu_sql_percent']}%", fg='blue')
-        + f"    Memory: {round(s['memory_total_mb']/1024, 1)} GB"
-        + f"    Sessions: {s['sessions']}"
-        + click.style(f"    Blocking: {s['blocking_chains']}", fg='red' if s['blocking_chains'] else 'green')
-        + click.style(f"    Low-disk vols: {s['low_disk_volumes']}", fg='red' if s['low_disk_volumes'] else 'green')
-    )
-    if not no_jobs:
+    if report.dialect in ('sqlserver', 'azuresql'):
         click.echo(
-            click.style(f"Agent jobs: {s['jobs']}", fg='cyan')
-            + click.style(f"    Failed (24h): {s['failed_jobs_24h']}", fg='red' if s['failed_jobs_24h'] else 'green')
-            + f"    Long-running: {s['long_running_jobs']}    Disabled: {s['disabled_jobs']}"
+            click.style(f"CPU (SQL): {s['cpu_sql_percent']}%", fg='blue')
+            + f"    Memory: {round(s['memory_total_mb']/1024, 1)} GB"
+            + f"    Sessions: {s['sessions']}"
+            + click.style(f"    Blocking: {s['blocking_chains']}", fg='red' if s['blocking_chains'] else 'green')
+            + click.style(f"    Low-disk vols: {s['low_disk_volumes']}", fg='red' if s['low_disk_volumes'] else 'green')
+        )
+        if not no_jobs:
+            click.echo(
+                click.style(f"Agent jobs: {s['jobs']}", fg='cyan')
+                + click.style(f"    Failed (24h): {s['failed_jobs_24h']}", fg='red' if s['failed_jobs_24h'] else 'green')
+                + f"    Long-running: {s['long_running_jobs']}    Disabled: {s['disabled_jobs']}"
+            )
+    if report.backups:
+        click.echo(
+            click.style(f"Backups: {s['backup_databases']} db(s)", fg='cyan')
+            + click.style(f"    PITR: {'on' if s['pitr_enabled'] else 'off'}",
+                          fg='green' if s['pitr_enabled'] else 'red')
+            + click.style(f"    Never backed up: {s['never_backed_up']}", fg='red' if s['never_backed_up'] else 'green')
+            + click.style(f"    With issues: {s['backup_issues']}", fg='yellow' if s['backup_issues'] else 'green')
         )
 
     click.echo("\nRendering report...")
