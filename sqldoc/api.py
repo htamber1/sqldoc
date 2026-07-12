@@ -124,6 +124,34 @@ def _ep_agent_status(adapter, ctx, params, body):
     return {"running": True, "store": path, "databases": out}
 
 
+def _ep_access_request(adapter, ctx, params, body):
+    """REST intake for the access suite: external systems POST an access request
+    and get back the gap verdict + generated grant/rollback script."""
+    cfg = ctx.get("config") or {}
+    body = body or {}
+    user = body.get("user") or body.get("identifier")
+    if not user:
+        raise ValueError("POST body must be JSON with a 'user' (and 'request' or "
+                         "'database'+'level').")
+    from sqldoc.access import config as access_config
+    known = [db for s in access_config.servers(cfg) for db in s["databases"]]
+    if body.get("request"):
+        from sqldoc.access.parse import parse_request
+        parsed = parse_request(body["request"], known_databases=known,
+                               mode=ctx.get("mode", "local"), no_ai=body.get("no_ai", False))
+        database, level = parsed.database, parsed.level
+    else:
+        database, level = body.get("database"), body.get("level", "read")
+    if not database:
+        raise ValueError("Could not determine the target database (pass 'database' or a clearer 'request').")
+    from sqldoc.access.intake import run_request
+    from sqldoc.access.render import build_script_json
+    outcome = run_request(cfg, user, database, level, mode=ctx.get("mode", "local"))
+    return {"user": user, "database": database, "level": level,
+            "verdict": outcome.gap.verdict, "explanation": outcome.gap.explanation,
+            "missing": outcome.gap.missing, "script": build_script_json(outcome.script)}
+
+
 ENDPOINTS = {
     ("GET", "/api/doc"): _ep_doc,
     ("GET", "/api/scan"): _ep_scan,
@@ -135,11 +163,12 @@ ENDPOINTS = {
     ("GET", "/api/ha"): _ep_ha,
     ("GET", "/api/backup"): _ep_backup,
     ("POST", "/api/query"): _ep_query,
+    ("POST", "/api/access/request"): _ep_access_request,
     ("GET", "/api/agent/status"): _ep_agent_status,
 }
 
-# Endpoints that don't need a database connection.
-_NO_ADAPTER = {("GET", "/api/agent/status")}
+# Endpoints that don't need a database connection (they use ctx["config"] or the store).
+_NO_ADAPTER = {("GET", "/api/agent/status"), ("POST", "/api/access/request")}
 
 
 # --- dispatch (pure, socket-free — easy to test) ---------------------------

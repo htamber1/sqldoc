@@ -2597,7 +2597,8 @@ def serve(config, api, host, port, server, database, username, password, connect
 
     api_ctx = {"conn_str": conn_str, "dialect": resolve('dialect', dialect),
                "database": resolved_db, "api_key": api_key, "authn": authn,
-               "mode": resolve('mode', mode), "model": resolve('model', model)}
+               "mode": resolve('mode', mode), "model": resolve('model', model),
+               "config": cfg}   # for the access-request intake endpoint
 
     sso_desc = f"SSO ({authn.cfg.provider}/{authn.cfg.method})" if authn else None
     auth_desc = " + ".join(filter(None, ["X-API-Key" if api_key else None, sso_desc])) \
@@ -3423,6 +3424,123 @@ def access_recommend(config, identifier, database, mode, model, ai_backend, no_a
             import json as _json
             _json.dump(build_recommend_json(rec), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
+
+
+def _echo_outcome(outcome):
+    ex = outcome.extracted
+    if ex:
+        click.echo(f"Extracted: user={ex.user or '?'}  {ex.level} access to {ex.database or '?'}  ({ex.note})")
+    if outcome.note:
+        click.echo(click.style(f"  {outcome.note}", fg='yellow'))
+    if outcome.gap is not None:
+        color = {'ALREADY': 'green', 'PARTIAL': 'yellow', 'NONE': 'red'}.get(outcome.gap.verdict)
+        click.echo(click.style(f"  {outcome.gap.verdict}", fg=color, bold=True) + f"  {outcome.gap.explanation}")
+
+
+@access.command('parse-email')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--file', 'email_file', default=None, help='Path to the email file (default: read stdin)')
+@click.option('--user', 'user_override', default=None, help='Override the requesting user')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode')
+@click.option('--model', default=None, help='AI model')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic extractor')
+@click.option('--output', default='access-email.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+def access_parse_email(config, email_file, user_override, mode, model, ai_backend, no_ai, output, json_out):
+    """Read a forwarded email and run the access-request workflow from it.
+
+    Extracts who needs what access from the email (AI), then runs the check +
+    gap + script-generation workflow.
+    """
+    from sqldoc.access.intake import parse_email, process_item
+    from sqldoc.access.render import render_script_html, build_script_json
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    backend = resolve_ai_backend(_make_resolver(ctx, cfg), ai_backend)
+    if email_file:
+        with open(email_file, encoding='utf-8', errors='replace') as f:
+            raw = f.read()
+    else:
+        import sys
+        raw = sys.stdin.read()
+    item = parse_email(raw)
+    click.echo(f"\nsqldoc v{__version__}  -  access parse-email")
+    click.echo(f"{'='*44}")
+    click.echo(f"Subject: {item.title}")
+    outcome = process_item(cfg, item, user_override=user_override, mode=mode, model=model,
+                           backend=backend, no_ai=no_ai)
+    _echo_outcome(outcome)
+    if outcome.script is not None:
+        render_script_html(outcome.script, output)
+        click.echo(f"\nReport written to {output}")
+        if json_out:
+            with open(json_out, 'w', encoding='utf-8') as f:
+                import json as _json
+                _json.dump(build_script_json(outcome.script), f, indent=2, default=str)
+            click.echo(f"JSON written to {json_out}")
+
+
+@access.command('intake')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--source', required=True, type=click.Choice(['servicenow', 'azuredevops', 'github']),
+              help='Where to pull access requests from')
+@click.option('--limit', default=50, type=int, help='Max items to pull')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode')
+@click.option('--model', default=None, help='AI model')
+@ai_backend_option
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic extractor')
+@click.option('--output-dir', default='access-intake', help='Directory for per-item HTML scripts')
+@click.option('--json', 'json_out', default=None, help='Write a combined JSON summary here')
+def access_intake(config, source, limit, mode, model, ai_backend, no_ai, output_dir, json_out):
+    """Pull access requests from an external system and process each one.
+
+    Sources: ServiceNow requests, Azure DevOps work items (by tag), or GitHub
+    issues (by label). Each item runs through the same AI extraction + check +
+    gap + script-generation workflow. Uses the existing servicenow:/azuredevops:
+    integration config; GitHub uses access.intake.github.
+    """
+    from sqldoc.access.intake import FETCHERS, process_item
+    from sqldoc.access.render import render_script_html, build_script_json
+    from sqldoc.integrations.base import IntegrationError
+    import os as _os
+    cfg = _access_cfg(config)
+    ctx = click.get_current_context()
+    backend = resolve_ai_backend(_make_resolver(ctx, cfg), ai_backend)
+
+    click.echo(f"\nsqldoc v{__version__}  -  access intake ({source})")
+    click.echo(f"{'='*44}")
+    try:
+        items = FETCHERS[source](cfg, limit=limit)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+    except Exception as e:
+        click.echo(click.style(f"Failed to pull from {source}: {e}", fg='red'), err=True)
+        raise click.Abort()
+    click.echo(f"Pulled {len(items)} item(s).")
+
+    _os.makedirs(output_dir, exist_ok=True)
+    summary = []
+    for item in items:
+        outcome = process_item(cfg, item, mode=mode, model=model, backend=backend, no_ai=no_ai)
+        verdict = outcome.gap.verdict if outcome.gap else "SKIPPED"
+        click.echo(f"  [{item.source}#{item.id}] {verdict}  {item.title[:60]}")
+        entry = {"source": item.source, "id": item.id, "title": item.title,
+                 "verdict": verdict, "note": outcome.note}
+        if outcome.script is not None:
+            path = _os.path.join(output_dir, f"{item.source}-{item.id or 'item'}.html")
+            render_script_html(outcome.script, path)
+            entry["report"] = path
+            entry["script"] = build_script_json(outcome.script)
+        summary.append(entry)
+
+    click.echo(f"\nPer-item reports written to {output_dir}/")
+    if json_out:
+        with open(json_out, 'w', encoding='utf-8') as f:
+            import json as _json
+            _json.dump({"report_type": "access-intake", "source": source,
+                        "count": len(summary), "items": summary}, f, indent=2, default=str)
+        click.echo(f"Combined JSON written to {json_out}")
 
 
 class DefaultGroup(click.Group):
