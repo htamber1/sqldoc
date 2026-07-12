@@ -4,6 +4,46 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.8.0] — 2026-07-12
+
+**Comprehensive testing suite.** A 10-phase testing effort: coverage tooling,
+expanded mock tests, and a full live end-to-end integration suite across SQL
+Server, PostgreSQL, and MySQL. No product code changes — this release is about
+confidence. **1111 tests, 89.5% coverage.** See `TESTING.md`.
+
+### Added — test infrastructure
+- **Coverage tooling** — `coverage` / `pytest-cov` / `psutil` in the `[test]`
+  extra, a `.coveragerc`, and `integration`/`performance`/`regression` markers.
+- **Expanded mock tests (+81)** — HTTP transports for every REST connector,
+  notification transports (Slack/Teams/Webex/Twilio/WhatsApp/SMTP), agent daemon
+  loops, identity-source transports (Okta/Graph/JumpCloud + msal/ldap3/google
+  factories), `api.dispatch` auth/multi-tenant paths, PII sampling + AI
+  confirmation, and `reports.gather` error branches. Coverage 86% → ~88% (mock).
+
+### Added — live integration suite (`tests/integration/`, skip-gated)
+- **SQL Server (18)** — every SQL-Server command end-to-end against
+  AdventureWorks2022 (doc/scan/health/quality/intel/insights/comply/server/logs/
+  secure/waits/ha/deadlocks/plans/executive/baseline), validating HTML/JSON.
+- **PostgreSQL (8)** + **MySQL (8)** — the command suite against Pagila / Sakila,
+  with Docker provisioning scripts.
+- **Cross-dialect (9)** — identical JSON keys + HTML structure across all three.
+- **Agent (4)** — poll cycle, store population, dashboard routes, and
+  schema-change detection (ALTER between polls) against a live isolated database.
+- **Access (4)** — check/request/script/review against a real SQL login;
+  generated grant + rollback scripts validated as valid T-SQL via `SET PARSEONLY`.
+- **Performance (3)** — full-database `doc` under the 60s budget (~1s) with no
+  memory leak across repeated runs.
+
+### Added — regression suite (`tests/regression/`)
+- Pinned output contracts (CLI command inventory, PII detection results, JSON key
+  schemas, framework control numbers, level/role/DDL mappings, report structure)
+  that fail loudly on an unintended change. Deterministic, no live DB.
+
+### Notes
+- All integration tests skip cleanly when their database is unreachable, so the
+  default `pytest` run is green on any machine. Coverage 89.5% overall with the
+  live suite running.
+
 ## [2.7.0] — 2026-07-12
 
 **Enterprise-everywhere: fill the gaps so sqldoc runs in any environment.** Nine
