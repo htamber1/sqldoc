@@ -286,7 +286,7 @@ def _ai_confirm(category: str, values: list, mode: str, model: str) -> str:
         f"Do these values look like real {category} data? "
         f"Answer with exactly one word: YES, NO, or UNSURE."
     )
-    text = (ai._call_ollama(prompt, model) if mode == "local" else ai._call_anthropic(prompt, model))
+    text = ai.dispatch(prompt, mode, model)
     token = re.sub(r"[^a-z]", "", text.strip().lower())[:6]
     if token.startswith("yes"):
         return "YES"

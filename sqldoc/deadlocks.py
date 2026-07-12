@@ -213,13 +213,7 @@ def collect_deadlocks(adapter) -> DeadlockReport:
 # --- AI explanation --------------------------------------------------------
 
 def _ai_call(prompt, mode, model):
-    if mode == "local":
-        return ai._call_ollama(prompt, model or "llama3.1:8b")
-    client = ai._get_anthropic_client()
-    msg = client.messages.create(
-        model=model or "claude-haiku-4-5", max_tokens=700,
-        messages=[{"role": "user", "content": prompt}])
-    return msg.content[0].text.strip()
+    return ai.dispatch(prompt, mode, model, max_tokens=700).strip()
 
 
 def explain_deadlock(report: DeadlockReport, mode: str = "local", model: str = None) -> str:

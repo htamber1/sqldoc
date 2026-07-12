@@ -6,6 +6,7 @@ import re
 from sqldoc import __version__
 from sqldoc.extractor import build_connection_string
 from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError, DIALECT_CHOICES
+from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
@@ -62,7 +63,7 @@ load_dotenv()
 # Config keys that .sqldoc.yml may set; each maps to the same-named CLI option.
 CONFIG_KEYS = {
     'server', 'database', 'username', 'password', 'connection_string', 'dialect', 'output',
-    'mode', 'model', 'schemas', 'no_ai', 'concurrency', 'format',
+    'mode', 'model', 'ai_backend', 'schemas', 'no_ai', 'concurrency', 'format',
     'include_definitions',
     'snapshot', 'no_snapshot', 'cache', 'no_cache', 'sample',
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
@@ -156,6 +157,39 @@ def _make_resolver(ctx, cfg):
             return value
         return cfg.get(name, value)
     return resolve
+
+
+_PROVIDER_NAMES = {'anthropic': 'Anthropic', 'openai': 'OpenAI', 'gemini': 'Google Gemini'}
+
+
+def resolve_ai_backend(resolve, ai_backend):
+    """Resolve --ai-backend (flag > config), record it process-wide via
+    ai.set_backend so every AI feature routes to the chosen backend, and return
+    it (or None to derive from --mode)."""
+    backend = resolve('ai_backend', ai_backend, param='ai_backend')
+    try:
+        ai.set_backend(backend)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+    return backend
+
+
+def ai_backend_option(fn):
+    """Shared --ai-backend option for AI-consuming commands."""
+    return click.option(
+        '--ai-backend', 'ai_backend', default=None,
+        type=click.Choice(list(ai.ALL_BACKENDS)),
+        help='AI backend: ollama (local) / anthropic / openai / gemini '
+             '(default: derived from --mode). Cloud backends need the matching '
+             'API key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY.')(fn)
+
+
+def default_ai_model(mode, ai_backend, model):
+    """Resolve the model when --model wasn't given: use the effective backend's
+    default (so gpt-4o/gemini-1.5-flash apply instead of a leaked llama tag)."""
+    if model is not None:
+        return model
+    return ai.default_model(ai.resolve_backend(mode, ai_backend))
 
 
 def open_adapter(resolve, conn_str, dialect):
@@ -310,7 +344,8 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--output', default='documentation.html', help='Output file path')
 @click.option('--format', 'output_format', default=None, type=click.Choice(['html', 'markdown', 'pdf', 'json']), help='Output format (default: inferred from --output extension, else html)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
-@click.option('--model', default=None, help='Model to use (default: llama3.1:8b for local, claude-haiku-4-5 for cloud)')
+@click.option('--model', default=None, help='Model to use (default: per backend — llama3.1:8b / claude-haiku-4-5 / gpt-4o / gemini-1.5-flash)')
+@ai_backend_option
 @click.option('--schemas', default=None, help='Comma-separated list of schemas to include (default: all)')
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI descriptions, output schema only')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls during enrichment (default: 8)')
@@ -323,7 +358,7 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
-def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
+def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -347,6 +382,7 @@ def main(config, server, database, username, password, connection_string, dialec
     output_format = resolve('format', output_format, param='output_format')
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
     schemas = resolve('schemas', schemas)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
@@ -387,20 +423,22 @@ def main(config, server, database, username, password, connection_string, dialec
     output_format = resolve_format(output_format, output)
 
     # Resolve the model per backend when not explicitly set, so --model works
-    # for both without a local default (llama tag) leaking into cloud calls.
-    if model is None:
-        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+    # for every backend without a local default (llama tag) leaking into a cloud call.
+    model = default_ai_model(mode, ai_backend, model)
+    effective_backend = ai.resolve_backend(mode, ai_backend)
+    is_cloud = effective_backend in ai.CLOUD_BACKENDS
+    provider = _PROVIDER_NAMES.get(effective_backend, 'the cloud provider')
 
-    # Describe the data-egress posture for the chosen mode. --include-definitions
+    # Describe the data-egress posture for the chosen backend. --include-definitions
     # widens what is sent to the AI beyond schema metadata to the actual SQL
     # bodies of views/procedures/triggers.
     payload = "schema metadata + SQL definitions" if include_definitions else "schema metadata"
     if no_ai:
         privacy = "No AI - schema only, nothing leaves this machine"
-    elif mode == "local":
+    elif not is_cloud:
         privacy = f"local (Ollama) - {payload}, no data leaves this network"
     else:
-        privacy = f"cloud (Anthropic) - {payload} sent off-network"
+        privacy = f"cloud ({provider}) - {payload} sent off-network"
 
     click.echo(f"\nsqldoc v{__version__}")
     click.echo(f"{'='*40}")
@@ -414,19 +452,19 @@ def main(config, server, database, username, password, connection_string, dialec
     # Guard: cloud mode sends schema metadata off the client's network. Require
     # explicit confirmation so it can never happen by accident. Row data is never
     # read or transmitted — only table/column names, types, keys, and row counts.
-    if not no_ai and mode == "cloud":
+    if not no_ai and is_cloud:
         click.echo(
-            "WARNING: Cloud mode sends schema metadata (table names, column names,\n"
-            "         data types, keys, and row counts) to Anthropic's API. No table\n"
-            "         row data is ever read or sent. Use --mode local to keep\n"
-            "         everything on this network."
+            f"WARNING: Cloud mode sends schema metadata (table names, column names,\n"
+            f"         data types, keys, and row counts) to {provider}'s API. No table\n"
+            f"         row data is ever read or sent. Use --mode local to keep\n"
+            f"         everything on this network."
         )
         if include_definitions:
             click.echo(
-                "         --include-definitions ALSO sends the SQL bodies of your\n"
-                "         views, stored procedures, and triggers to Anthropic. These\n"
-                "         definitions can embed literals, comments, or business logic —\n"
-                "         review them before enabling this in cloud mode."
+                f"         --include-definitions ALSO sends the SQL bodies of your\n"
+                f"         views, stored procedures, and triggers to {provider}. These\n"
+                f"         definitions can embed literals, comments, or business logic -\n"
+                f"         review them before enabling this in cloud mode."
             )
         if yes:
             click.echo("Proceeding with cloud mode (confirmed via --yes).")
@@ -529,6 +567,7 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--sample', is_flag=True, default=False, help='Read up to 5 values per flagged column and use AI to confirm PII (opt-in; reads row data)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for --sample confirmation')
 @click.option('--model', default=None, help='Model for --sample confirmation (default per mode)')
+@ai_backend_option
 @click.option('--baseline', default=None, help='Findings-snapshot path for PII drift detection (default: .sqldoc-pii-snapshots/<database>.json)')
 @click.option('--no-baseline', is_flag=True, default=False, help='Disable PII drift detection for this scan')
 @click.option('--sarif', default=None, help='Also write findings as SARIF 2.1.0 to this path (for GitHub Advanced Security / Azure DevOps)')
@@ -540,7 +579,7 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
+def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -557,6 +596,7 @@ def scan(config, server, database, username, password, connection_string, dialec
     schemas = resolve('schemas', schemas)
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
     sample = resolve('sample', sample)
     baseline = resolve('baseline', baseline)
     no_baseline = resolve('no_baseline', no_baseline)
@@ -568,8 +608,7 @@ def scan(config, server, database, username, password, connection_string, dialec
 
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
-    if model is None:
-        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+    model = default_ai_model(mode, ai_backend, model)
 
     # Validate custom PII patterns before connecting, so config errors fail fast.
     try:
@@ -628,10 +667,11 @@ def scan(config, server, database, username, password, connection_string, dialec
             "         to let the AI confirm findings. Values are used only for\n"
             "         confidence scoring and are never stored."
         )
-        if mode == 'cloud':
+        if ai.is_cloud_backend(mode, ai_backend):
+            provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
             click.echo(
-                "         In cloud mode these sampled values (possibly real PII) are\n"
-                "         sent to Anthropic. Use --mode local to keep sampling on-network."
+                f"         In cloud mode these sampled values (possibly real PII) are\n"
+                f"         sent to {provider}. Use --mode local to keep sampling on-network."
             )
         if yes:
             click.echo("Proceeding with data sampling (confirmed via --yes).")
@@ -1116,12 +1156,13 @@ def intel(config, server, database, username, password, connection_string, diale
 @click.option('--no-glossary', 'no_glossary', is_flag=True, default=False, help='Skip the AI business-glossary generation (one AI call per table)')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode: local (Ollama) or cloud (Anthropic)')
 @click.option('--model', default=None, help='Model to use (default per mode)')
+@ai_backend_option
 @click.option('--no-ai', is_flag=True, default=False, help='Skip AI parts (NL-to-SQL + glossary); still runs anomaly + relationship analysis')
 @click.option('--concurrency', default=8, type=click.IntRange(1, 64), help='Parallel AI calls for glossary generation (default: 8)')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, no_ai, concurrency, yes, verify_offline):
+def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, no_ai, concurrency, yes, verify_offline):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -1142,18 +1183,20 @@ def insights(config, server, database, username, password, connection_string, di
     no_glossary = resolve('no_glossary', no_glossary, param='no_glossary')
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
     no_ai = resolve('no_ai', no_ai)
     concurrency = resolve('concurrency', concurrency)
     yes = resolve('yes', yes)
 
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
-    if model is None:
-        model = 'llama3.1:8b' if mode == 'local' else 'claude-haiku-4-5'
+    model = default_ai_model(mode, ai_backend, model)
     use_ai = not no_ai
+    is_cloud = ai.is_cloud_backend(mode, ai_backend)
+    provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
 
     if use_ai:
-        posture = "local (Ollama) - schema metadata only" if mode == "local" else "cloud (Anthropic) - schema metadata sent off-network"
+        posture = "local (Ollama) - schema metadata only" if not is_cloud else f"cloud ({provider}) - schema metadata sent off-network"
     else:
         posture = "No AI - heuristic analysis only, nothing leaves this machine"
 
@@ -1167,11 +1210,11 @@ def insights(config, server, database, username, password, connection_string, di
     click.echo(f"{'='*44}\n")
 
     # Cloud egress guard (same posture as `doc`): only schema metadata is sent.
-    if use_ai and mode == "cloud":
+    if use_ai and is_cloud:
         click.echo(
-            "WARNING: Cloud mode sends schema metadata (table/column names, data\n"
-            "         types, keys) and your questions to Anthropic's API. No table\n"
-            "         row data is read or sent. Use --mode local to stay on-network."
+            f"WARNING: Cloud mode sends schema metadata (table/column names, data\n"
+            f"         types, keys) and your questions to {provider}'s API. No table\n"
+            f"         row data is read or sent. Use --mode local to stay on-network."
         )
         if yes:
             click.echo("Proceeding with cloud mode (confirmed via --yes).")
@@ -1764,11 +1807,12 @@ def secure(config, server, database, username, password, connection_string, dial
 @click.option('--no-ai', is_flag=True, default=False, help='Skip the AI explanation of the top waits')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for the explanation')
 @click.option('--model', default=None, help='Model to use (default per mode)')
+@ai_backend_option
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 def waits(config, server, database, username, password, connection_string, dialect,
-          output, json_out, top, no_ai, mode, model, yes, verify_offline):
+          output, json_out, top, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Analyze what the server is waiting on and explain it with AI.
 
     Reads wait statistics (SQL Server sys.dm_os_wait_stats / PostgreSQL
@@ -1791,6 +1835,7 @@ def waits(config, server, database, username, password, connection_string, diale
     no_ai = resolve('no_ai', no_ai)
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
 
     label = server_name or database
     click.echo(f"\nsqldoc v{__version__}  -  Wait statistics")
@@ -1814,8 +1859,9 @@ def waits(config, server, database, username, password, connection_string, diale
     )
 
     if not no_ai and report.waits:
-        if mode == "cloud":
-            click.echo("Cloud AI: only wait-type names + percentages are sent to Anthropic (no schema, no data).")
+        if ai.is_cloud_backend(mode, ai_backend):
+            provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
+            click.echo(f"Cloud AI: only wait-type names + percentages are sent to {provider} (no schema, no data).")
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True
@@ -1920,11 +1966,12 @@ def ha(config, server, database, username, password, connection_string, dialect,
 @click.option('--no-ai', is_flag=True, default=False, help='Skip the AI explanation of the deadlock')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for the explanation')
 @click.option('--model', default=None, help='Model to use (default per mode)')
+@ai_backend_option
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 def deadlocks(config, server, database, username, password, connection_string, dialect,
-              output, json_out, no_ai, mode, model, yes, verify_offline):
+              output, json_out, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Find and visualize deadlocks, with an AI explanation of the cause and fix.
 
     SQL Server parses deadlock graphs from the system_health extended-events
@@ -1947,6 +1994,7 @@ def deadlocks(config, server, database, username, password, connection_string, d
     no_ai = resolve('no_ai', no_ai)
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
 
     label = server_name or database
     click.echo(f"\nsqldoc v{__version__}  -  Deadlock analysis")
@@ -1971,8 +2019,9 @@ def deadlocks(config, server, database, username, password, connection_string, d
 
     graph_events = [e for e in report.events if e.processes]
     if not no_ai and graph_events:
-        if mode == "cloud":
-            click.echo("Cloud AI: the deadlock's SQL statements are sent to Anthropic for the explanation.")
+        if ai.is_cloud_backend(mode, ai_backend):
+            provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
+            click.echo(f"Cloud AI: the deadlock's SQL statements are sent to {provider} for the explanation.")
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True
@@ -2011,11 +2060,12 @@ def deadlocks(config, server, database, username, password, connection_string, d
 @click.option('--no-ai', is_flag=True, default=False, help='Skip the AI plan explanations')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for the explanations')
 @click.option('--model', default=None, help='Model to use (default per mode)')
+@ai_backend_option
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 def plans(config, server, database, username, password, connection_string, dialect,
-          output, json_out, top, explain_top, no_ai, mode, model, yes, verify_offline):
+          output, json_out, top, explain_top, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Analyze the worst cached query plans and recommend fixes with AI.
 
     Pulls the top-N worst-performing cached queries (SQL Server
@@ -2039,6 +2089,7 @@ def plans(config, server, database, username, password, connection_string, diale
     no_ai = resolve('no_ai', no_ai)
     mode = resolve('mode', mode)
     model = resolve('model', model)
+    ai_backend = resolve_ai_backend(resolve, ai_backend)
 
     label = server_name or database
     click.echo(f"\nsqldoc v{__version__}  -  Query plan analysis")
@@ -2063,8 +2114,9 @@ def plans(config, server, database, username, password, connection_string, diale
     )
 
     if not no_ai and report.plans and int(explain_top) > 0:
-        if mode == "cloud":
-            click.echo("Cloud AI: the query text + detected plan patterns are sent to Anthropic.")
+        if ai.is_cloud_backend(mode, ai_backend):
+            provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
+            click.echo(f"Cloud AI: the query text + detected plan patterns are sent to {provider}.")
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True

@@ -236,7 +236,7 @@ def _schema_context(tables, limit=60):
 
 
 def _ai_call(prompt, mode, model):
-    return ai._call_ollama(prompt, model) if mode == "local" else ai._call_anthropic(prompt, model)
+    return ai.dispatch(prompt, mode, model)
 
 
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)

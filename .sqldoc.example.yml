@@ -17,7 +17,15 @@ output: documentation.html
 # format: html                # html / markdown / pdf / json (default: inferred
                               # from the output extension, else html)
 mode: local                   # local (Ollama) or cloud (Anthropic)
-# model: llama3.1:8b          # defaults per mode if omitted
+# ai_backend: anthropic       # ollama / anthropic / openai / gemini. Overrides
+                              # the mode->backend default (local=ollama,
+                              # cloud=anthropic). Cloud backends read an API key
+                              # from the environment / .env:
+                              #   anthropic -> ANTHROPIC_API_KEY
+                              #   openai    -> OPENAI_API_KEY   (pip install sqldoc[openai])
+                              #   gemini    -> GOOGLE_API_KEY   (pip install sqldoc[gemini])
+# model: llama3.1:8b          # defaults per backend if omitted
+                              # (llama3.1:8b / claude-haiku-4-5 / gpt-4o / gemini-1.5-flash)
 # schemas: HumanResources,Sales   # comma-separated allowlist; omit for all
 no_ai: false                  # true = schema-only, skip all LLM calls
 concurrency: 8                # parallel AI calls during enrichment (1-64)

@@ -41,12 +41,15 @@ databricks = ["databricks-sql-connector>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]
 db2 = ["ibm-db>=3.2"]
 mongodb = ["pymongo>=4.0"]
+# Optional cloud AI backends (Anthropic is a core dependency; ollama is local).
+openai = ["openai>=1.0"]
+gemini = ["google-generativeai>=0.5"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
 all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",
        "snowflake-connector-python>=3.0", "oracledb>=2.0",
        "databricks-sql-connector>=3.0", "google-cloud-bigquery>=3.0",
-       "ibm-db>=3.2", "pymongo>=4.0"]
+       "ibm-db>=3.2", "pymongo>=4.0", "openai>=1.0", "google-generativeai>=0.5"]
 test = ["pytest>=8", "pypdf>=4"]
 
 [project.urls]

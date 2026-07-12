@@ -130,18 +130,12 @@ Columns:
 
     prompt += "\n\nRespond with only the description, no preamble."
 
-    if mode == "local":
-        return _call_ollama(prompt, model)
-    else:
-        return _call_anthropic(prompt, model)
+    return dispatch(prompt, mode, model)
 
 def generate_column_description(table_name: str, col, mode: str = "local", model: str = "llama3.1:8b") -> str:
     prompt = f"""In one sentence, describe what the column '{col.name}' ({col.data_type}) likely stores in the '{table_name}' table. Respond with only the description, no preamble."""
 
-    if mode == "local":
-        return _call_ollama(prompt, model)
-    else:
-        return _call_anthropic(prompt, model)
+    return dispatch(prompt, mode, model)
 
 def generate_view_description(view: View, mode: str = "local", model: str = "llama3.1:8b",
                               include_definitions: bool = False) -> str:
@@ -161,10 +155,7 @@ Columns:
 
     prompt += "\n\nRespond with only the description, no preamble."
 
-    if mode == "local":
-        return _call_ollama(prompt, model)
-    else:
-        return _call_anthropic(prompt, model)
+    return dispatch(prompt, mode, model)
 
 def generate_procedure_description(proc: StoredProcedure, mode: str = "local", model: str = "llama3.1:8b",
                                    include_definitions: bool = False) -> str:
@@ -189,10 +180,77 @@ Parameters:
 
     prompt += "\n\nRespond with only the description, no preamble."
 
-    if mode == "local":
+    return dispatch(prompt, mode, model)
+
+# --- AI backends -----------------------------------------------------------
+# Four interchangeable backends behind one prompt interface. `ollama` is local;
+# `anthropic`/`openai`/`gemini` are cloud. Which one runs is chosen by
+# resolve_backend(): an explicit --ai-backend (recorded via set_backend) wins,
+# otherwise it derives from --mode (local->ollama, cloud->anthropic) so existing
+# behaviour is unchanged. Each backend has a sensible default model.
+
+CLOUD_BACKENDS = {"anthropic", "openai", "gemini"}
+ALL_BACKENDS = ("ollama", "anthropic", "openai", "gemini")
+
+BACKEND_MODELS = {
+    "ollama": "llama3.1:8b",
+    "anthropic": "claude-haiku-4-5",
+    "openai": "gpt-4o",
+    "gemini": "gemini-1.5-flash",
+}
+
+# Process-wide backend override, set once from --ai-backend so downstream
+# per-command AI helpers (insights, waits, plans, deadlocks, the agent) all
+# route to the chosen backend without threading it through every signature.
+_ACTIVE_BACKEND = None
+
+
+def set_backend(name):
+    """Record the --ai-backend choice for the process (None clears it)."""
+    global _ACTIVE_BACKEND
+    if name and name not in ALL_BACKENDS:
+        raise ValueError(f"Unknown AI backend '{name}' (choose from {', '.join(ALL_BACKENDS)}).")
+    _ACTIVE_BACKEND = name or None
+
+
+def resolve_backend(mode="local", backend=None):
+    """Pick the backend: explicit arg > --ai-backend override > derived from mode."""
+    if backend:
+        return backend
+    if _ACTIVE_BACKEND:
+        return _ACTIVE_BACKEND
+    return "ollama" if mode == "local" else "anthropic"
+
+
+def default_model(backend):
+    return BACKEND_MODELS.get(backend, "llama3.1:8b")
+
+
+def is_cloud_backend(mode="local", backend=None):
+    """True when the effective backend sends prompts off-network (drives the
+    privacy banner + cloud-confirm prompt)."""
+    return resolve_backend(mode, backend) in CLOUD_BACKENDS
+
+
+def dispatch(prompt: str, mode: str = "local", model: str = None,
+             backend: str = None, max_tokens: int = 200) -> str:
+    """Call the effective AI backend with a single prompt and return its text.
+    The one entry point every AI feature funnels through."""
+    backend = resolve_backend(mode, backend)
+    if not model or (backend != "ollama" and model in BACKEND_MODELS.values() and model != BACKEND_MODELS[backend]):
+        # No model given, or a different backend's default model leaked through
+        # (mode-derived defaulting) — use this backend's own default.
+        model = default_model(backend)
+    if backend == "ollama":
         return _call_ollama(prompt, model)
-    else:
-        return _call_anthropic(prompt, model)
+    if backend == "anthropic":
+        return _call_anthropic(prompt, model, max_tokens)
+    if backend == "openai":
+        return _call_openai(prompt, model, max_tokens)
+    if backend == "gemini":
+        return _call_gemini(prompt, model, max_tokens)
+    raise ValueError(f"Unknown AI backend '{backend}'.")
+
 
 def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
     def do():
@@ -205,16 +263,75 @@ def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
         return response.json()["response"].strip()
     return _retry(do, f"ollama:{model}")
 
-def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5") -> str:
+def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5", max_tokens: int = 200) -> str:
     def do():
         client = _get_anthropic_client()
         message = client.messages.create(
             model=model,
-            max_tokens=200,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
     return _retry(do, f"anthropic:{model}")
+
+
+# OpenAI + Gemini clients are created lazily and shared (both SDKs are
+# thread-safe and pool connections). The SDKs are optional dependencies —
+# install with `pip install sqldoc[openai]` / `sqldoc[gemini]`.
+_openai_client = None
+_openai_lock = threading.Lock()
+_gemini_configured = False
+_gemini_lock = threading.Lock()
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        with _openai_lock:
+            if _openai_client is None:
+                try:
+                    from openai import OpenAI
+                except ImportError:
+                    raise ImportError(
+                        "The OpenAI backend needs the 'openai' package. "
+                        "Install it with: pip install sqldoc[openai]")
+                # Reads OPENAI_API_KEY from the environment.
+                _openai_client = OpenAI()
+    return _openai_client
+
+
+def _call_openai(prompt: str, model: str = "gpt-4o", max_tokens: int = 300) -> str:
+    def do():
+        client = _get_openai_client()
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (resp.choices[0].message.content or "").strip()
+    return _retry(do, f"openai:{model}")
+
+
+def _call_gemini(prompt: str, model: str = "gemini-1.5-flash", max_tokens: int = 300) -> str:
+    def do():
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            raise ImportError(
+                "The Gemini backend needs the 'google-generativeai' package. "
+                "Install it with: pip install sqldoc[gemini]")
+        global _gemini_configured
+        if not _gemini_configured:
+            with _gemini_lock:
+                if not _gemini_configured:
+                    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+                    genai.configure(api_key=api_key)
+                    _gemini_configured = True
+        gm = genai.GenerativeModel(model)
+        resp = gm.generate_content(
+            prompt, generation_config={"max_output_tokens": max_tokens})
+        return (resp.text or "").strip()
+    return _retry(do, f"gemini:{model}")
 
 def _run_tasks(tasks: list, concurrency: int, label: str):
     """Run independent, zero-argument LLM-call tasks across a thread pool.
