@@ -20,6 +20,7 @@ from sqldoc.adapters.oracle import OracleAdapter
 from sqldoc.adapters.azure_mi import AzureMiAdapter
 from sqldoc.adapters.synapse import SynapseAdapter
 from sqldoc.adapters.redshift import RedshiftAdapter
+from sqldoc.adapters.databricks import DatabricksAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -37,6 +38,7 @@ DIALECTS: dict = {
     "azure_managed_instance": AzureMiAdapter,
     "synapse": SynapseAdapter,
     "redshift": RedshiftAdapter,
+    "databricks": DatabricksAdapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
@@ -62,6 +64,9 @@ def detect_dialect(connection_string: str) -> str:
         return "synapse"
     if "redshift.amazonaws.com" in cs or cs.startswith("redshift://"):
         return "redshift"
+    if ("azuredatabricks.net" in cs or "databricks.com" in cs
+            or cs.startswith("databricks://")):
+        return "databricks"
     if "database.windows.net" in cs:
         # Managed Instance hosts carry an MI marker (".mi." / "managedinstance");
         # a plain Azure host is Azure SQL Database.
@@ -108,6 +113,7 @@ __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
     "OracleAdapter", "AzureMiAdapter", "SynapseAdapter", "RedshiftAdapter",
+    "DatabricksAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

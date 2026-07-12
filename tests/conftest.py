@@ -207,6 +207,20 @@ class FakeCursor:
             self._last = "rs_wlm"
         elif "stl_alert_event_log" in sql:
             self._last = "rs_alerts"
+        elif "DBX_TABLES" in sql:
+            self._last = "dbx_tables"
+        elif "DBX_COLUMNS" in sql:
+            self._last = "dbx_columns"
+        elif "DBX_PK" in sql:
+            self._last = "dbx_pk"
+        elif "DBX_VIEWS" in sql:
+            self._last = "dbx_views"
+        elif "DBX_ROUTINES" in sql:
+            self._last = "dbx_routines"
+        elif "DBX_HISTORY" in sql:
+            self._last = "dbx_history"
+        elif "DBX_DETAIL" in sql:
+            self._last = "dbx_detail"
         elif "backupset" in sql:
             self._last = "backups"
         elif "'archive_mode'" in sql:
