@@ -46,6 +46,53 @@ def send_webex(config: dict, title: str, text: str, timeout: float = 10.0):
     resp.raise_for_status()
 
 
+def _as_list(v):
+    if v is None:
+        return []
+    return [v] if isinstance(v, str) else list(v)
+
+
+def send_twilio_sms(config: dict, text: str, timeout: float = 10.0):
+    """Send an SMS to one or more numbers via the Twilio REST API. `config` keys:
+    account_sid, auth_token, from_number, to (str or list of E.164 numbers)."""
+    sid = config.get("account_sid")
+    token = config.get("auth_token")
+    frm = config.get("from_number") or config.get("from")
+    recipients = _as_list(config.get("to"))
+    if not (sid and token and frm and recipients):
+        raise ValueError("twilio config needs account_sid, auth_token, from_number, and to.")
+    body = (text or "")[:1500]
+    for num in recipients:
+        resp = requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+            auth=(sid, token), data={"From": frm, "To": num, "Body": body}, timeout=timeout)
+        resp.raise_for_status()
+
+
+def send_whatsapp(config: dict, text: str, timeout: float = 10.0):
+    """Send a WhatsApp message via the Meta WhatsApp Business Cloud API. `config`
+    keys: token, phone_number_id, to (str or list), api_version (default v18.0)."""
+    token = config.get("token")
+    pid = config.get("phone_number_id")
+    recipients = _as_list(config.get("to"))
+    if not (token and pid and recipients):
+        raise ValueError("whatsapp config needs token, phone_number_id, and to.")
+    ver = config.get("api_version", "v18.0")
+    for num in recipients:
+        resp = requests.post(
+            f"https://graph.facebook.com/{ver}/{pid}/messages",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"messaging_product": "whatsapp", "to": num, "type": "text",
+                  "text": {"body": (text or "")[:4000]}}, timeout=timeout)
+        resp.raise_for_status()
+
+
+def send_sms_via_gateway(config: dict, subject: str, text: str):
+    """Send via an SMTP-to-SMS gateway: `config` is an SMTP dict whose `to`
+    addresses are the carrier gateway addresses (e.g. 5551234567@vtext.com)."""
+    send_email(config, subject, (text or "")[:300])
+
+
 def _send(smtp: dict, msg, recipients, sender):
     host = smtp.get("smtp_host")
     port = int(smtp.get("smtp_port", 587))
@@ -139,6 +186,28 @@ class Notifier:
                 results.append(("webex", True, None))
             except Exception as e:
                 results.append(("webex", False, f"{type(e).__name__}: {e}"))
+
+        sms_text = f"[sqldoc] {title}"
+        if getattr(self.cfg, "twilio", None):
+            try:
+                send_twilio_sms(self.cfg.twilio, sms_text)
+                results.append(("sms", True, None))
+            except Exception as e:
+                results.append(("sms", False, f"{type(e).__name__}: {e}"))
+
+        if getattr(self.cfg, "whatsapp", None):
+            try:
+                send_whatsapp(self.cfg.whatsapp, f"[sqldoc] {title}\n{text}")
+                results.append(("whatsapp", True, None))
+            except Exception as e:
+                results.append(("whatsapp", False, f"{type(e).__name__}: {e}"))
+
+        if getattr(self.cfg, "sms_gateway", None):
+            try:
+                send_sms_via_gateway(self.cfg.sms_gateway, f"[sqldoc] {title}", text)
+                results.append(("sms_gateway", True, None))
+            except Exception as e:
+                results.append(("sms_gateway", False, f"{type(e).__name__}: {e}"))
 
         if self.cfg.smtp:
             try:

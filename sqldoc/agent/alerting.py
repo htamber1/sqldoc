@@ -23,6 +23,7 @@ from datetime import datetime
 
 from sqldoc.agent.notify import (
     Notifier, send_slack, send_teams, send_webex, send_email,
+    send_twilio_sms, send_whatsapp, send_sms_via_gateway,
 )
 
 # Default severity per event type. Overridable via alerting.severity_overrides.
@@ -40,7 +41,8 @@ DEFAULT_SEVERITY = {
     "nl_alert": "medium",
     "doc_updated": "info",
 }
-_ALL_CHANNELS = ("slack", "teams", "webex", "email", "pagerduty", "opsgenie", "servicenow")
+_ALL_CHANNELS = ("slack", "teams", "webex", "email", "sms", "whatsapp", "sms_gateway",
+                 "pagerduty", "opsgenie", "servicenow")
 _WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
              "friday": 4, "saturday": 5, "sunday": 6}
 
@@ -205,6 +207,12 @@ class AlertManager(Notifier):
             s.add("teams")
         if getattr(self.cfg, "webex", None):
             s.add("webex")
+        if getattr(self.cfg, "twilio", None):
+            s.add("sms")
+        if getattr(self.cfg, "whatsapp", None):
+            s.add("whatsapp")
+        if getattr(self.cfg, "sms_gateway", None):
+            s.add("sms_gateway")
         if self.cfg.smtp:
             s.add("email")
         if self.a.pagerduty:
@@ -226,6 +234,12 @@ class AlertManager(Notifier):
             send_webex(self.cfg.webex, f"[sqldoc] {title}", text)
         elif channel == "email":
             send_email(self.cfg.smtp, f"[sqldoc agent] {title}", text)
+        elif channel == "sms":
+            send_twilio_sms(self.cfg.twilio, f"[sqldoc] {title}")
+        elif channel == "whatsapp":
+            send_whatsapp(self.cfg.whatsapp, f"[sqldoc] {title}\n{text}")
+        elif channel == "sms_gateway":
+            send_sms_via_gateway(self.cfg.sms_gateway, f"[sqldoc] {title}", text)
         elif channel == "pagerduty":
             send_pagerduty(self.a.pagerduty, title, severity, db, dedup_key)
         elif channel == "opsgenie":

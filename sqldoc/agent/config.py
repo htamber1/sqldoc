@@ -53,6 +53,9 @@ class NotifyConfig:
     slack_webhook: str = None
     teams_webhook: str = None
     webex: dict = None            # {token, room_id}
+    twilio: dict = None           # {account_sid, auth_token, from_number, to}
+    whatsapp: dict = None         # {token, phone_number_id, to}
+    sms_gateway: dict = None      # an SMTP dict whose `to` are carrier gateway addresses
     smtp: dict = None
     on: list = field(default_factory=lambda: list(EVENT_TYPES))
 
@@ -232,6 +235,9 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         slack_webhook=n.get("slack_webhook"),
         teams_webhook=n.get("teams_webhook"),
         webex=n.get("webex"),
+        twilio=n.get("twilio"),
+        whatsapp=n.get("whatsapp"),
+        sms_gateway=n.get("sms_gateway"),
         smtp=n.get("email"),
         on=list(on),
     )
