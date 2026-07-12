@@ -4,6 +4,45 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-07-12
+
+**Full-platform parity: ten new database targets + a REST API.** All new
+adapters are mock-tested; drivers install as optional extras. sqldoc now covers
+**17 dialects**.
+
+### Added — cloud & platform adapters
+- **Azure SQL Managed Instance** (`azure_managed_instance`) — subclasses the SQL
+  Server adapter with full parity; Azure-managed backup via
+  `sys.dm_database_backups` and built-in geo-replication HA. Auto-detected from
+  a `*.database.windows.net` MI host.
+- **Azure Synapse Analytics** (`synapse`) — distribution model (HASH/ROUND_ROBIN/
+  REPLICATE + column), data skew, and workload-management concurrency slots.
+- **Amazon Redshift** (`redshift`) — distribution style, sort keys, skew,
+  unsorted %, WLM queues, and VACUUM/ANALYZE recommendations.
+- **Databricks** (`databricks`, extra `[databricks]`) — Delta tables with
+  partition columns, version history, and OPTIMIZE/VACUUM hints.
+- **Google BigQuery** (`bigquery`, extra `[bigquery]`) — partitioning,
+  clustering, and storage stats.
+- **CockroachDB** (`cockroachdb`) — zone configurations + node localities.
+- **IBM Db2** (`db2`, extra `[db2]`) — SYSCAT metadata, tablespaces, buffer-pool
+  hit ratios, and lock-wait analysis.
+- **MongoDB** (`mongodb`, extra `[mongodb]`) — collections as pseudo-tables with
+  a schema inferred from document sampling, plus index + collection stats.
+- **Amazon Aurora** (`aurora_postgres` / `aurora_mysql`) — thin PG/MySQL
+  subclasses with Aurora replica-lag metrics.
+
+### Added — REST API (`sqldoc serve`)
+A local stdlib HTTP server exposing the commands as JSON endpoints
+(`/api/doc`, `/api/scan`, `/api/health`, `/api/secure`, `/api/server`,
+`/api/waits`, `/api/plans`, `/api/ha`, `/api/backup`, `POST /api/query` for
+natural-language→SQL, and `/api/agent/status`), with `X-API-Key` authentication
+from `.sqldoc.yml`.
+
+### Notes
+- 525 tests passing (all mocked). The Azure SQL MI paths and the REST API were
+  additionally live-validated against SQL Server 2022 (the REST API returned
+  71 tables / a security score for AdventureWorks with auth enforced).
+
 ## [2.2.0] — 2026-07-12
 
 **Five performance + planning features.** SQL-Server paths live-validated against
