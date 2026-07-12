@@ -32,6 +32,7 @@ from sqldoc.intel import collect_linked_servers
 from sqldoc.backup import collect_backups, stale_databases, BACKUP_DIALECTS
 from sqldoc.ha import collect_ha, behind_replicas, HA_DIALECTS
 from sqldoc.capacity import collect_capacity_snapshot
+from sqldoc.agent import nl_alerts as _nl_alerts
 
 
 def pii_score(high: int, medium: int, low: int) -> float:
@@ -186,6 +187,26 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
         if getattr(agent_config, "ha_monitoring", False) and getattr(adapter, "dialect", "") in HA_DIALECTS:
             _poll_ha(store, name, adapter, agent_config, notifier, result)
 
+        # --- natural-language alert rules (AI-evaluated) ---
+        if getattr(agent_config, "nl_alerts", None) and not db_config.no_ai:
+            context = {
+                "database": name,
+                "dialect": getattr(adapter, "dialect", ""),
+                "pii": {"high": high, "medium": medium, "low": low, "score": score},
+                "schema_changed": schema_changed,
+                "new_pii_findings": (pii_diff["counts"]["added"] if pii_diff else 0),
+                "health_issues": health_issues,
+                "database_size_mb": cap.get("database_size_mb"),
+                "disk_free_mb": cap.get("disk_free_mb"),
+                "server_alerts": {k: result.get(k) for k in
+                                  ("job_failures", "disk_low", "errorlog_critical", "linked_down",
+                                   "backup_stale", "replica_lag", "tempdb_version_store")
+                                  if result.get(k)},
+                "recent_events": [{"type": e["type"], "summary": e["summary"], "at": e["at"]}
+                                  for e in store.recent_events(name, limit=15)],
+            }
+            _poll_nl_alerts(store, name, db_config, agent_config, notifier, result, context)
+
         store.finish_run(run_id, "ok")
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
@@ -287,6 +308,23 @@ def _poll_backups(store, name, adapter, agent_config, notifier, result):
         result["notifications"] += notifier.notify(
             "backup_stale", f"{name}: backup/PITR issue", headline)
         result["backup_stale"] = len(stale)
+
+
+def _poll_nl_alerts(store, name, db_config, agent_config, notifier, result, context):
+    """Send the plain-English alert rules + current state to the LLM and fire any
+    it decides should fire. Isolated so an AI failure is recorded, not fatal."""
+    try:
+        fired = _nl_alerts.evaluate(agent_config.nl_alerts, context,
+                                    mode=db_config.mode, model=db_config.model)
+    except Exception as e:
+        store.add_event(name, "error", f"NL alerts skipped: {type(e).__name__}: {e}")
+        return
+    for alert in fired:
+        headline = alert.get("message") or alert.get("rule")
+        store.add_event(name, "nl_alert", headline, {"rule": alert.get("rule")})
+        result["notifications"] += notifier.notify("nl_alert", f"{name}: {alert.get('rule')}", headline)
+    if fired:
+        result["nl_alerts_fired"] = len(fired)
 
 
 def _poll_ha(store, name, adapter, agent_config, notifier, result):

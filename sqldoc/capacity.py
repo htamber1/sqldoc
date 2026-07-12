@@ -43,8 +43,11 @@ def collect_capacity_snapshot(adapter) -> dict:
             "max_size_mb": None, "fragmentation_avg": None, "top_tables": []}
     if dialect not in CAPACITY_DIALECTS:
         return snap
-    conn = adapter.connect()
-    cursor = adapter.cursor(conn)
+    try:
+        conn = adapter.connect()
+        cursor = adapter.cursor(conn)
+    except Exception:
+        return snap
 
     def sub(fn):
         try:
@@ -52,13 +55,18 @@ def collect_capacity_snapshot(adapter) -> dict:
         except Exception:
             pass
 
-    if dialect in ("sqlserver", "azuresql"):
-        _capacity_sqlserver(cursor, snap, sub)
-    elif dialect == "postgres":
-        _capacity_postgres(cursor, snap, sub)
-    else:
-        _capacity_mysql(cursor, snap, sub)
-    conn.close()
+    try:
+        if dialect in ("sqlserver", "azuresql"):
+            _capacity_sqlserver(cursor, snap, sub)
+        elif dialect == "postgres":
+            _capacity_postgres(cursor, snap, sub)
+        else:
+            _capacity_mysql(cursor, snap, sub)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return snap
 
 

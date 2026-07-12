@@ -243,6 +243,35 @@ def test_linked_server_down_alert(monkeypatch, store):
     assert "linked_server_down" in events
 
 
+def test_nl_alert_fires(monkeypatch, store):
+    from sqldoc.agent.config import EVENT_TYPES
+    from sqldoc.agent import nl_alerts
+    monkeypatch.setattr(nl_alerts, "evaluate",
+                        lambda rules, ctx, mode="local", model=None: [{"rule": rules[0], "message": "Backup overdue!"}])
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]))
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=False)
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(on=EVENT_TYPES),
+                     nl_alerts=["alert when a database has not been backed up in 24 hours"])
+    notifier = RecNotifier(on=EVENT_TYPES)
+    r = poll_database(store, db, ac, notifier)
+    assert r["status"] == "ok" and r.get("nl_alerts_fired") == 1
+    assert any(c[0] == "nl_alert" for c in notifier.calls)
+    assert "nl_alert" in {e["type"] for e in store.recent_events("prod")}
+
+
+def test_nl_alert_skipped_when_no_ai(monkeypatch, store):
+    from sqldoc.agent import nl_alerts
+    monkeypatch.setattr(nl_alerts, "evaluate",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run")))
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]))
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=True)
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(), nl_alerts=["alert on anything"])
+    r = poll_database(store, db, ac, RecNotifier())
+    assert "nl_alerts_fired" not in r          # no_ai -> NL alerts skipped
+
+
 def test_poll_records_error_and_does_not_raise(monkeypatch, store):
     def boom(cs, d=None):
         raise RuntimeError("connection refused")

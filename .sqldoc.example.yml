@@ -94,6 +94,13 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   disk_threshold_percent: 10    # alert when a volume drops below this % free
 #   errorlog_severity: 17         # alert on ERRORLOG entries at/above this severity
 #   tempdb_version_store_mb: 2048 # alert when the tempdb version store exceeds this (SQL Server)
+#   # Natural-language alert rules — the agent sends these + the current state to
+#   # the AI each poll, and the AI decides whether to fire and writes the message.
+#   # (Accuracy improves with a stronger model; use mode: cloud for best results.)
+#   alerts:
+#     - alert when any database has not been backed up in 24 hours
+#     - alert when a SQL Agent job fails three times in a row
+#     - alert when there are more than 5 HIGH-severity PII findings
 #   # Backup / point-in-time-recovery monitoring (SQL Server, PostgreSQL, MySQL).
 #   backup_monitoring: true       # alert on stale/never-backed-up databases + PITR off
 #   backup_max_age_hours: 24      # a database's last backup older than this is "stale"
@@ -121,4 +128,4 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #       from: sqldoc@example.com
 #       to: [dba@example.com]
 #     # which events to send (server_monitoring adds the last four)
-#     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down, backup_stale, replica_lag, tempdb_version_store]
+#     on: [schema_change, new_pii, health_degradation, job_failure, disk_low, errorlog_critical, linked_server_down, backup_stale, replica_lag, tempdb_version_store, nl_alert]

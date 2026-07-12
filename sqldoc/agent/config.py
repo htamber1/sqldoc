@@ -34,7 +34,7 @@ from sqldoc.adapters import DIALECTS, detect_dialect
 
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
-               "backup_stale", "replica_lag", "tempdb_version_store"]
+               "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert"]
 
 
 @dataclass
@@ -75,6 +75,8 @@ class AgentConfig:
     # HA / replication monitoring (all dialects with a replication mechanism).
     ha_monitoring: bool = False
     replica_lag_threshold_seconds: float = 30.0  # alert when a replica lags more than this
+    # Natural-language alert rules (plain English; evaluated by the LLM each poll).
+    nl_alerts: list = field(default_factory=list)
 
 
 def _resolve_connection(entry: dict) -> tuple:
@@ -128,6 +130,10 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     backup_max_age_hours = float(agent.get("backup_max_age_hours", 24.0))
     ha_monitoring = bool(agent.get("ha_monitoring", False))
     replica_lag_threshold = float(agent.get("replica_lag_threshold_seconds", 30.0))
+    raw_alerts = agent.get("alerts") or []
+    if not isinstance(raw_alerts, list) or any(not isinstance(a, str) for a in raw_alerts):
+        raise ValueError("agent.alerts must be a list of plain-English rule strings.")
+    nl_alerts = [a.strip() for a in raw_alerts if a.strip()]
 
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
@@ -168,4 +174,5 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         errorlog_severity=errorlog_severity, tempdb_version_store_mb=tempdb_vstore_mb,
         backup_monitoring=backup_monitoring, backup_max_age_hours=backup_max_age_hours,
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
+        nl_alerts=nl_alerts,
     )
