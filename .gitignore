@@ -16,3 +16,7 @@ dist/
 .sqldoc-cache/
 # PII-scan finding snapshots for drift detection.
 .sqldoc-pii-snapshots/
+htmlcov/
+.coverage
+coverage.xml
+coverage.json

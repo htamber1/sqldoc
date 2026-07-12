@@ -1,0 +1,24 @@
+# Coverage configuration for sqldoc.
+#   venv/Scripts/python.exe -m coverage run --source=sqldoc -m pytest -q
+#   venv/Scripts/python.exe -m coverage report --sort=cover
+#   venv/Scripts/python.exe -m coverage html   # -> htmlcov/
+[run]
+source = sqldoc
+branch = False
+omit =
+    */tests/*
+    */__pycache__/*
+
+[report]
+# Lines that never need coverage (defensive / unreachable / debug).
+exclude_lines =
+    pragma: no cover
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    def __repr__
+    if TYPE_CHECKING:
+show_missing = True
+precision = 1
+
+[html]
+directory = htmlcov
