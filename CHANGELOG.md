@@ -4,6 +4,53 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.0] — 2026-07-12
+
+**`sqldoc access` — automate the SQL Server access-request workflow.** A new
+seven-command suite that cross-references Active Directory / Entra ID with SQL
+Server logins + role memberships, parses plain-English requests, generates
+best-practice grant + rollback scripts, processes Jira tickets end-to-end, runs
+access reviews, drives an email approval workflow, and recommends least-privilege
+roles. Active Directory is optional (`pip install sqldoc[activedirectory]`); the
+LDAP (ldap3, pure Python) and Microsoft Graph back-ends are auto-detected from
+the domain config. Every command has HTML + `--json` output (air-gap safe).
+
+### Added — the access suite
+- **`sqldoc access check --user <id>`** — resolve a user in AD/Entra, list their
+  groups, cross-reference with SQL Server logins + database role memberships, and
+  flag the PII tables they can currently reach. (`access/ad.py`, `sqlserver.py`,
+  `checker.py`, `model.py`.)
+- **`sqldoc access request --user --request "..."`** — AI parses a plain-English
+  request into database/schema/level (deterministic heuristic fallback + the
+  `--no-ai` path) and returns ALREADY / PARTIAL / NONE with a gap analysis.
+- **`sqldoc access script`** — generate the grant SQL (check-then-create the
+  login, Windows group preferred, add to the least-privilege role, every
+  statement commented) plus a matching rollback and an impact analysis flagging
+  PII tables. `--sql-out` writes grant + rollback files.
+- **`sqldoc access jira --ticket TICKET-1234`** — pull the ticket (existing
+  `jira:` integration), extract who needs what access + justification (AI), run
+  the check + script workflow, and post the script + impact + execution
+  instructions back as a comment, optionally transitioning the ticket.
+- **`sqldoc access review`** — flag orphaned Windows logins, inactive accounts,
+  separation-of-duties violations (modify *and* approve), service accounts with
+  admin rights, and accounts over-privileged vs their AD job title — each with a
+  generated fix script, prioritized most-severe first.
+- **`sqldoc access approve`** — email a generated script to the configured
+  approver (per database/schema) with approve/reject links; approved scripts are
+  logged to the audit trail, rejected scripts post a Jira comment with the
+  reason. Decisions via `--token --decision` or the dashboard links.
+- **`sqldoc access recommend --user <id>`** — recommend least-privilege database
+  roles from the user's title + department, learned from peers with the same role
+  profile, capped at the level the title justifies.
+
+### Notes
+- New optional extra: `activedirectory` (ldap3 + msal). Auto-detects on-prem LDAP
+  vs Entra ID / Graph from the domain config.
+- All access catalog access is read-only (`sys.*` views); the suite is
+  mock-tested (no live AD/SQL Server in the suite). Inactivity uses
+  `sys.dm_exec_sessions` (best-effort — accurate history needs a logon audit).
+- Test count: 849.
+
 ## [2.5.0] — 2026-07-12
 
 **Integration suite: publish documentation and route findings to the systems

@@ -331,6 +331,25 @@ to **Microsoft Teams**, **Cisco Webex**, **PagerDuty**, and **OpsGenie**, with a
 `alerting:` layer for severity routing, maintenance windows, deduplication,
 escalation paths, and a 30-day alert history on the dashboard.
 
+## Access request workflow (v2.6)
+
+`sqldoc access` automates the SQL Server access-request grind — cross-referencing
+**Active Directory / Entra ID** group membership with SQL Server logins + role
+memberships. AD is optional (`pip install sqldoc[activedirectory]`); the LDAP
+(ldap3, pure Python) and Microsoft Graph back-ends auto-detect from your domain.
+
+| Command | What it does |
+|---|---|
+| `sqldoc access check --user jsmith` | Show all access a user has: AD groups, SQL logins, DB roles, and the PII tables they can reach |
+| `sqldoc access request --user jsmith --request "write to Sales"` | AI-parse a plain-English request → ALREADY / PARTIAL / NONE gap analysis |
+| `sqldoc access script ...` | Generate the grant SQL (Windows-group login, least-privilege role, comments) + rollback + PII impact |
+| `sqldoc access jira --ticket SEC-1234` | Pull a ticket, run the workflow, post the script + instructions back as a comment |
+| `sqldoc access review` | Flag orphaned/inactive/over-privileged accounts, SoD violations, and service-account excess — with fix scripts |
+| `sqldoc access approve` | Email a script to the configured approver; approvals hit the audit trail, rejections comment on Jira |
+| `sqldoc access recommend --user jsmith` | Recommend least-privilege roles from the user's title + department, learned from peers |
+
+Every command has HTML + `--json` output. All catalog access is read-only.
+
 ## How does it compare?
 
 sqldoc overlaps with commercial documentation and data-catalog tools but takes a
