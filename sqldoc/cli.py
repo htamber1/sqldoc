@@ -21,7 +21,8 @@ from sqldoc.health import collect_health, summarize as health_summarize
 from sqldoc.health_renderer import render_health_html, build_health_json
 from sqldoc.quality import collect_quality, summarize as quality_summarize
 from sqldoc.quality_renderer import render_quality_html, build_quality_json
-from sqldoc.intel import collect_intel, summarize as intel_summarize
+from sqldoc.intel import (collect_intel, summarize as intel_summarize,
+                          collect_linked_servers, summarize_linked)
 from sqldoc.intel_renderer import render_intel_html, build_intel_json
 from sqldoc.insights import collect_insights, summarize as insights_summarize
 from sqldoc.insights_renderer import render_insights_html, build_insights_json
@@ -894,15 +895,21 @@ def quality(config, server, database, username, password, connection_string, dia
 @click.option('--json', 'json_out', default=None, help='Also write the report as machine-readable JSON to this path')
 @click.option('--baseline', default=None, help='A prior schema snapshot (JSON) to diff against; enables migration-script generation')
 @click.option('--migration-out', 'migration_out', default=None, help='Write the generated migration DDL to this .sql path (requires --baseline)')
+@click.option('--linked-servers', 'linked_servers', is_flag=True, default=False,
+              help='Discover linked servers (sys.servers), their security config, and test connectivity (SQL Server only)')
+@click.option('--traverse-linked-servers', 'traverse_linked', is_flag=True, default=False,
+              help='Also probe each reachable linked server for a version/health check (implies --linked-servers)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, verify_offline):
-    """Schema intelligence: naming, orphaned FKs, impact analysis, migrations.
+def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline):
+    """Schema intelligence: naming, orphaned FKs, impact analysis, migrations, linked servers.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
     implied-but-unenforced foreign keys, maps what depends on each table, and —
     with --baseline <snapshot.json> — generates a review-ready migration script
-    from the differences.
+    from the differences. With --linked-servers, also discovers linked servers
+    (sys.servers), maps their security config, and tests connectivity;
+    --traverse-linked-servers additionally probes each reachable one.
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
@@ -946,6 +953,18 @@ def intel(config, server, database, username, password, connection_string, diale
     report = collect_intel(database, tables, views=views, procedures=procedures,
                            baseline_snapshot=baseline_snapshot)
 
+    # Linked-server network mapping (SQL Server only).
+    if linked_servers or traverse_linked:
+        if not adapter.capabilities.server_monitoring:
+            click.echo(click.style(
+                f"  ! linked-server discovery skipped: not available on "
+                f"{adapter.display_name} (SQL Server only).", fg='yellow'), err=True)
+        else:
+            click.echo("Discovering linked servers...")
+            report.linked_servers = collect_linked_servers(adapter, traverse=traverse_linked)
+            for section, msg in report.linked_servers.errors:
+                click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
     s = intel_summarize(report)
     click.echo(
         click.style(f"Naming issues: {s['naming_issues']}", fg='yellow')
@@ -953,6 +972,13 @@ def intel(config, server, database, username, password, connection_string, diale
         + click.style(f"    High-impact tables: {s['high_impact_tables']}", fg='magenta')
         + (f"    Migration: generated" if s['has_migration'] else "")
     )
+    if report.linked_servers is not None:
+        ls = summarize_linked(report.linked_servers)
+        click.echo(
+            click.style(f"Linked servers: {ls['linked_servers']}", fg='blue')
+            + click.style(f"    Reachable: {ls['reachable']}", fg='green')
+            + click.style(f"    Unreachable: {ls['unreachable']}", fg='red' if ls['unreachable'] else 'green')
+        )
 
     click.echo("\nRendering report...")
     render_intel_html(database, report, output)

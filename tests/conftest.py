@@ -156,6 +156,16 @@ class FakeCursor:
             self._last = "agentjobsteps"
         elif "xp_readerrorlog" in sql:
             self._last = "errorlog"
+        elif "@@SERVERNAME" in sql:
+            self._last = "localname"
+        elif "linked_logins" in sql:
+            self._last = "linkedlogins"
+        elif "sp_testlinkedserver" in sql:
+            self._last = "linkedtest"
+        elif "OPENQUERY" in sql:
+            self._last = "linkedprobe"
+        elif "sys.servers" in sql:
+            self._last = "linkedservers"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -296,6 +306,30 @@ def fake_health_rows():
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
         ],
+    }
+
+
+@pytest.fixture
+def fake_linked_rows():
+    """Rows the linked-server discovery queries would return."""
+    return {
+        "localname": [FakeRow(server_name="PRODSQL01")],
+        "linkedservers": [
+            FakeRow(name="REPORTING01", product="SQL Server", provider="SQLNCLI11",
+                    data_source="reporting.corp", catalog="Reports",
+                    is_rpc_out_enabled=1, is_data_access_enabled=1, is_remote_login_enabled=0),
+            FakeRow(name="LEGACY_ORA", product="Oracle", provider="OraOLEDB.Oracle",
+                    data_source="ORCL", catalog=None,
+                    is_rpc_out_enabled=0, is_data_access_enabled=1, is_remote_login_enabled=0),
+        ],
+        "linkedlogins": [
+            FakeRow(linked_server="REPORTING01", local_login="(all logins)",
+                    remote_name="rpt_reader", uses_self_credential=0),
+            FakeRow(linked_server="LEGACY_ORA", local_login="sa",
+                    remote_name="system", uses_self_credential=0),
+        ],
+        "linkedtest": [],
+        "linkedprobe": [FakeRow(product_version="15.0.4123.1", edition="Enterprise Edition")],
     }
 
 

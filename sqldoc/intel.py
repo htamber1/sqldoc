@@ -20,6 +20,7 @@ data. The four analyses:
 import re
 from dataclasses import dataclass, field
 
+from sqldoc.dbutil import cell
 from sqldoc.snapshot import build_snapshot, diff_snapshots
 
 
@@ -56,12 +57,45 @@ class TableImpact:
 
 
 @dataclass
+class LinkedServerLogin:
+    local_login: str
+    remote_login: str
+    uses_self: bool = False
+
+
+@dataclass
+class LinkedServer:
+    name: str
+    product: str = ""
+    provider: str = ""
+    data_source: str = ""
+    catalog: str = ""
+    is_rpc_out: bool = False
+    is_data_access: bool = False
+    is_remote_login: bool = False
+    logins: list = field(default_factory=list)      # LinkedServerLogin
+    reachable: bool = None                           # None = not tested
+    connectivity_message: str = ""
+    remote_version: str = ""
+    remote_edition: str = ""
+
+
+@dataclass
+class LinkedServerReport:
+    local_server: str = ""
+    linked_servers: list = field(default_factory=list)   # LinkedServer
+    traversed: bool = False
+    errors: list = field(default_factory=list)
+
+
+@dataclass
 class IntelReport:
     database: str
     naming_issues: list = field(default_factory=list)
     orphan_fks: list = field(default_factory=list)
     impacts: list = field(default_factory=list)
     migration_sql: str = ""       # populated only when a baseline snapshot is supplied
+    linked_servers: object = None  # LinkedServerReport, when --linked-servers is used
 
 
 # --- Naming conventions ----------------------------------------------------
@@ -312,6 +346,141 @@ def generate_migration(old_snapshot: dict, new_snapshot: dict) -> str:
 
 # --- Orchestration ---------------------------------------------------------
 
+# --- Linked server network mapping (SQL Server) ----------------------------
+
+def _s(v) -> str:
+    return "" if v is None else str(v)
+
+
+def discover_linked_servers(cursor) -> list:
+    cursor.execute("""
+        SELECT s.name,
+               s.product,
+               s.provider,
+               s.data_source,
+               s.catalog,
+               s.is_rpc_out_enabled,
+               s.is_data_access_enabled,
+               s.is_remote_login_enabled
+        FROM sys.servers s
+        WHERE s.is_linked = 1
+        ORDER BY s.name
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(LinkedServer(
+            name=_s(cell(r, "name")),
+            product=_s(cell(r, "product")),
+            provider=_s(cell(r, "provider")),
+            data_source=_s(cell(r, "data_source")),
+            catalog=_s(cell(r, "catalog")),
+            is_rpc_out=bool(cell(r, "is_rpc_out_enabled")),
+            is_data_access=bool(cell(r, "is_data_access_enabled")),
+            is_remote_login=bool(cell(r, "is_remote_login_enabled")),
+        ))
+    return out
+
+
+def get_linked_logins(cursor) -> dict:
+    cursor.execute("""
+        SELECT s.name AS linked_server,
+               CASE WHEN ll.local_principal_id = 0 THEN '(all logins)'
+                    ELSE SUSER_NAME(ll.local_principal_id) END AS local_login,
+               ll.remote_name,
+               ll.uses_self_credential
+        FROM sys.linked_logins ll
+        INNER JOIN sys.servers s ON ll.server_id = s.server_id
+        WHERE s.is_linked = 1
+        ORDER BY s.name
+    """)
+    by_server = {}
+    for r in cursor.fetchall():
+        by_server.setdefault(_s(cell(r, "linked_server")), []).append(LinkedServerLogin(
+            local_login=_s(cell(r, "local_login")),
+            remote_login=_s(cell(r, "remote_name")),
+            uses_self=bool(cell(r, "uses_self_credential")),
+        ))
+    return by_server
+
+
+def probe_connectivity(cursor, name):
+    """Ping a linked server via sp_testlinkedserver, which raises if it cannot
+    connect. Returns (reachable, message)."""
+    try:
+        cursor.execute("EXEC sys.sp_testlinkedserver ?", name)
+        return True, "OK"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def probe_linked_server(cursor, name):
+    """Run a lightweight remote query (via OPENQUERY) to fetch the linked
+    server's version + edition. Returns (version, edition) or None."""
+    safe = name.replace("]", "]]")
+    try:
+        cursor.execute(
+            "SELECT * FROM OPENQUERY([" + safe + "], "
+            "'SELECT CAST(SERVERPROPERTY(''ProductVersion'') AS varchar(50)) AS product_version, "
+            "CAST(SERVERPROPERTY(''Edition'') AS varchar(100)) AS edition')")
+        rows = cursor.fetchall()
+        if rows:
+            return _s(cell(rows[0], "product_version")), _s(cell(rows[0], "edition"))
+    except Exception:
+        return None
+    return None
+
+
+def collect_linked_servers(adapter, traverse: bool = False) -> LinkedServerReport:
+    """Discover linked servers, map their security config, test connectivity, and
+    optionally probe each reachable one for a health/version check. SQL Server
+    only. Each step is isolated so a permission failure degrades gracefully."""
+    report = LinkedServerReport(traversed=traverse)
+    conn = adapter.connect()
+    cursor = adapter.cursor(conn)
+    try:
+        try:
+            cursor.execute("SELECT @@SERVERNAME AS server_name")
+            rows = cursor.fetchall()
+            report.local_server = _s(cell(rows[0], "server_name")) if rows else ""
+        except Exception as e:
+            report.errors.append(("Local server name", f"{type(e).__name__}: {e}"))
+
+        try:
+            servers = discover_linked_servers(cursor)
+        except Exception as e:
+            report.errors.append(("Discover linked servers", f"{type(e).__name__}: {e}"))
+            servers = []
+
+        logins_by_server = {}
+        try:
+            logins_by_server = get_linked_logins(cursor)
+        except Exception as e:
+            report.errors.append(("Linked logins", f"{type(e).__name__}: {e}"))
+
+        for ls in servers:
+            ls.logins = logins_by_server.get(ls.name, [])
+            ls.reachable, ls.connectivity_message = probe_connectivity(cursor, ls.name)
+            if traverse and ls.reachable:
+                probe = probe_linked_server(cursor, ls.name)
+                if probe:
+                    ls.remote_version, ls.remote_edition = probe
+        report.linked_servers = servers
+    finally:
+        conn.close()
+    return report
+
+
+def summarize_linked(report: LinkedServerReport) -> dict:
+    servers = report.linked_servers
+    return {
+        "linked_servers": len(servers),
+        "reachable": sum(1 for s in servers if s.reachable),
+        "unreachable": sum(1 for s in servers if s.reachable is False),
+        "rpc_out_enabled": sum(1 for s in servers if s.is_rpc_out),
+        "data_access_enabled": sum(1 for s in servers if s.is_data_access),
+    }
+
+
 def collect_intel(database, tables, views=None, procedures=None, baseline_snapshot=None) -> IntelReport:
     report = IntelReport(database=database)
     report.naming_issues = analyze_naming(tables)
@@ -324,9 +493,13 @@ def collect_intel(database, tables, views=None, procedures=None, baseline_snapsh
 
 
 def summarize(report: IntelReport) -> dict:
+    ls = report.linked_servers
     return {
         "naming_issues": len(report.naming_issues),
         "orphan_fks": len(report.orphan_fks),
         "high_impact_tables": sum(1 for i in report.impacts if i.total >= 3),
         "has_migration": bool(report.migration_sql),
+        "linked_servers": len(ls.linked_servers) if ls else 0,
+        "unreachable_linked_servers": (sum(1 for s in ls.linked_servers if s.reachable is False)
+                                       if ls else 0),
     }
