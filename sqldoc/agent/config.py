@@ -34,7 +34,7 @@ from sqldoc.adapters import DIALECTS, detect_dialect
 
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
-               "backup_stale", "replica_lag"]
+               "backup_stale", "replica_lag", "tempdb_version_store"]
 
 
 @dataclass
@@ -68,6 +68,7 @@ class AgentConfig:
     server_monitoring: bool = False
     disk_threshold_percent: float = 10.0     # alert when a volume drops below this % free
     errorlog_severity: int = 17              # alert on ERRORLOG entries at/above this severity
+    tempdb_version_store_mb: float = 2048.0  # alert when the tempdb version store exceeds this
     # Backup monitoring (all dialects with a backup/PITR mechanism).
     backup_monitoring: bool = False
     backup_max_age_hours: float = 24.0       # alert when a database's last backup is older
@@ -122,6 +123,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     server_monitoring = bool(agent.get("server_monitoring", False))
     disk_threshold = float(agent.get("disk_threshold_percent", 10.0))
     errorlog_severity = int(agent.get("errorlog_severity", 17))
+    tempdb_vstore_mb = float(agent.get("tempdb_version_store_mb", 2048.0))
     backup_monitoring = bool(agent.get("backup_monitoring", False))
     backup_max_age_hours = float(agent.get("backup_max_age_hours", 24.0))
     ha_monitoring = bool(agent.get("ha_monitoring", False))
@@ -163,7 +165,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         interval_minutes=interval, dashboard_port=port, mode=mode, model=model,
         no_ai=no_ai, concurrency=concurrency, databases=databases, notify=notify,
         server_monitoring=server_monitoring, disk_threshold_percent=disk_threshold,
-        errorlog_severity=errorlog_severity,
+        errorlog_severity=errorlog_severity, tempdb_version_store_mb=tempdb_vstore_mb,
         backup_monitoring=backup_monitoring, backup_max_age_hours=backup_max_age_hours,
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
     )

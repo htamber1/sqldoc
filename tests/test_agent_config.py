@@ -80,6 +80,13 @@ def test_parse_backup_and_ha_options():
     assert "replica_lag" in ac.notify.on
 
 
+def test_parse_tempdb_threshold():
+    cfg = {"agent": {"databases": [{"name": "a", "connection_string": "x"}],
+                     "tempdb_version_store_mb": 4096}}
+    ac = parse_agent_config(cfg)
+    assert ac.tempdb_version_store_mb == 4096.0
+
+
 @pytest.mark.parametrize("cfg, msg", [
     ({}, "No 'agent:'"),
     ({"agent": {"databases": []}}, "non-empty list"),

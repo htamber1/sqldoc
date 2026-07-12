@@ -203,6 +203,15 @@ def _poll_server_monitoring(store, name, adapter, agent_config, notifier, result
             store.add_event(name, "disk_low", headline)
             notes += notifier.notify("disk_low", f"{name}: low disk space", headline)
             result["disk_low"] = len(low)
+
+        vstore_limit = getattr(agent_config, "tempdb_version_store_mb", 2048.0)
+        if sreport.tempdb and sreport.tempdb.version_store_mb > vstore_limit:
+            headline = (f"tempdb version store is {sreport.tempdb.version_store_mb} MB "
+                        f"(threshold {vstore_limit} MB) — a long-running or leaked transaction "
+                        f"may be preventing cleanup")
+            store.add_event(name, "tempdb_version_store", headline)
+            notes += notifier.notify("tempdb_version_store", f"{name}: tempdb version store high", headline)
+            result["tempdb_version_store"] = sreport.tempdb.version_store_mb
     except Exception as e:
         store.add_event(name, "error", f"Server metrics skipped: {type(e).__name__}: {e}")
 

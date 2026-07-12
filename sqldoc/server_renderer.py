@@ -88,6 +88,7 @@ SERVER_TEMPLATE = """
             <div class="stat-card {{ 'c-red' if summary.blocking_chains else 'c-green' }}"><div class="number">{{ summary.blocking_chains }}</div><div class="label">Blocking chains</div></div>
             <div class="stat-card {{ 'c-red' if summary.low_disk_volumes else 'c-blue' }}"><div class="number">{{ summary.low_disk_volumes }}</div><div class="label">Low-disk volumes</div></div>
             {% if report.agent_jobs %}<div class="stat-card {{ 'c-red' if summary.failed_jobs_24h else 'c-green' }}"><div class="number">{{ summary.failed_jobs_24h }}</div><div class="label">Failed jobs (24h)</div></div>{% endif %}
+            {% if report.tempdb %}<div class="stat-card {{ 'c-red' if summary.tempdb_contention else 'c-violet' }}"><div class="number">{{ summary.tempdb_version_store_mb|round(0)|int }}</div><div class="label">TempDB vstore (MB)</div></div>{% endif %}
             {% endif %}
             {% if report.backups %}
             <div class="stat-card {{ 'c-green' if summary.pitr_enabled else 'c-red' }}"><div class="number">{{ 'Yes' if summary.pitr_enabled else 'No' }}</div><div class="label">PITR enabled</div></div>
@@ -256,6 +257,50 @@ SERVER_TEMPLATE = """
             </table>
         </div>
         {% endif %}
+
+        {% if report.tempdb %}
+        <h2 class="section">TempDB <span class="n">version store, files, top consumers, contention</span></h2>
+        {% set td = report.tempdb %}
+        {% if td.notes %}<div class="warn" style="color: var(--muted); border-color: var(--border);">{% for n in td.notes %}<div>&bull; {{ n }}</div>{% endfor %}</div>{% endif %}
+        <div class="grid2">
+            <div class="panel">
+                <div class="phead">Version store &amp; files</div>
+                <div class="pbody">
+                    <div class="kv"><span class="k">Version store size</span><span class="v">{{ td.version_store_mb }} MB</span></div>
+                    <div class="kv"><span class="k">Generation rate</span><span class="v">{{ '{:,}'.format(td.version_generation_kb_s) }} KB/s</span></div>
+                    <div class="kv"><span class="k">Cleanup rate</span><span class="v">{{ '{:,}'.format(td.version_cleanup_kb_s) }} KB/s</span></div>
+                    <div class="kv"><span class="k">Data files</span><span class="v">{{ td.data_file_count }} / {{ td.recommended_files }} recommended</span></div>
+                    <div class="kv"><span class="k">Total size</span><span class="v">{{ td.total_size_mb }} MB</span></div>
+                    <div class="kv"><span class="k">Auto-growth events</span><span class="v">{{ td.autogrowth_events }}</span></div>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="phead">System-page contention</div>
+                <div class="pbody">
+                    <div class="kv"><span class="k">PFS/GAM/SGAM latch waits (now)</span><span class="v">{% if td.pagelatch_contention %}<span class="pill bad">{{ td.pagelatch_contention }}</span>{% else %}<span class="pill ok">0</span>{% endif %}</span></div>
+                    <div style="margin-top:10px; color: var(--muted); font-size:0.8rem;">Contention on tempdb allocation pages (2:1:1 PFS, 2:2:* GAM, 2:3:* SGAM) usually means too few data files for the workload.</div>
+                </div>
+            </div>
+        </div>
+        {% if td.top_sessions %}
+        <div class="panel" style="margin-top:16px;">
+            <table>
+                <thead><tr><th>Session</th><th>Login</th><th>User objects (MB)</th><th>Internal objects (MB)</th><th>Total (MB)</th></tr></thead>
+                <tbody>
+                    {% for ss in td.top_sessions %}
+                    <tr>
+                        <td class="num">{{ ss.session_id }}</td>
+                        <td class="mono">{{ ss.login }}</td>
+                        <td class="num">{{ ss.user_mb }}</td>
+                        <td class="num">{{ ss.internal_mb }}</td>
+                        <td class="num">{{ ss.total_mb }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+        {% endif %}
         {% endif %}
 
         {% if report.backups %}
@@ -314,6 +359,10 @@ def build_server_json(server_name: str, report) -> dict:
         "top_queries": [asdict(q) for q in report.top_queries],
         "agent_jobs": [{**asdict(j), "is_long_running": j.is_long_running,
                         "duration_text": j.duration_text} for j in report.agent_jobs],
+        "tempdb": (None if not report.tempdb else {
+            **{k: v for k, v in asdict(report.tempdb).items() if k != "top_sessions"},
+            "top_sessions": [{**asdict(s), "total_mb": s.total_mb} for s in report.tempdb.top_sessions],
+        }),
         "backups": (None if not report.backups else {
             "dialect": report.backups.dialect,
             "pitr_enabled": report.backups.pitr_enabled,

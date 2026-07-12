@@ -152,6 +152,16 @@ class FakeCursor:
             self._last = "srv_req"
         elif "dm_os_sys_info" in sql:
             self._last = "srv_info"
+        elif "version_store_reserved_page_count" in sql:
+            self._last = "tempdb_vstore"
+        elif "DB_ID('tempdb')" in sql:
+            self._last = "tempdb_files"
+        elif "dm_db_session_space_usage" in sql:
+            self._last = "tempdb_sessions"
+        elif "dm_os_waiting_tasks" in sql:
+            self._last = "tempdb_contention"
+        elif "fn_trace_gettable" in sql:
+            self._last = "tempdb_autogrow"
         elif "dm_exec_sessions" in sql:
             self._last = "srv_sess"
         elif "sysjobschedules" in sql:
@@ -733,6 +743,11 @@ def fake_server_rows():
             FakeRow(job_name="Nightly ETL", step_id=2, step_name="Load facts",
                     message="Cannot insert duplicate key row in object 'dbo.Fact'."),
         ],
+        "tempdb_vstore": [FakeRow(version_store_mb=512.0, version_gen_kb=1024, version_cleanup_kb=1000)],
+        "tempdb_files": [FakeRow(file_count=2, data_files=1, total_size_mb=8192.0, cpu_count=8)],  # 1 file < 8
+        "tempdb_sessions": [FakeRow(session_id=70, user_mb=120.0, internal_mb=45.0, login_name="app")],
+        "tempdb_contention": [FakeRow(contention=3)],
+        "tempdb_autogrow": [FakeRow(growth_events=5)],
     }
 
 

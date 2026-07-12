@@ -164,6 +164,21 @@ def test_server_monitoring_alerts(monkeypatch, store, fake_server_rows, fake_err
     assert "job_failure" in types and "disk_low" in types and "errorlog_critical" in types
 
 
+def test_tempdb_version_store_alert(monkeypatch, store, fake_server_rows):
+    from sqldoc.agent.config import EVENT_TYPES
+    adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_server_rows))
+    adapter.capabilities = Capabilities(server_monitoring=True)
+    _use(monkeypatch, adapter)
+    db = DatabaseConfig(name="prod", connection_string="cs", dialect="sqlserver", no_ai=True)
+    # threshold 100 MB, fixture version store is 512 MB -> alert
+    ac = AgentConfig(databases=[db], notify=NotifyConfig(on=EVENT_TYPES),
+                     server_monitoring=True, tempdb_version_store_mb=100)
+    notifier = RecNotifier(on=EVENT_TYPES)
+    r = poll_database(store, db, ac, notifier)
+    assert r.get("tempdb_version_store") == 512.0
+    assert any(c[0] == "tempdb_version_store" for c in notifier.calls)
+
+
 def test_server_monitoring_skipped_when_disabled(monkeypatch, store, fake_server_rows):
     adapter = PollAdapter(_tables([_c("Id", "int", pk=True)]), conn=FakeConnection(fake_server_rows))
     adapter.capabilities = Capabilities(server_monitoring=True)

@@ -195,6 +195,33 @@ class AgentJob:
 
 
 @dataclass
+class TempDbSession:
+    session_id: int
+    login: str = ""
+    user_mb: float = 0.0
+    internal_mb: float = 0.0
+
+    @property
+    def total_mb(self) -> float:
+        return round(self.user_mb + self.internal_mb, 1)
+
+
+@dataclass
+class TempDbReport:
+    version_store_mb: float = 0.0
+    version_generation_kb_s: int = 0
+    version_cleanup_kb_s: int = 0
+    file_count: int = 0
+    data_file_count: int = 0
+    total_size_mb: float = 0.0
+    recommended_files: int = 0
+    pagelatch_contention: int = 0
+    autogrowth_events: int = 0
+    top_sessions: list = field(default_factory=list)   # TempDbSession
+    notes: list = field(default_factory=list)
+
+
+@dataclass
 class ServerReport:
     server_name: str
     dialect: str = "sqlserver"
@@ -206,6 +233,7 @@ class ServerReport:
     blocking_chains: list = field(default_factory=list)
     top_queries: list = field(default_factory=list)      # ActiveRequest
     agent_jobs: list = field(default_factory=list)        # AgentJob
+    tempdb: object = None                                 # TempDbReport
     backups: object = None                                # BackupReport
     errors: list = field(default_factory=list)            # (section, message)
 
@@ -545,6 +573,105 @@ def collect_agent_jobs(cursor) -> list:
     return jobs
 
 
+# --- TempDB monitoring (SQL Server) ----------------------------------------
+
+def collect_tempdb(cursor, cpu_count: int = 0) -> TempDbReport:
+    """TempDB health: version store size + generation/cleanup rates, file layout,
+    top session consumers, and current system-page (PFS/GAM/SGAM) latch
+    contention. Each sub-query is isolated so a missing permission degrades that
+    piece only. `cpu_count` (from the instance info) sets the recommended file
+    count."""
+    report = TempDbReport()
+    recommended = min(8, cpu_count or 8)
+
+    def sub(fn):
+        try:
+            fn()
+        except Exception as e:
+            report.notes.append(f"partial: {type(e).__name__}: {e}")
+
+    def vstore():
+        cursor.execute("""
+            SELECT
+                (SELECT ISNULL(SUM(version_store_reserved_page_count), 0) * 8 / 1024.0
+                 FROM tempdb.sys.dm_db_file_space_usage) AS version_store_mb,
+                (SELECT ISNULL(MAX(cntr_value), 0) FROM sys.dm_os_performance_counters
+                 WHERE counter_name LIKE 'Version Generation rate%') AS version_gen_kb,
+                (SELECT ISNULL(MAX(cntr_value), 0) FROM sys.dm_os_performance_counters
+                 WHERE counter_name LIKE 'Version Cleanup rate%') AS version_cleanup_kb
+        """)
+        rows = cursor.fetchall()
+        if rows:
+            r = rows[0]
+            report.version_store_mb = _f(cell(r, "version_store_mb"))
+            report.version_generation_kb_s = _i(cell(r, "version_gen_kb"))
+            report.version_cleanup_kb_s = _i(cell(r, "version_cleanup_kb"))
+
+    def files():
+        cursor.execute("""
+            SELECT COUNT(*) AS file_count,
+                   SUM(CASE WHEN type_desc = 'ROWS' THEN 1 ELSE 0 END) AS data_files,
+                   SUM(CAST(size AS bigint)) * 8 / 1024.0 AS total_size_mb
+            FROM sys.master_files WHERE database_id = DB_ID('tempdb')
+        """)
+        rows = cursor.fetchall()
+        if rows:
+            r = rows[0]
+            report.file_count = _i(cell(r, "file_count"))
+            report.data_file_count = _i(cell(r, "data_files"))
+            report.total_size_mb = _f(cell(r, "total_size_mb"))
+            report.recommended_files = recommended
+            if report.data_file_count < report.recommended_files:
+                report.notes.append(
+                    f"TempDB has {report.data_file_count} data file(s); "
+                    f"{report.recommended_files} are recommended (= min(8, cores)) to reduce "
+                    f"allocation-page contention.")
+
+    def sessions():
+        cursor.execute("""
+            SELECT TOP 10 su.session_id,
+                   su.user_objects_alloc_page_count * 8 / 1024.0 AS user_mb,
+                   su.internal_objects_alloc_page_count * 8 / 1024.0 AS internal_mb,
+                   s.login_name
+            FROM sys.dm_db_session_space_usage su
+            LEFT JOIN sys.dm_exec_sessions s ON su.session_id = s.session_id
+            WHERE su.user_objects_alloc_page_count + su.internal_objects_alloc_page_count > 0
+            ORDER BY (su.user_objects_alloc_page_count + su.internal_objects_alloc_page_count) DESC
+        """)
+        for r in cursor.fetchall():
+            report.top_sessions.append(TempDbSession(
+                session_id=_i(cell(r, "session_id")), login=_s(cell(r, "login_name")),
+                user_mb=_f(cell(r, "user_mb")), internal_mb=_f(cell(r, "internal_mb"))))
+
+    def contention():
+        cursor.execute("""
+            SELECT COUNT(*) AS contention
+            FROM sys.dm_os_waiting_tasks
+            WHERE wait_type LIKE 'PAGELATCH%' AND resource_description LIKE '2:%'
+        """)
+        rows = cursor.fetchall()
+        if rows:
+            report.pagelatch_contention = _i(cell(rows[0], "contention"))
+
+    def autogrowth():
+        cursor.execute("""
+            DECLARE @p nvarchar(260) = (SELECT path FROM sys.traces WHERE is_default = 1);
+            SELECT COUNT(*) AS growth_events
+            FROM sys.fn_trace_gettable(@p, DEFAULT)
+            WHERE EventClass IN (92, 93) AND DatabaseName = 'tempdb';
+        """)
+        rows = cursor.fetchall()
+        if rows:
+            report.autogrowth_events = _i(cell(rows[0], "growth_events"))
+
+    sub(vstore)
+    sub(files)
+    sub(sessions)
+    sub(contention)
+    sub(autogrowth)
+    return report
+
+
 # --- orchestration ---------------------------------------------------------
 
 def collect_server(adapter, top: int = 10, include_jobs: bool = True,
@@ -583,6 +710,8 @@ def collect_server(adapter, top: int = 10, include_jobs: bool = True,
                 report.connections.blocked_requests = len(report.blocking_chains)
             if include_jobs:
                 report.agent_jobs = run("SQL Agent jobs", lambda: collect_agent_jobs(cursor)) or []
+            cpu_count = report.info.cpu_count if report.info else 0
+            report.tempdb = run("TempDB", lambda: collect_tempdb(cursor, cpu_count))
         if include_backups and dialect in BACKUP_DIALECTS:
             report.backups = run("Backups", lambda: collect_backups_from_cursor(dialect, cursor))
     finally:
@@ -611,5 +740,8 @@ def summarize(report: ServerReport) -> dict:
         "backup_issues": (sum(1 for d in report.backups.databases if d.issues)
                           if report.backups else 0),
         "pitr_enabled": report.backups.pitr_enabled if report.backups else False,
+        "tempdb_version_store_mb": report.tempdb.version_store_mb if report.tempdb else 0.0,
+        "tempdb_contention": report.tempdb.pagelatch_contention if report.tempdb else 0,
+        "tempdb_data_files": report.tempdb.data_file_count if report.tempdb else 0,
         "degraded": len(report.errors),
     }

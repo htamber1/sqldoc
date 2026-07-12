@@ -137,6 +137,37 @@ def test_agent_job_next_run_zero_is_blank():
     assert jobs[0].next_run_time == ""
 
 
+# --- TempDB monitoring ------------------------------------------------------
+
+def test_tempdb_collected(report):
+    td = report.tempdb
+    assert td is not None
+    assert td.version_store_mb == 512.0
+    assert td.version_generation_kb_s == 1024 and td.version_cleanup_kb_s == 1000
+    assert td.data_file_count == 1 and td.recommended_files == 8
+    assert td.pagelatch_contention == 3
+    assert td.autogrowth_events == 5
+    assert td.top_sessions[0].session_id == 70 and td.top_sessions[0].total_mb == 165.0
+    # 1 data file < 8 recommended -> a note
+    assert any("data file" in n for n in td.notes)
+
+
+def test_tempdb_summary_and_json(report):
+    s = server.summarize(report)
+    assert s["tempdb_version_store_mb"] == 512.0
+    assert s["tempdb_contention"] == 3 and s["tempdb_data_files"] == 1
+    data = build_server_json("SRV", report)
+    assert data["tempdb"]["version_store_mb"] == 512.0
+    assert data["tempdb"]["top_sessions"][0]["total_mb"] == 165.0
+
+
+def test_tempdb_rendered(report, tmp_path):
+    out = tmp_path / "s.html"
+    render_server_html("SRV", report, str(out))
+    h = out.read_text(encoding="utf-8")
+    assert "TempDB" in h and "Version store size" in h and "System-page contention" in h
+
+
 # --- SQL Agent job monitoring -----------------------------------------------
 
 @pytest.fixture

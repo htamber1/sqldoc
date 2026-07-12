@@ -1473,6 +1473,13 @@ def server(config, server, database, username, password, connection_string, dial
                 + click.style(f"    Failed (24h): {s['failed_jobs_24h']}", fg='red' if s['failed_jobs_24h'] else 'green')
                 + f"    Long-running: {s['long_running_jobs']}    Disabled: {s['disabled_jobs']}"
             )
+        if report.tempdb:
+            click.echo(
+                click.style(f"TempDB: version store {s['tempdb_version_store_mb']} MB", fg='magenta')
+                + f"    Data files: {s['tempdb_data_files']}"
+                + click.style(f"    Page contention: {s['tempdb_contention']}",
+                              fg='red' if s['tempdb_contention'] else 'green')
+            )
     if report.backups:
         click.echo(
             click.style(f"Backups: {s['backup_databases']} db(s)", fg='cyan')
