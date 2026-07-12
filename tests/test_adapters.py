@@ -36,9 +36,10 @@ def test_azuresql_host_beats_sqlserver_driver():
 # --- registry --------------------------------------------------------------
 
 def test_all_dialects_supported():
-    assert set(SUPPORTED_DIALECTS) == {
-        "sqlserver", "azuresql", "postgres", "mysql", "sqlite", "snowflake", "oracle"}
-    assert PLANNED_DIALECTS == []
+    # The original seven are all supported (more cloud dialects are added over time).
+    assert {"sqlserver", "azuresql", "postgres", "mysql", "sqlite", "snowflake", "oracle"} \
+        <= set(SUPPORTED_DIALECTS)
+    assert PLANNED_DIALECTS == []            # nothing recognized-but-unbuilt
     assert set(DIALECT_CHOICES) == set(DIALECTS)
 
 
