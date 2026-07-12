@@ -134,6 +134,8 @@ class FakeCursor:
             self._last = "missing"
         elif "dm_db_index_physical_stats" in sql:
             self._last = "frag"
+        elif "dm_exec_procedure_stats" in sql or "pg_stat_user_functions" in sql:
+            self._last = "unusedprocs"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -268,6 +270,11 @@ def fake_health_rows():
                     avg_fragmentation_in_percent=64.2, page_count=5000),   # REBUILD
             FakeRow(schema_name="Sales", table_name="Orders", index_name="IX_Orders_Date",
                     avg_fragmentation_in_percent=18.0, page_count=800),    # REORGANIZE
+        ],
+        "unusedprocs": [
+            FakeRow(schema_name="Sales", procedure_name="uspLegacyExport",
+                    execution_count=0, last_execution_time=None,
+                    create_date="2021-01-01", modify_date="2021-01-01"),
         ],
     }
 

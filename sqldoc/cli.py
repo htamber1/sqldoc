@@ -659,9 +659,16 @@ def health(config, server, database, username, password, connection_string, dial
     click.echo(f"Connecting to {adapter.display_name} and reading system views...")
     try:
         schema_list = [s.strip() for s in schemas.split(',')] if schemas else None
+        # Extract the schema too, to drive the metadata-only detectors
+        # (duplicate tables, redundant indexes). Degrade gracefully if it fails.
+        try:
+            tables = extract_metadata(adapter)
+        except Exception:
+            tables = None
         report = collect_health(adapter, top=int(top),
                                 min_fragmentation=float(min_fragmentation),
-                                min_pages=int(min_pages), schemas=schema_list)
+                                min_pages=int(min_pages), schemas=schema_list,
+                                tables=tables)
     except Exception as e:
         click.echo(f"Connection failed: {e}", err=True)
         raise click.Abort()
@@ -676,6 +683,9 @@ def health(config, server, database, username, password, connection_string, dial
         + click.style(f"    Dead tables: {s['dead_tables']}", fg='yellow')
         + click.style(f"    Missing indexes: {s['missing_indexes']}", fg='blue')
         + f"    Fragmented: {s['fragmented_indexes']}"
+        + f"    Unused procs: {s['unused_procedures']}"
+        + f"    Dup tables: {s['duplicate_tables']}"
+        + f"    Redundant idx: {s['redundant_indexes']}"
     )
 
     click.echo("\nRendering report...")

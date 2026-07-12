@@ -18,6 +18,7 @@ one section to an error message rather than aborting the whole report. The DMV
 statistics are transient (reset on restart / `DBCC`), which the report notes.
 """
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from sqldoc.dbutil import cell
 from sqldoc.extractor import get_connection   # retained for back-compat imports/tests
@@ -90,12 +91,55 @@ class FragmentedIndex:
 
 
 @dataclass
+class UnusedProcedure:
+    schema: str
+    name: str
+    execution_count: int
+    last_execution: str = ""
+    created: str = ""
+    modified: str = ""
+
+
+@dataclass
+class DuplicateTablePair:
+    schema_a: str
+    table_a: str
+    schema_b: str
+    table_b: str
+    name_similarity: float       # 0..1, fuzzy match on the table names
+    column_overlap: float        # 0..1, Jaccard over the column-name sets
+    shared_columns: list = field(default_factory=list)
+    confidence: float = 0.0      # blended score
+
+    @property
+    def a(self) -> str:
+        return f"{self.schema_a}.{self.table_a}"
+
+    @property
+    def b(self) -> str:
+        return f"{self.schema_b}.{self.table_b}"
+
+
+@dataclass
+class RedundantIndex:
+    schema: str
+    table: str
+    index_name: str
+    key_columns: list
+    covered_by: str              # the index that makes this one redundant
+    reason: str                  # "duplicate" / "prefix of <other>"
+
+
+@dataclass
 class HealthReport:
     database: str
     slow_queries: list = field(default_factory=list)
     dead_tables: list = field(default_factory=list)
     missing_indexes: list = field(default_factory=list)
     fragmented_indexes: list = field(default_factory=list)
+    unused_procedures: list = field(default_factory=list)
+    duplicate_tables: list = field(default_factory=list)
+    redundant_indexes: list = field(default_factory=list)
     errors: list = field(default_factory=list)   # (section, message) for degraded checks
 
 
@@ -345,6 +389,137 @@ def collect_mysql_slow_queries(cursor, top: int) -> list:
     return out
 
 
+# --- unused procedures (DMV) -----------------------------------------------
+# A procedure with no execution-stats entry has not run since the stats last
+# reset — a strong "never executed / dead code" signal (with that caveat).
+
+def collect_unused_procedures(cursor) -> list:
+    cursor.execute("""
+        SELECT s.name AS schema_name,
+               p.name AS procedure_name,
+               ISNULL(ps.execution_count, 0) AS execution_count,
+               ps.last_execution_time,
+               p.create_date,
+               p.modify_date
+        FROM sys.procedures p
+        INNER JOIN sys.schemas s ON p.schema_id = s.schema_id
+        LEFT JOIN sys.dm_exec_procedure_stats ps
+            ON ps.object_id = p.object_id AND ps.database_id = DB_ID()
+        WHERE ps.object_id IS NULL
+        ORDER BY s.name, p.name
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(UnusedProcedure(
+            schema=cell(r, "schema_name"), name=cell(r, "procedure_name"),
+            execution_count=int(cell(r, "execution_count") or 0),
+            last_execution=_s(cell(r, "last_execution_time")),
+            created=_s(cell(r, "create_date")), modified=_s(cell(r, "modify_date")),
+        ))
+    return out
+
+
+def collect_pg_unused_functions(cursor) -> list:
+    # pg_stat_user_functions only tracks calls when track_functions is 'pl'/'all';
+    # functions absent from it (or with 0 calls) have not been executed.
+    cursor.execute("""
+        SELECT n.nspname AS schema_name,
+               p.proname AS procedure_name,
+               COALESCE(st.calls, 0) AS execution_count
+        FROM pg_proc p
+        INNER JOIN pg_namespace n ON p.pronamespace = n.oid
+        LEFT JOIN pg_stat_user_functions st ON st.funcid = p.oid
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND p.prokind IN ('f', 'p')
+          AND COALESCE(st.calls, 0) = 0
+        ORDER BY n.nspname, p.proname
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(UnusedProcedure(
+            schema=cell(r, "schema_name"), name=cell(r, "procedure_name"),
+            execution_count=int(cell(r, "execution_count") or 0),
+        ))
+    return out
+
+
+# --- duplicate tables + redundant indexes (metadata, dialect-neutral) -------
+
+def _col_names(table) -> list:
+    return [c.name.lower() for c in getattr(table, "columns", [])]
+
+
+def detect_duplicate_tables(tables, name_threshold: float = 0.55,
+                            column_threshold: float = 0.6) -> list:
+    """Pairs of tables with similar names AND overlapping column structure —
+    likely copies, staging leftovers, or un-consolidated variants.
+
+    Works off the extracted schema (no row data). A pair is reported when the
+    fuzzy name similarity clears `name_threshold` and the column-name Jaccard
+    overlap clears `column_threshold`.
+    """
+    pairs = []
+    for i in range(len(tables)):
+        for j in range(i + 1, len(tables)):
+            ta, tb = tables[i], tables[j]
+            cols_a, cols_b = set(_col_names(ta)), set(_col_names(tb))
+            if not cols_a or not cols_b:
+                continue
+            shared = cols_a & cols_b
+            union = cols_a | cols_b
+            overlap = len(shared) / len(union) if union else 0.0
+            name_sim = SequenceMatcher(None, ta.name.lower(), tb.name.lower()).ratio()
+            if name_sim >= name_threshold and overlap >= column_threshold:
+                pairs.append(DuplicateTablePair(
+                    schema_a=ta.schema, table_a=ta.name,
+                    schema_b=tb.schema, table_b=tb.name,
+                    name_similarity=round(name_sim, 2),
+                    column_overlap=round(overlap, 2),
+                    shared_columns=sorted(shared),
+                    confidence=round(name_sim * 0.4 + overlap * 0.6, 2),
+                ))
+    pairs.sort(key=lambda p: -p.confidence)
+    return pairs
+
+
+def detect_redundant_indexes(tables) -> list:
+    """Indexes on a table whose key columns duplicate, or are a leading prefix
+    of, another index on the same table — redundant storage/maintenance cost.
+
+    Compares key-column order. An index whose keys exactly match another's is a
+    duplicate; one whose keys are a strict leading prefix of another's is
+    generally covered by the wider index.
+    """
+    redundant = []
+    for t in tables:
+        indexes = [ix for ix in getattr(t, "indexes", []) if ix.key_columns]
+        for a in indexes:
+            for b in indexes:
+                if a is b:
+                    continue
+                ka = [c.lower() for c in a.key_columns]
+                kb = [c.lower() for c in b.key_columns]
+                # Don't flag a PK/unique constraint index as the redundant one.
+                if a.is_primary_key or a.is_unique:
+                    continue
+                if ka == kb:
+                    # Exact duplicate — keep one, drop the alphabetically-later name.
+                    if a.name.lower() > b.name.lower():
+                        redundant.append(RedundantIndex(
+                            schema=t.schema, table=t.name, index_name=a.name,
+                            key_columns=list(a.key_columns), covered_by=b.name,
+                            reason="duplicate"))
+                        break
+                elif len(ka) < len(kb) and kb[:len(ka)] == ka:
+                    redundant.append(RedundantIndex(
+                        schema=t.schema, table=t.name, index_name=a.name,
+                        key_columns=list(a.key_columns), covered_by=b.name,
+                        reason=f"prefix of {b.name}"))
+                    break
+    redundant.sort(key=lambda r: (r.schema, r.table, r.index_name))
+    return redundant
+
+
 # --- orchestration ---------------------------------------------------------
 
 _NOT_AVAILABLE = "NotAvailable: no equivalent system view on this dialect"
@@ -364,6 +539,7 @@ def _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
             ("Index fragmentation",
              lambda: collect_fragmented_indexes(cursor, min_fragmentation, min_pages),
              "fragmented_indexes"),
+            ("Unused procedures", lambda: collect_unused_procedures(cursor), "unused_procedures"),
         ]
     if dialect == "postgres":
         return [
@@ -371,6 +547,7 @@ def _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
             ("Dead tables", lambda: collect_pg_dead_tables(cursor), "dead_tables"),
             ("Missing indexes", unavailable, "missing_indexes"),
             ("Index fragmentation", unavailable, "fragmented_indexes"),
+            ("Unused functions/procedures", lambda: collect_pg_unused_functions(cursor), "unused_procedures"),
         ]
     if dialect == "mysql":
         return [
@@ -378,17 +555,23 @@ def _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
             ("Dead tables", lambda: collect_mysql_dead_tables(cursor), "dead_tables"),
             ("Missing indexes", unavailable, "missing_indexes"),
             ("Index fragmentation", unavailable, "fragmented_indexes"),
+            ("Unused procedures", unavailable, "unused_procedures"),
         ]
     return []
 
 
 def collect_health(adapter, top: int = 20,
                    min_fragmentation: float = 10.0, min_pages: int = 100,
-                   schemas: list = None) -> HealthReport:
+                   schemas: list = None, tables: list = None) -> HealthReport:
     """Run the health checks appropriate to the adapter's dialect. Each check is
     isolated so a missing permission/extension (or a section with no analogue on
     this dialect) degrades to a note in `report.errors` instead of failing the
-    whole run. `schemas`, if given, filters the table-scoped checks."""
+    whole run. `schemas`, if given, filters the table-scoped checks.
+
+    `tables`, when supplied (the extracted schema), enables the metadata-only
+    detectors — duplicate tables and redundant indexes — which are dialect-
+    neutral and read no row data.
+    """
     report = HealthReport(database="")
     dialect = getattr(adapter, "dialect", "sqlserver")
     conn = adapter.connect()
@@ -402,11 +585,19 @@ def collect_health(adapter, top: int = 20,
     finally:
         conn.close()
 
+    if tables:
+        report.duplicate_tables = detect_duplicate_tables(tables)
+        report.redundant_indexes = detect_redundant_indexes(tables)
+
     if schemas:
         allow = set(schemas)
         report.dead_tables = [d for d in report.dead_tables if d.schema in allow]
         report.missing_indexes = [m for m in report.missing_indexes if m.schema in allow]
         report.fragmented_indexes = [f for f in report.fragmented_indexes if f.schema in allow]
+        report.unused_procedures = [p for p in report.unused_procedures if p.schema in allow]
+        report.duplicate_tables = [d for d in report.duplicate_tables
+                                   if d.schema_a in allow or d.schema_b in allow]
+        report.redundant_indexes = [r for r in report.redundant_indexes if r.schema in allow]
     return report
 
 
@@ -416,7 +607,12 @@ def summarize(report: HealthReport) -> dict:
         "dead_tables": len(report.dead_tables),
         "missing_indexes": len(report.missing_indexes),
         "fragmented_indexes": len(report.fragmented_indexes),
+        "unused_procedures": len(report.unused_procedures),
+        "duplicate_tables": len(report.duplicate_tables),
+        "redundant_indexes": len(report.redundant_indexes),
         "issues": (len(report.slow_queries) + len(report.dead_tables)
-                   + len(report.missing_indexes) + len(report.fragmented_indexes)),
+                   + len(report.missing_indexes) + len(report.fragmented_indexes)
+                   + len(report.unused_procedures) + len(report.duplicate_tables)
+                   + len(report.redundant_indexes)),
         "degraded": len(report.errors),
     }

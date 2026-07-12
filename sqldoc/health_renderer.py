@@ -71,6 +71,9 @@ HEALTH_TEMPLATE = """
             <div class="stat-card c-amber"><div class="number">{{ summary.dead_tables }}</div><div class="label">Dead tables</div></div>
             <div class="stat-card c-blue"><div class="number">{{ summary.missing_indexes }}</div><div class="label">Missing indexes</div></div>
             <div class="stat-card c-violet"><div class="number">{{ summary.fragmented_indexes }}</div><div class="label">Fragmented indexes</div></div>
+            <div class="stat-card c-amber"><div class="number">{{ summary.unused_procedures }}</div><div class="label">Unused procedures</div></div>
+            <div class="stat-card c-blue"><div class="number">{{ summary.duplicate_tables }}</div><div class="label">Duplicate tables</div></div>
+            <div class="stat-card c-red"><div class="number">{{ summary.redundant_indexes }}</div><div class="label">Redundant indexes</div></div>
         </div>
 
         {% if report.errors %}
@@ -154,11 +157,70 @@ HEALTH_TEMPLATE = """
             </table>
             {% if not report.fragmented_indexes %}<div class="empty">No fragmented indexes past the threshold.</div>{% endif %}
         </div>
+
+        <h2 class="section">Unused procedures <span class="n">no execution recorded since stats reset</span></h2>
+        <div class="panel">
+            <table>
+                <thead><tr><th>Procedure</th><th>Executions</th><th>Created</th><th>Last modified</th></tr></thead>
+                <tbody>
+                    {% for p in report.unused_procedures %}
+                    <tr>
+                        <td class="loc">{{ p.schema }}.{{ p.name }}</td>
+                        <td class="num">{{ '{:,}'.format(p.execution_count) }}</td>
+                        <td class="mono">{{ p.created or '—' }}</td>
+                        <td class="mono">{{ p.modified or '—' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if not report.unused_procedures %}<div class="empty">No unused procedures detected (or execution stats unavailable).</div>{% endif %}
+        </div>
+
+        <h2 class="section">Duplicate tables <span class="n">similar names &amp; overlapping columns</span></h2>
+        <div class="panel">
+            <table>
+                <thead><tr><th>Table A</th><th>Table B</th><th>Name match</th><th>Column overlap</th><th>Shared columns</th><th>Confidence</th></tr></thead>
+                <tbody>
+                    {% for d in report.duplicate_tables %}
+                    <tr>
+                        <td class="loc">{{ d.a }}</td>
+                        <td class="loc">{{ d.b }}</td>
+                        <td class="num">{{ (d.name_similarity * 100)|round|int }}%</td>
+                        <td class="num">{{ (d.column_overlap * 100)|round|int }}%</td>
+                        <td class="mono" style="max-width: 320px; white-space: normal;">{{ d.shared_columns|join(', ') }}</td>
+                        <td class="num"><span class="bar" style="width: {{ (d.confidence * 60)|round|int }}px;"></span>{{ (d.confidence * 100)|round|int }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if not report.duplicate_tables %}<div class="empty">No potential duplicate tables detected.</div>{% endif %}
+        </div>
+
+        <h2 class="section">Redundant indexes <span class="n">duplicate or prefix-covered on the same table</span></h2>
+        <div class="panel">
+            <table>
+                <thead><tr><th>Index</th><th>Table</th><th>Key columns</th><th>Covered by</th><th>Reason</th></tr></thead>
+                <tbody>
+                    {% for r in report.redundant_indexes %}
+                    <tr>
+                        <td class="mono">{{ r.index_name }}</td>
+                        <td class="loc">{{ r.schema }}.{{ r.table }}</td>
+                        <td class="mono">{{ r.key_columns|join(', ') }}</td>
+                        <td class="mono">{{ r.covered_by }}</td>
+                        <td><span class="pill {{ 'reb' if r.reason == 'duplicate' else 'reo' }}">{{ r.reason }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if not report.redundant_indexes %}<div class="empty">No redundant indexes detected.</div>{% endif %}
+        </div>
     </div>
     <div class="footer">
         <strong>About these metrics.</strong> All figures come from SQL Server DMVs and reflect activity <em>since the statistics last reset</em>
         (a service restart or <code>DBCC</code> clears them), so a freshly restarted server can look artificially quiet. Missing-index
-        suggestions are optimizer hints, not guarantees — validate before creating indexes. No table row data was read.
+        suggestions are optimizer hints, not guarantees — validate before creating indexes. <strong>Unused procedures</strong> means no
+        execution since the stats reset (verify before dropping). <strong>Duplicate tables</strong> and <strong>redundant indexes</strong>
+        are inferred from schema metadata (names, columns, index keys) — dialect-neutral and reading no row data.
     </div>
 </body>
 </html>
@@ -179,6 +241,9 @@ def build_health_json(database: str, report) -> dict:
                             for m in report.missing_indexes],
         "fragmented_indexes": [{**asdict(f), "recommendation": f.recommendation}
                                for f in report.fragmented_indexes],
+        "unused_procedures": [asdict(p) for p in report.unused_procedures],
+        "duplicate_tables": [asdict(d) for d in report.duplicate_tables],
+        "redundant_indexes": [asdict(r) for r in report.redundant_indexes],
         "errors": [{"section": s, "message": m} for s, m in report.errors],
     }
 
