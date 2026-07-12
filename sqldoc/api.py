@@ -144,19 +144,50 @@ _NO_ADAPTER = {("GET", "/api/agent/status")}
 
 # --- dispatch (pure, socket-free — easy to test) ---------------------------
 
+def _provided_key(headers):
+    return headers.get("X-API-Key") or headers.get("x-api-key")
+
+
 def dispatch(method, path, headers, body, ctx) -> tuple:
-    """Return (status_code, dict). `headers` is a case-insensitive-ish mapping;
-    `ctx` carries conn_str/dialect/database/api_key/mode/model."""
+    """Return (status_code, dict). `headers` is a case-insensitive-ish mapping.
+
+    Single-tenant: `ctx` carries conn_str/dialect/database/api_key/mode/model.
+    Multi-tenant: `ctx["tenants"]` maps each API key to its own isolated
+    sub-context; the X-API-Key header selects the tenant and the request runs
+    ONLY against that tenant's connection — a key can never reach another
+    tenant's database.
+    """
     path = path.rstrip("/") or "/api"
-    api_key = ctx.get("api_key")
-    if api_key:
-        provided = headers.get("X-API-Key") or headers.get("x-api-key")
-        if provided != api_key:
+    tenants = ctx.get("tenants")
+
+    if tenants is not None:
+        # Multi-tenant: the API key IS the tenant selector (and is mandatory).
+        tenant = tenants.get(_provided_key(headers))
+        if tenant is None:
             return 401, {"error": "invalid or missing X-API-Key header"}
+        # Effective per-request context: the tenant's own connection wins; drop
+        # the tenant registry so no handler can see other tenants.
+        req_ctx = {k: v for k, v in ctx.items() if k != "tenants"}
+        req_ctx.update(tenant)
+        # Agent status is operator-level, not tenant data — do not expose it
+        # across tenants.
+        if (method, path) == ("GET", "/api/agent/status"):
+            return 200, {"running": False,
+                         "note": "agent status is not exposed in multi-tenant mode"}
+    else:
+        # Single-tenant: optional shared api_key.
+        api_key = ctx.get("api_key")
+        if api_key and _provided_key(headers) != api_key:
+            return 401, {"error": "invalid or missing X-API-Key header"}
+        req_ctx = ctx
 
     if method == "GET" and path in ("/api", "/"):
-        return 200, {"service": "sqldoc", "version": __version__,
-                     "endpoints": [f"{m} {p}" for (m, p) in ENDPOINTS]}
+        payload = {"service": "sqldoc", "version": __version__,
+                   "endpoints": [f"{m} {p}" for (m, p) in ENDPOINTS]}
+        if tenants is not None:
+            payload["tenant"] = req_ctx.get("name") or req_ctx.get("database")
+            payload["multi_tenant"] = True
+        return 200, payload
 
     handler = ENDPOINTS.get((method, path))
     if handler is None:
@@ -165,10 +196,10 @@ def dispatch(method, path, headers, body, ctx) -> tuple:
     try:
         adapter = None
         if (method, path) not in _NO_ADAPTER:
-            if not ctx.get("conn_str"):
+            if not req_ctx.get("conn_str"):
                 return 400, {"error": "the server has no database configured"}
-            adapter = get_adapter(ctx["conn_str"], ctx.get("dialect"))
-        return 200, handler(adapter, ctx, {}, body)
+            adapter = get_adapter(req_ctx["conn_str"], req_ctx.get("dialect"))
+        return 200, handler(adapter, req_ctx, {}, body)
     except ValueError as e:
         return 400, {"error": str(e)}
     except Exception as e:

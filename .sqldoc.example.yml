@@ -159,3 +159,23 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 # api_key: "change-me-to-a-long-random-secret"
 # host: 127.0.0.1
 # port: 8090
+
+# --- Multi-tenant REST API for `sqldoc serve --multi-tenant` (optional) ---
+# One server instance hosting several isolated customers (the foundation for a
+# hosted SaaS). Each tenant has its OWN api_key and database; a request's
+# X-API-Key selects the tenant, and a key can only ever reach its own tenant's
+# data — there is no cross-tenant access. Each entry: a name + api_key + a
+# connection (connection_string or server/database/username/password) + optional
+# dialect / mode / model.
+# tenants:
+#   - name: Acme Corp
+#     api_key: "acme-long-random-secret"
+#     connection_string: "postgresql://user:pw@acme-host:5432/acme"
+#     dialect: postgres
+#   - name: Globex
+#     api_key: "globex-long-random-secret"
+#     server: globex-sql
+#     database: GlobexDB
+#     username: sqldoc
+#     password: "***"
+#     dialect: sqlserver

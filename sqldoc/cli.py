@@ -77,7 +77,7 @@ CONFIG_KEYS = {
     'verify_offline',
     'project_dir', 'no_db',
     'databases', 'all_databases',
-    'api_key', 'api', 'host', 'port',
+    'api_key', 'api', 'host', 'port', 'tenants',
     'agent',
 }
 
@@ -263,6 +263,52 @@ def _adapter_from_db_entry(entry):
     except UnsupportedDialectError as e:
         raise click.UsageError(str(e))
     return name, adapter, conn_str
+
+
+def load_tenants(cfg):
+    """Build the multi-tenant registry {api_key: tenant_ctx} from the config's
+    `tenants:` list. Each entry: name + api_key + connection settings (a
+    connection_string or server/database/username/password) + optional dialect/
+    mode/model. Every tenant gets an isolated context; keys must be unique."""
+    raw = cfg.get('tenants')
+    if not raw:
+        raise click.UsageError(
+            "--multi-tenant needs a 'tenants:' list in .sqldoc.yml. Each entry needs "
+            "a name, an api_key, and a connection (connection_string or "
+            "server/database/username/password).")
+    if not isinstance(raw, list):
+        raise click.UsageError("'tenants:' must be a list of tenant mappings.")
+    registry = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise click.UsageError("Each 'tenants:' entry must be a mapping.")
+        name = entry.get('name')
+        key = entry.get('api_key')
+        if not name or not key:
+            raise click.UsageError("Each tenant needs both a 'name' and an 'api_key'.")
+        if key in registry:
+            raise click.UsageError(
+                f"Duplicate tenant api_key (tenants must have distinct keys): tenant '{name}'.")
+        conn_str = entry.get('connection_string')
+        if not conn_str:
+            server = entry.get('server')
+            database = entry.get('database')
+            username = entry.get('username')
+            password = entry.get('password')
+            missing = [n for n, v in (('server', server), ('database', database),
+                                      ('username', username), ('password', password)) if not v]
+            if missing:
+                raise click.UsageError(
+                    f"Tenant '{name}' is missing connection settings: {', '.join(missing)} "
+                    f"(or provide a connection_string).")
+            conn_str = build_connection_string(server, database, username, password)
+        database = entry.get('database') or _parse_database(conn_str) or name
+        registry[key] = {
+            "name": name, "conn_str": conn_str, "dialect": entry.get('dialect'),
+            "database": database, "mode": entry.get('mode', 'local'),
+            "model": entry.get('model'),
+        }
+    return registry
 
 
 def _require_capability(adapter, flag, command):
@@ -2480,16 +2526,22 @@ def executive(config, server, database, username, password, connection_string, d
 @click.option('--connection-string', default=None, help='Full connection string for the API target')
 @click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES), help='Database dialect')
 @click.option('--api-key', 'api_key', default=None, help='Require this key via the X-API-Key header (else from .sqldoc.yml api_key)')
+@click.option('--multi-tenant', 'multi_tenant', is_flag=True, default=False,
+              help='Serve multiple isolated tenants from the .sqldoc.yml "tenants:" list; each tenant has its own api_key + database and cannot reach another tenant\'s data')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for POST /api/query')
 @click.option('--model', default=None, help='Model for POST /api/query')
 def serve(config, api, host, port, server, database, username, password, connection_string,
-          dialect, api_key, mode, model):
+          dialect, api_key, multi_tenant, mode, model):
     """Start a local REST API exposing sqldoc commands as JSON endpoints.
 
     Other tools/dashboards can call GET /api/doc, /api/scan, /api/health,
     /api/secure, /api/server, /api/waits, /api/plans, /api/ha, /api/backup,
     POST /api/query (natural-language to SQL), and GET /api/agent/status.
     Authenticate with an X-API-Key header matching the configured api_key.
+
+    With --multi-tenant, one server hosts many customers: each tenant in the
+    .sqldoc.yml "tenants:" list has its own api_key and database, and a key can
+    only ever reach its own tenant's data (the foundation for a hosted SaaS).
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
@@ -2497,6 +2549,28 @@ def serve(config, api, host, port, server, database, username, password, connect
 
     host = resolve('host', host)
     port = int(resolve('port', port))
+
+    if multi_tenant:
+        tenants = load_tenants(cfg)
+        api_ctx = {"tenants": tenants, "mode": resolve('mode', mode),
+                   "model": resolve('model', model)}
+        click.echo(f"\nsqldoc v{__version__}  -  REST API server (multi-tenant)")
+        click.echo(f"{'='*44}")
+        click.echo(f"Listening: http://{host}:{port}/api")
+        click.echo(f"Tenants:   {len(tenants)} (isolated; X-API-Key selects the tenant)")
+        for t in tenants.values():
+            click.echo(f"   - {t['name']}: {t['database']}")
+        click.echo(f"Endpoints: " + ", ".join(sorted(p for _m, p in API_ENDPOINTS)))
+        click.echo(f"{'='*44}\n")
+        httpd = make_api_server(host, port, api_ctx)
+        click.echo("Server running. Press Ctrl+C to stop.")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            click.echo("\nShutting down.")
+            httpd.shutdown()
+        return
+
     api_key = api_key or cfg.get('api_key') or (cfg.get('api') or {}).get('key')
 
     # The API target database (optional — /api/agent/status works without it).
