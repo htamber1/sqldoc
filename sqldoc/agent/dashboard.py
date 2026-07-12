@@ -178,6 +178,27 @@ def render_alerts(store, days: int = 30) -> str:
     return _page("Alerts · sqldoc agent", body)
 
 
+def _handle_approval_link(raw_path: str) -> str:
+    """Record an approve/reject decision from an emailed link (best-effort; the
+    Jira rejection comment is posted when a decision is recorded via the CLI,
+    which has the full config)."""
+    from urllib.parse import urlparse, parse_qs
+    q = parse_qs(urlparse(raw_path).query)
+    token = (q.get("token") or [""])[0]
+    reason = (q.get("reason") or [None])[0]
+    decision = "approve" if "/approve" in raw_path else "reject"
+    from sqldoc.access import approval
+    try:
+        rec = approval.record_decision({}, token, decision, reason=reason)
+    except ValueError as e:
+        return _page("Approval", f"<p class='err'>{html.escape(str(e))}</p>")
+    label = rec.get("status", decision)
+    return _page("Approval recorded",
+                 f"<div class='card'><h2>Decision recorded: {html.escape(label)}</h2>"
+                 f"<p class='muted'>{html.escape(rec.get('database',''))} / "
+                 f"{html.escape(rec.get('login',''))}</p></div>")
+
+
 def alerts_json(store, days: int = 30) -> dict:
     try:
         return {"alerts": store.alerts_since_days(days)}
@@ -239,6 +260,8 @@ def _make_handler(store, authn=None):
                 elif path == "/api/overview":
                     self._send(json.dumps(overview_json(store), indent=2),
                                "application/json; charset=utf-8")
+                elif path in ("/access/approve", "/access/reject"):
+                    self._send(_handle_approval_link(self.path))
                 elif path == "/alerts":
                     self._send(render_alerts(store))
                 elif path == "/api/alerts":

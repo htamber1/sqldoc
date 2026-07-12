@@ -3259,6 +3259,109 @@ def access_review(config, inactive_days, output, json_out):
         click.echo(f"JSON written to {json_out}")
 
 
+@access.command('approve')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--list', 'show_list', is_flag=True, default=False, help='List pending approvals')
+@click.option('--token', default=None, help='Approval token to decide on')
+@click.option('--decision', default=None, type=click.Choice(['approve', 'reject']),
+              help='Approve or reject the token')
+@click.option('--reason', default=None, help='Rejection reason (posted back to Jira)')
+# --- submit-mode inputs (generate a script and send it for approval) ---
+@click.option('--user', 'identifier', default=None, help='User who needs access (submit mode)')
+@click.option('--request', 'request_text', default=None, help='Plain-English request (submit mode)')
+@click.option('--database', default=None, help='Target database (submit mode)')
+@click.option('--schema', default=None, help='Target schema (for approver routing)')
+@click.option('--level', default=None, type=click.Choice(['read', 'write', 'admin']))
+@click.option('--ticket', default=None, help='Associated Jira ticket (for rejection comments)')
+@click.option('--requester', default=None, help='Who is requesting (defaults to the OS user)')
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic parser (submit mode)')
+def access_approve(config, show_list, token, decision, reason, identifier, request_text,
+                   database, schema, level, ticket, requester, no_ai):
+    """Submit a generated script for email approval, or record a decision.
+
+    Submit mode (default): generate the grant script and email it to the
+    configured approver (per database/schema) with approve/reject links. Decide
+    mode (--token --decision): record the outcome — approved scripts are logged
+    to the audit trail; rejected scripts post a Jira comment. Approvers are set
+    under access.approvers in .sqldoc.yml.
+    """
+    from sqldoc.access import approval
+    cfg = _access_cfg(config)
+
+    if show_list:
+        rows = approval.pending()
+        if not rows:
+            click.echo("No pending approvals.")
+            return
+        click.echo(click.style(f"\n{len(rows)} pending approval(s):", bold=True))
+        for r in rows:
+            click.echo(f"  {r['token']}  {r['database']}/{r['login']}  role={r['role']}  "
+                       f"approver={r['approver'] or '-'}  requested by {r['requester'] or '-'}")
+        return
+
+    if token or decision:
+        if not (token and decision):
+            raise click.UsageError("Both --token and --decision are required to record a decision.")
+        jira_client = None
+        if decision == 'reject':
+            try:
+                from sqldoc.integrations import get_client, section
+                jira_client = get_client('jira', section(cfg, 'jira'))
+            except Exception:
+                jira_client = None
+        try:
+            rec = approval.record_decision(cfg, token, decision, reason=reason, jira_client=jira_client)
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        click.echo(click.style(f"Recorded: {rec['status']}", fg='green' if rec['status'] == 'approved' else 'yellow')
+                   + f"  ({rec['database']}/{rec['login']})")
+        if rec['status'] == 'approved':
+            click.echo("Logged to the audit trail.")
+        elif rec.get('ticket'):
+            click.echo(f"Rejection comment posted to {rec['ticket']}." if jira_client else
+                       "Rejection recorded (no Jira client configured to comment).")
+        return
+
+    # Submit mode.
+    if not identifier:
+        raise click.UsageError("Submit mode needs --user (plus --request or --database/--level). "
+                               "Use --token/--decision to record a decision, or --list.")
+    from sqldoc.access.checker import check_access
+    from sqldoc.access.parse import parse_request, ParsedRequest
+    from sqldoc.access import config as access_config
+    from sqldoc.access.script import generate_script
+    from sqldoc.integrations.base import IntegrationError
+    known = [db for s in access_config.servers(cfg) for db in s["databases"]]
+    if request_text:
+        parsed = parse_request(request_text, known_databases=known, no_ai=no_ai)
+    elif database and level:
+        parsed = ParsedRequest(raw=f"{level} access to {database}", database=database, level=level)
+    else:
+        raise click.UsageError("Provide --request, or both --database and --level.")
+    if schema:
+        parsed.schema = schema
+    try:
+        report = check_access(cfg, identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+    tables, pii, server_name, _note = _access_tables_for(cfg, parsed.database)
+    gs = generate_script(report, parsed, server_name or "(server)", parsed.database,
+                         tables=tables, pii_findings=pii)
+    import getpass
+    req = requester or (getattr(getpass, 'getuser', lambda: 'unknown')() if True else 'unknown')
+    rec = approval.submit_approval(cfg, gs, requester=req, ticket=ticket, schema=parsed.schema)
+    click.echo(f"\nsqldoc v{__version__}  -  access approve (submit)")
+    click.echo(f"{'='*44}")
+    if not rec['approver']:
+        click.echo(click.style("  ! No approver configured for this database/schema "
+                               "(set access.approvers). Approval recorded but not emailed.", fg='yellow'))
+    click.echo(f"  token:    {rec['token']}")
+    click.echo(f"  approver: {rec['approver'] or '(none)'}   emailed: {rec['sent']}")
+    if rec.get('send_error'):
+        click.echo(click.style(f"  ! email failed: {rec['send_error']}", fg='yellow'))
+    click.echo(f"\nApprover decides with:\n  sqldoc access approve --token {rec['token']} --decision approve|reject")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
