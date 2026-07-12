@@ -334,9 +334,14 @@ escalation paths, and a 30-day alert history on the dashboard.
 ## Access request workflow (v2.6)
 
 `sqldoc access` automates the SQL Server access-request grind — cross-referencing
-**Active Directory / Entra ID** group membership with SQL Server logins + role
-memberships. AD is optional (`pip install sqldoc[activedirectory]`); the LDAP
-(ldap3, pure Python) and Microsoft Graph back-ends auto-detect from your domain.
+your identity provider's group membership with SQL Server logins + role
+memberships. Identity is optional and auto-detected from config: **Active
+Directory**, **Entra ID / hybrid**, **generic LDAP** (OpenLDAP etc.), **Okta**,
+**Google Workspace**, **JumpCloud**, or **native** (pure SQL logins, no
+directory). It handles every login type (Windows, SQL, Azure AD, managed
+identity), pulls requests from email / ServiceNow / Azure DevOps / GitHub / a
+REST endpoint, and emits scripts as SQL / PowerShell / Azure runbook / Ansible —
+or runs them directly with `access execute`.
 
 | Command | What it does |
 |---|---|

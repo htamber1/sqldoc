@@ -4,6 +4,63 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] — 2026-07-12
+
+**Enterprise-everywhere: fill the gaps so sqldoc runs in any environment.** Nine
+areas — every identity provider, every SQL Server login pattern, more intake
+sources + execution formats, all the major compliance frameworks, SMS/WhatsApp
+alerting, six more documentation destinations, and container + cloud deployment.
+No breaking changes.
+
+### Added — identity providers (access suite)
+Beyond AD + Entra: **generic LDAP** (non-Microsoft directories, configurable
+attribute mapping), **hybrid AD** (on-prem synced to Entra — prefers the on-prem
+DOMAIN\\sam login), **Okta**, **Google Workspace**, **JumpCloud**, and **native**
+(no directory — pure SQL Server logins). Auto-detected from config. Extras:
+`okta`, `google-workspace`, `jumpcloud`.
+
+### Added — SQL Server login patterns
+`access check`/`access script` handle every login type and emit the correct DDL:
+Windows group/individual (`FROM WINDOWS`), SQL native (`WITH PASSWORD`), Azure AD
+and managed identity (`FROM EXTERNAL PROVIDER`; contained users on Azure SQL
+Database), and mixed-mode. `--login-type` override.
+
+### Added — request intake expansion
+`access parse-email` (forwarded email → AI extraction → workflow), plus intake
+from **ServiceNow**, **Azure DevOps**, and **GitHub Issues** (`access intake
+--source ...`), and a REST intake endpoint (`POST /api/access/request` on
+`sqldoc serve`). All run through the same parser + script generator.
+
+### Added — script execution formats
+`access script --format {sql,powershell,runbook,ansible}` (plain SQL, PowerShell
+Invoke-Sqlcmd wrapper, Azure Automation runbook, Ansible playbook), and
+`access execute` — run the grant directly with confirmation + audit + rollback.
+
+### Added — compliance frameworks
+`sqldoc comply --frameworks sox,fedramp,iso27001,cmmc,ccpa,pipeda,soc2` (or
+"all") — each framework's controls mapped to control numbers with the specific
+findings that drove them; a separate `<report>-frameworks.html` + JSON.
+
+### Added — notification channels
+SMS via **Twilio**, **WhatsApp** (Meta Cloud API), and **SMTP-to-SMS gateways** —
+routable per severity via the `alerting:` layer.
+
+### Added — documentation destinations
+**GitHub Wiki**, **GitLab Wiki**, **Azure DevOps Wiki**, **OneDrive** (reuses
+SharePoint auth), **Dropbox** (Business), and **Nuclino** connectors.
+
+### Added — deployment
+Production **Dockerfile** (agent entrypoint, bundled MS ODBC driver),
+**docker-compose.yml** (persistent volume), a **Helm chart** (`helm/sqldoc/`),
+and cloud templates: **Azure Container Apps** (Bicep), **AWS ECS Fargate**
+(CloudFormation), **Google Cloud Run** (Terraform). See `deploy/README.md`.
+
+### Notes
+- New optional extras: `okta`, `google-workspace`, `jumpcloud`, `gitlab-wiki`,
+  `azuredevops-wiki`, `dropbox`, `nuclino`, `onedrive`.
+- Everything is mock-tested (no live directories/SaaS/clusters in the suite).
+  Test count: 966.
+
 ## [2.6.0] — 2026-07-12
 
 **`sqldoc access` — automate the SQL Server access-request workflow.** A new
