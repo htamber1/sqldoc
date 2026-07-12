@@ -1,0 +1,16 @@
+.git
+.github
+venv/
+**/__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+tests/
+.sqldoc.yml
+.sqldoc-cache/
+.sqldoc-snapshots/
+.sqldoc-pii-snapshots/
+*.html
+*.pdf
+scratchpad/

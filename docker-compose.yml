@@ -1,0 +1,28 @@
+# sqldoc agent — local / single-host deployment.
+#
+#   1. Put your config in ./.sqldoc.yml (see .sqldoc.example.yml).
+#   2. docker compose up -d
+#   3. Open the dashboard at http://localhost:8080
+#
+# The agent store persists in the named volume `sqldoc-data`.
+services:
+  sqldoc:
+    build: .
+    image: sqldoc:latest
+    container_name: sqldoc-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"        # agent dashboard
+    environment:
+      SQLDOC_AGENT_HOME: /data
+      # Cloud AI backends / integrations read their keys from the environment:
+      # ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+    volumes:
+      - ./.sqldoc.yml:/app/.sqldoc.yml:ro   # your config (read-only)
+      - sqldoc-data:/data                    # persistent agent store
+    # Serve the REST API instead of the agent:
+    # command: ["serve", "--host", "0.0.0.0", "--port", "8090"]
+
+volumes:
+  sqldoc-data:

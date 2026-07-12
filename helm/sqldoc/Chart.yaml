@@ -1,0 +1,17 @@
+apiVersion: v2
+name: sqldoc
+description: sqldoc monitoring agent — database documentation, PII/compliance, and infrastructure monitoring
+type: application
+version: 0.1.0
+appVersion: "2.7.0"
+home: https://github.com/htamber1/sqldoc
+sources:
+  - https://github.com/htamber1/sqldoc
+maintainers:
+  - name: Harsh Tamboli
+keywords:
+  - sql-server
+  - database
+  - documentation
+  - compliance
+  - monitoring

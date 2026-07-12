@@ -1,0 +1,54 @@
+# Default values for the sqldoc agent chart.
+
+image:
+  repository: sqldoc
+  tag: "latest"          # or a pinned release, e.g. "2.7.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1          # the agent is stateful; keep at 1
+
+# The sqldoc config (.sqldoc.yml). Rendered into a Secret and mounted read-only.
+# Paste your `agent:` (+ integrations/access/alerting) config here, or set
+# existingSecret to reference a Secret you manage out-of-band.
+config: |
+  agent:
+    interval_minutes: 30
+    dashboard_port: 8080
+    databases: []
+existingSecret: ""       # if set, mounts this Secret's `.sqldoc.yml` key instead
+
+# Extra environment variables (e.g. cloud AI / integration credentials).
+env: {}
+  # ANTHROPIC_API_KEY: ""
+envFromSecret: ""        # optional Secret with additional env vars
+
+service:
+  type: ClusterIP
+  port: 8080             # dashboard
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""       # "" = cluster default
+  accessMode: ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
