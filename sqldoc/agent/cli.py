@@ -154,6 +154,12 @@ def _run_foreground(config):
     ac = _parse(config)
     store = AgentStore(db_path())
     notifier = Notifier(ac.notify)
+    # Optional SSO gate for the dashboard, from the top-level `auth:` section.
+    from sqldoc.authn import build_authenticator
+    try:
+        authn = build_authenticator(_load_yaml(config))
+    except ValueError as e:
+        raise click.UsageError(f"Invalid auth config: {e}")
     stop_event = threading.Event()
     _remove(stop_flag_path())
 
@@ -168,7 +174,7 @@ def _run_foreground(config):
                      daemon=True).start()
 
     run_daemon(ac, store, notifier, stop_event,
-               log=lambda msg: print(f"{_ts()} {msg}", flush=True))
+               log=lambda msg: print(f"{_ts()} {msg}", flush=True), authn=authn)
 
 
 @agent.command()

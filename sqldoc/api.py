@@ -175,10 +175,21 @@ def dispatch(method, path, headers, body, ctx) -> tuple:
             return 200, {"running": False,
                          "note": "agent status is not exposed in multi-tenant mode"}
     else:
-        # Single-tenant: optional shared api_key.
+        # Single-tenant: an API key and/or SSO (OIDC/SAML). Either credential
+        # satisfies the request; auth is required if either is configured.
         api_key = ctx.get("api_key")
-        if api_key and _provided_key(headers) != api_key:
-            return 401, {"error": "invalid or missing X-API-Key header"}
+        authn = ctx.get("authn")
+        sso_on = authn is not None and getattr(authn, "enabled", False)
+        if api_key or sso_on:
+            authed = bool(api_key) and _provided_key(headers) == api_key
+            err = "invalid or missing X-API-Key header"
+            if not authed and sso_on:
+                ok, result = authn.authenticate(headers)
+                authed = ok
+                if not ok:
+                    err = result
+            if not authed:
+                return 401, {"error": err}
         req_ctx = ctx
 
     if method == "GET" and path in ("/api", "/"):

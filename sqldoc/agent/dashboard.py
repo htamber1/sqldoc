@@ -149,7 +149,7 @@ def overview_json(store) -> dict:
     return out
 
 
-def _make_handler(store):
+def _make_handler(store, authn=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, body, content_type="text/html; charset=utf-8", code=200):
             data = body.encode("utf-8") if isinstance(body, str) else body
@@ -159,7 +159,28 @@ def _make_handler(store):
             self.end_headers()
             self.wfile.write(data)
 
+        def _authorized(self):
+            """SSO gate: when auth is configured, require a valid OIDC bearer /
+            SAML assertion. Returns True when allowed, else sends 401."""
+            if authn is None or not getattr(authn, "enabled", False):
+                return True
+            ok, result = authn.authenticate(self.headers)
+            if ok:
+                return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", "Bearer")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = html.escape(str(result))
+            self.wfile.write(_page("Sign in required",
+                                   f"<p class='err'>Authentication required: {msg}</p>"
+                                   "<p class='muted'>Provide an OIDC bearer token "
+                                   "(Authorization: Bearer) or a SAML assertion.</p>").encode("utf-8"))
+            return False
+
         def do_GET(self):
+            if not self._authorized():
+                return
             path = unquote(self.path.split("?", 1)[0]).rstrip("/") or "/"
             try:
                 if path == "/":
@@ -187,5 +208,5 @@ def _make_handler(store):
     return Handler
 
 
-def make_server(store, port: int, host: str = "127.0.0.1") -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), _make_handler(store))
+def make_server(store, port: int, host: str = "127.0.0.1", authn=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), _make_handler(store, authn))

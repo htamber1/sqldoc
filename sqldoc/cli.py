@@ -77,7 +77,7 @@ CONFIG_KEYS = {
     'verify_offline',
     'project_dir', 'no_db',
     'databases', 'all_databases',
-    'api_key', 'api', 'host', 'port', 'tenants',
+    'api_key', 'api', 'host', 'port', 'tenants', 'auth',
     'agent',
 }
 
@@ -2582,20 +2582,29 @@ def serve(config, api, host, port, server, database, username, password, connect
     except click.UsageError:
         conn_str = None
 
+    from sqldoc.authn import build_authenticator
+    try:
+        authn = build_authenticator(cfg)
+    except ValueError as e:
+        raise click.UsageError(f"Invalid auth config: {e}")
+
     api_ctx = {"conn_str": conn_str, "dialect": resolve('dialect', dialect),
-               "database": resolved_db, "api_key": api_key,
+               "database": resolved_db, "api_key": api_key, "authn": authn,
                "mode": resolve('mode', mode), "model": resolve('model', model)}
 
+    sso_desc = f"SSO ({authn.cfg.provider}/{authn.cfg.method})" if authn else None
+    auth_desc = " + ".join(filter(None, ["X-API-Key" if api_key else None, sso_desc])) \
+        or "OPEN (no api_key or SSO configured)"
     click.echo(f"\nsqldoc v{__version__}  -  REST API server")
     click.echo(f"{'='*44}")
     click.echo(f"Listening: http://{host}:{port}/api")
     click.echo(f"Target:    {resolved_db or '(none — only /api/agent/status)'}")
-    click.echo(f"Auth:      {'X-API-Key required' if api_key else 'OPEN (no api_key configured)'}")
+    click.echo(f"Auth:      {auth_desc}")
     click.echo(f"Endpoints: " + ", ".join(sorted(p for _m, p in API_ENDPOINTS)))
     click.echo(f"{'='*44}\n")
-    if not api_key:
-        click.echo(click.style("  ! No api_key set — the API is unauthenticated. Bind to localhost "
-                               "and/or set api_key in .sqldoc.yml.", fg='yellow'), err=True)
+    if not api_key and not authn:
+        click.echo(click.style("  ! No api_key or SSO set — the API is unauthenticated. Bind to "
+                               "localhost and/or set api_key or auth in .sqldoc.yml.", fg='yellow'), err=True)
 
     httpd = make_api_server(host, port, api_ctx)
     click.echo("Server running. Press Ctrl+C to stop.")

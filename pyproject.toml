@@ -44,6 +44,9 @@ mongodb = ["pymongo>=4.0"]
 # Optional cloud AI backends (Anthropic is a core dependency; ollama is local).
 openai = ["openai>=1.0"]
 gemini = ["google-generativeai>=0.5"]
+# Optional SSO for the dashboard + REST API (OIDC bearer / SAML assertion).
+sso = ["PyJWT[crypto]>=2.8"]
+saml = ["signxml>=3.2", "defusedxml>=0.7"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
 all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",

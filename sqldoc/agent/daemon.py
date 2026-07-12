@@ -67,11 +67,11 @@ def weekly_report_loop(store, agent_config, stop_event, log, check_seconds=900):
 
 
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
-               host="127.0.0.1", poll_fn=None) -> int:
+               host="127.0.0.1", poll_fn=None, authn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
     dashboard port actually bound (useful when port 0 is requested in tests)."""
     poll_fn = poll_fn or poll_database
-    server = make_server(store, agent_config.dashboard_port, host)
+    server = make_server(store, agent_config.dashboard_port, host, authn=authn)
     bound_port = server.server_address[1]
 
     dash_thread = threading.Thread(target=server.serve_forever, name="dashboard", daemon=True)

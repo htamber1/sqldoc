@@ -179,3 +179,25 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #     username: sqldoc
 #     password: "***"
 #     dialect: sqlserver
+
+# --- SSO for the dashboard + REST API (optional) ---
+# Gate the agent dashboard and `sqldoc serve` behind single sign-on. Two methods:
+#   OIDC (OAuth2) — callers send `Authorization: Bearer <JWT>`; the token is
+#     verified against the IdP's JWKS (issuer/audience/expiry) then the
+#     allowlists below. Presets: azure_ad (needs tenant_id), okta (needs domain),
+#     google, or generic oidc (needs issuer + jwks_uri). Needs pip install sqldoc[sso].
+#   SAML — a base64 SAML Response is sent in an `X-SAML-Response` header (set by
+#     your ACS/proxy); conditions, audience, and XML signature are validated.
+#     Needs the IdP signing cert + pip install sqldoc[saml].
+# An X-API-Key (api_key above) still works alongside SSO for machine clients.
+# auth:
+#   provider: azure_ad          # azure_ad / okta / google / oidc / saml
+#   tenant_id: "your-azure-tenant-guid"   # azure_ad
+#   client_id: "your-app-client-id"       # becomes the expected audience
+#   # okta:   domain: dev-123.okta.com  (auth_server: default)
+#   # google: client_id: ...
+#   # oidc:   issuer: https://idp/  +  jwks_uri: https://idp/jwks  +  audience: ...
+#   # saml:   idp_cert: |-\n  -----BEGIN CERTIFICATE----- ...  +  sp_audience: <SP entity id>
+#   allowed_domains: [yourcompany.com]    # optional email-domain allowlist
+#   # allowed_emails: [dba@yourcompany.com]
+#   # allowed_groups: [SQLDoc-Admins]     # requires groups/roles in the token
