@@ -4,6 +4,58 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] — 2026-07-11
+
+**Deeper compliance, health, CI, and air-gap support.** Four feature areas that
+make the existing commands more useful in regulated and locked-down
+environments, plus a drop-in GitHub Action.
+
+### Added — enhanced access audit (`sqldoc comply`)
+- **Unified per-principal access view.** The access audit now collapses every
+  object-level grant into **one row per user/role**, bucketed into a
+  read / write / admin **permission level** (GRANT WITH GRANT OPTION escalates to
+  admin), with the count of objects each principal can touch, how many hold PII,
+  and the worst risk + regulations across them.
+- **Group/role membership expansion.** Database roles are resolved from
+  `sys.database_role_members` (SQL Server) / `pg_auth_members` (PostgreSQL) and
+  shown with a **collapsible dropdown of each role's members** in the HTML
+  report. Both the per-principal view and the membership map are in `--json`
+  (`principals[]`, `role_members[]`).
+
+### Added — unused-objects detector (`sqldoc health`)
+- **Unused stored procedures** — procedures/functions with no execution recorded
+  since the stats last reset, via `sys.dm_exec_procedure_stats` (SQL Server) and
+  `pg_stat_user_functions` (PostgreSQL).
+- **Potential duplicate tables** — pairs with similar names *and* overlapping
+  column structure (fuzzy name match + column-name Jaccard overlap).
+  Metadata-only and dialect-neutral.
+- **Redundant indexes** — index keys that duplicate, or are a leading prefix of,
+  another index on the same table (PK/unique never flagged as the redundant one).
+  Metadata-only and dialect-neutral.
+- All three surface in the HTML report (new sections + stat cards) and `--json`.
+
+### Added — GitHub Action
+- A ready-to-use composite action at `.github/actions/sqldoc/` (referenceable as
+  `uses: htamber1/sqldoc-action@v1` once mirrored, or `./.github/actions/sqldoc`
+  locally). Inputs for **command** (doc/scan/health), **connection-string**,
+  **dialect** (auto-installs the matching driver extra), **output-path**,
+  **fail-on-high-pii** (maps to `--fail-on high`), plus `json-output`,
+  `extra-args`, `sqldoc-version`, and `python-version`. Ships a README with
+  recipes, a `publish-action.sh` mirror script, and an example workflow.
+
+### Added — offline / air-gap verification
+- **`--verify-offline`** on every HTML-emitting command scans the rendered report
+  for any external resource reference (CDN scripts, web fonts, remote images,
+  protocol-relative URLs) and warns if the report is not air-gap safe.
+- New `sqldoc/offline.py` detector; the test suite now **enforces** that all
+  seven report templates are fully self-contained.
+- README gained a prominent **"Air-gap ready"** section documenting the
+  zero-egress posture.
+
+### Notes
+- 315 tests passing (all mocked — no live database/Ollama). No breaking changes:
+  the new outputs are additive to the existing HTML/JSON reports.
+
 ## [1.7.0] — 2026-07-11
 
 **`sqldoc agent` — a persistent background monitoring daemon.** Turns sqldoc from
