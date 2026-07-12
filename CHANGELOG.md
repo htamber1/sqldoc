@@ -4,6 +4,54 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-07-11
+
+**Five high-value infrastructure features, each implemented across SQL Server,
+PostgreSQL, and MySQL.** A new cross-dialect `infra_monitoring` capability lets
+`sqldoc server` run on all three engines for the shared sections. All new
+reports use the dark theme + `--json`; the SQL-Server paths are live-validated
+against SQL Server 2022, the PostgreSQL/MySQL paths are mock-tested.
+
+### Added — backup / point-in-time-recovery monitoring
+Dialect-aware `sqldoc/backup.py`, surfaced in `sqldoc server` and as a new agent
+alert (`backup_stale`): SQL Server (`msdb.dbo.backupset` — last full/diff/log,
+recovery model, never-backed-up, recovery-model-vs-backup mismatches),
+PostgreSQL (`pg_stat_archiver` + `archive_mode`), MySQL (`log_bin` as the PITR
+proxy). Config: `backup_monitoring`, `backup_max_age_hours`.
+
+### Added — `sqldoc secure` (security vulnerability scanner)
+Dialect-aware hardening checks with a unified 0-100 score + letter grade:
+SQL Server (SA account, `xp_cmdshell`, `TRUSTWORTHY`, blank passwords, public
+grants), PostgreSQL (superusers, `pg_hba.conf` trust/password rules, public
+schema CREATE, SSL off), MySQL (anonymous accounts, remote root, no-password
+accounts, `FILE` privilege, `secure_file_priv`). HIGH/MEDIUM/LOW findings, a
+score gauge, and `--fail-under` for CI gating.
+
+### Added — `sqldoc waits` (wait-statistics analysis)
+Normalizes waits into IO / Lock / Memory / CPU / Network across SQL Server
+(`sys.dm_os_wait_stats`), PostgreSQL (`pg_stat_activity` + `pg_locks`), and MySQL
+(`performance_schema`). AI (Ollama/Anthropic) explains the top waits and suggests
+fixes — only wait-type names + percentages are sent, never data.
+
+### Added — `sqldoc ha` (high-availability / replication monitoring)
+Replica roles, sync state, and lag for SQL Server Always On
+(`sys.dm_hadr_*`), PostgreSQL streaming replication (`pg_stat_replication` /
+`pg_stat_wal_receiver`), and MySQL (`SHOW REPLICA STATUS`), with a topology
+diagram. New agent alert `replica_lag` (config `ha_monitoring`,
+`replica_lag_threshold_seconds`).
+
+### Added — `sqldoc deadlocks` (deadlock analysis)
+SQL Server parses deadlock graphs from the `system_health` extended-events
+session; PostgreSQL reports `pg_stat_database.deadlocks` + the current blocking
+tree (`pg_blocking_pids`); MySQL reports the `ER_LOCK_DEADLOCK` count. Deadlock
+graphs render as **SVG wait-for diagrams** (victim highlighted) with an AI
+explanation of the cyclic dependency and how to prevent it.
+
+### Notes
+- 425 tests passing (all mocked). SQL Server paths for all five features were
+  live-validated end-to-end against SQL Server 2022 (including inducing a real
+  deadlock and the Ollama AI explanations for waits + deadlocks).
+
 ## [2.0.0] — 2026-07-11
 
 **sqldoc is now a full SQL Server infrastructure platform, not just a database

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldoc"
-version = "2.0.0"
+version = "2.1.0"
 description = "Multi-database documentation generator + PII/compliance scanner for SQL Server, PostgreSQL, MySQL and Azure SQL, with optional AI-written descriptions."
 readme = "README.md"
 requires-python = ">=3.10"
