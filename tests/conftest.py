@@ -221,6 +221,10 @@ class FakeCursor:
             self._last = "dbx_history"
         elif "DBX_DETAIL" in sql:
             self._last = "dbx_detail"
+        elif "crdb_internal.zones" in sql:
+            self._last = "crdb_zones"
+        elif "crdb_internal.gossip_nodes" in sql:
+            self._last = "crdb_nodes"
         elif "backupset" in sql:
             self._last = "backups"
         elif "'archive_mode'" in sql:
