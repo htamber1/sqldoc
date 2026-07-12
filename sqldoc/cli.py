@@ -44,6 +44,9 @@ from sqldoc.logs import collect_logs, summarize as logs_summarize
 from sqldoc.logs_renderer import render_logs_html, build_logs_json
 from sqldoc.secure import collect_security, summarize as secure_summarize
 from sqldoc.secure_renderer import render_secure_html, build_secure_json
+from sqldoc.backup import collect_backups
+from sqldoc import executive as executive_mod
+from sqldoc.executive_renderer import render_executive_html
 from sqldoc.waits import collect_waits, explain_waits, summarize as waits_summarize
 from sqldoc.waits_renderer import render_waits_html, build_waits_json
 from sqldoc.ha import collect_ha, summarize as ha_summarize
@@ -2341,6 +2344,132 @@ def baseline(config, server, database, username, password, connection_string, di
 
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES), help='Database dialect (default: auto-detected)')
+@click.option('--schemas', default=None, help='Comma-separated schema allowlist (default: all)')
+@click.option('--output', default='executive-summary.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the summary as machine-readable JSON to this path')
+@industry_option
+@click.option('--no-baseline', 'no_baseline', is_flag=True, default=False,
+              help='Do not read/write the trend snapshot (skip the vs-last-run arrows)')
+@click.option('--baseline', default=None, help='Trend-snapshot path (default: .sqldoc-exec-snapshots/<database>.json)')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def executive(config, server, database, username, password, connection_string, dialect,
+              schemas, output, json_out, industry, no_baseline, baseline, verify_offline):
+    """Single-page, plain-English health + risk summary for a CTO / CISO.
+
+    Aggregates the deep technical commands into four scores — data protection
+    (PII), backups, security, and performance — plus an overall score, the top 3
+    things to fix, and trend arrows vs the last run. No jargon. Sections that
+    aren't available on the database's dialect are simply omitted. Reads schema +
+    catalog metadata only (the PII scan reads no row data).
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    schemas = resolve('schemas', schemas)
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    no_baseline = resolve('no_baseline', no_baseline)
+    industry = resolve_industry(resolve, industry)
+
+    click.echo(f"\nsqldoc v{__version__}  -  Executive summary")
+    click.echo(f"{'='*44}")
+    click.echo(f"Database: {database}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name}...")
+    try:
+        tables = extract_metadata(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+    if schemas:
+        allow = [s.strip() for s in schemas.split(',')]
+        tables = [t for t in tables if t.schema in allow]
+
+    caps = adapter.capabilities
+
+    # PII (all dialects). Escalate for the industry if one was chosen.
+    findings = scan_tables(tables)
+    if industry:
+        industry_mod.apply_to_findings(findings, industry)
+    click.echo(f"  data protection: scanned {len(tables)} table(s), {len(findings)} sensitive column(s)")
+
+    # Each remaining section is best-effort + capability-gated; a failure warns
+    # and leaves that score out of the summary rather than aborting.
+    health_sum = backup_report = security_report = None
+    if caps.health:
+        try:
+            health_sum = health_summarize(collect_health(adapter))
+            click.echo("  performance: analyzed")
+        except Exception as e:
+            click.echo(click.style(f"  ! performance check skipped: {e}", fg='yellow'), err=True)
+    if caps.infra_monitoring:
+        try:
+            backup_report = collect_backups(adapter)
+            click.echo("  backups: checked")
+        except Exception as e:
+            click.echo(click.style(f"  ! backup check skipped: {e}", fg='yellow'), err=True)
+        try:
+            security_report = collect_security(adapter)
+            click.echo("  security: scanned")
+        except Exception as e:
+            click.echo(click.style(f"  ! security scan skipped: {e}", fg='yellow'), err=True)
+
+    # Trend snapshot (previous run's scores).
+    previous = None
+    base_path = baseline or os.path.join('.sqldoc-exec-snapshots', _safe_filename(database) + '.json')
+    if not no_baseline:
+        previous = load_snapshot(base_path)
+
+    summary = executive_mod.build_summary(
+        database, health_summary=health_sum, findings=findings,
+        backup_report=backup_report, security_report=security_report,
+        previous=previous,
+        generated_label=f"Generated for {database}.")
+
+    if not no_baseline:
+        save_snapshot(executive_mod.to_snapshot(summary), base_path)
+
+    click.echo("\nRendering report...")
+    render_executive_html(summary, output)
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(executive_mod.build_executive_json(summary), f, indent=2, default=str)
+        click.echo(f"Machine-readable summary written to {json_out}")
+
+    def _fmt(v):
+        return "N/A" if v is None else str(v)
+    click.echo(
+        click.style(f"\nOverall: {summary.overall_score}/100 ({summary.overall_label})", bold=True)
+        + f"   data-protection {_fmt(summary.pii_safety_score)}"
+        + f"   backups {_fmt(summary.backup_compliance_pct)}%"
+        + f"   security {_fmt(summary.security_score)}"
+        + f"   performance {_fmt(summary.health_score)}")
+    if summary.top_risks:
+        click.echo("\nTop priorities:")
+        for i, r in enumerate(summary.top_risks, 1):
+            colr = {'Critical': 'red', 'High': 'yellow', 'Medium': 'blue'}.get(r['severity'])
+            click.echo("  " + click.style(f"{i}. [{r['severity']}] {r['title']}", fg=colr))
+    else:
+        click.echo(click.style("\nNo urgent issues found.", fg='green'))
+    click.echo(f"\nOpen {output} in your browser for the full executive report.")
+
+
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--api', is_flag=True, default=True, help='Start the JSON REST API server (default mode)')
 @click.option('--host', default='127.0.0.1', help='Bind host (default: 127.0.0.1 — localhost only)')
 @click.option('--port', default=8090, type=int, help='Bind port (default: 8090)')
@@ -2439,6 +2568,7 @@ cli.add_command(deadlocks, name='deadlocks')
 cli.add_command(plans, name='plans')
 cli.add_command(capacity, name='capacity')
 cli.add_command(baseline, name='baseline')
+cli.add_command(executive, name='executive')
 cli.add_command(serve, name='serve')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
