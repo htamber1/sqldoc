@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import sqldoc.ai as ai
 from sqldoc.dbutil import cell
 
-WAIT_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+WAIT_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 CATEGORIES = ["IO", "Lock", "Memory", "CPU", "Network", "Other"]
 
 
@@ -221,7 +221,7 @@ def collect_waits(adapter, top: int = 15) -> WaitReport:
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             return _collect_sqlserver(cursor, top)
         if dialect == "postgres":
             return _collect_postgres(cursor, top)

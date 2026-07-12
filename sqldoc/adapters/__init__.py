@@ -17,6 +17,7 @@ from sqldoc.adapters.mysql import MySQLAdapter
 from sqldoc.adapters.sqlite import SqliteAdapter
 from sqldoc.adapters.snowflake import SnowflakeAdapter
 from sqldoc.adapters.oracle import OracleAdapter
+from sqldoc.adapters.azure_mi import AzureMiAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -31,6 +32,7 @@ class UnsupportedDialectError(Exception):
 DIALECTS: dict = {
     "sqlserver": SqlServerAdapter,
     "azuresql": SqlServerAdapter,
+    "azure_managed_instance": AzureMiAdapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
@@ -53,6 +55,10 @@ def detect_dialect(connection_string: str) -> str:
     """
     cs = (connection_string or "").lower()
     if "database.windows.net" in cs:
+        # Managed Instance hosts carry an MI marker (".mi." / "managedinstance");
+        # a plain Azure host is Azure SQL Database.
+        if ".mi." in cs or "managedinstance" in cs or "managed-instance" in cs:
+            return "azure_managed_instance"
         return "azuresql"
     if cs.startswith(("postgresql://", "postgres://")) or "psql odbc" in cs or "postgresql" in cs:
         return "postgres"
@@ -93,7 +99,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
-    "OracleAdapter",
+    "OracleAdapter", "AzureMiAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

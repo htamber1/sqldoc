@@ -14,7 +14,7 @@ from datetime import datetime
 
 from sqldoc.dbutil import cell
 
-BASELINE_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+BASELINE_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 
 def _f(v) -> float:
@@ -66,7 +66,7 @@ class ComparisonReport:
 # --- capture ---------------------------------------------------------------
 
 def _capture_connections(cursor, dialect) -> int:
-    if dialect in ("sqlserver", "azuresql"):
+    if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
         cursor.execute("SELECT COUNT(*) AS n FROM sys.dm_exec_sessions WHERE is_user_process = 1  -- BASELINE_CONN")
     elif dialect == "postgres":
         cursor.execute("SELECT COUNT(*) AS n FROM pg_stat_activity WHERE pid <> pg_backend_pid()  -- BASELINE_CONN")
@@ -77,7 +77,7 @@ def _capture_connections(cursor, dialect) -> int:
 
 
 def _capture_queries(cursor, dialect, top) -> list:
-    if dialect in ("sqlserver", "azuresql"):
+    if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
         cursor.execute(f"""
             -- BASELINE_QUERIES
             SELECT TOP ({int(top)})
@@ -130,7 +130,7 @@ def capture_baseline(adapter, top: int = 15) -> Baseline:
         b.queries = _capture_queries(cursor, dialect, top)
         if b.queries:
             b.metrics["slowest_query_ms"] = max(q["avg_ms"] for q in b.queries)
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             try:
                 from sqldoc.server import collect_agent_jobs
                 for j in collect_agent_jobs(cursor):

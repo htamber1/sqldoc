@@ -248,7 +248,7 @@ def extract_permissions(adapter) -> list:
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             cursor.execute(_SQLSERVER_GRANTS)
             return [
                 Permission(
@@ -363,7 +363,7 @@ def extract_role_members(adapter) -> list:
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
     try:
-        sql = _SQLSERVER_ROLE_MEMBERS if dialect in ("sqlserver", "azuresql") else _PG_ROLE_MEMBERS
+        sql = _SQLSERVER_ROLE_MEMBERS if dialect in ("sqlserver", "azuresql", "azure_managed_instance") else _PG_ROLE_MEMBERS
         cursor.execute(sql)
         return [
             RoleMember(role=cell(r, "role_name"), member=cell(r, "member_name"),

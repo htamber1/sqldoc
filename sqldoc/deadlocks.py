@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 import sqldoc.ai as ai
 from sqldoc.dbutil import cell
 
-DEADLOCK_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+DEADLOCK_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 
 def _s(v) -> str:
@@ -201,7 +201,7 @@ def collect_deadlocks(adapter) -> DeadlockReport:
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             return _collect_sqlserver(cursor)
         if dialect == "postgres":
             return _collect_postgres(cursor)

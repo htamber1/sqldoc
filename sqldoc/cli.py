@@ -1464,7 +1464,7 @@ def server(config, server, database, username, password, connection_string, dial
         click.echo(click.style(f"  ! skipped {section}: {msg}", fg='yellow'), err=True)
 
     s = server_summarize(report)
-    if report.dialect in ('sqlserver', 'azuresql'):
+    if report.dialect in ('sqlserver', 'azuresql', 'azure_managed_instance'):
         click.echo(
             click.style(f"CPU (SQL): {s['cpu_sql_percent']}%", fg='blue')
             + f"    Memory: {round(s['memory_total_mb']/1024, 1)} GB"

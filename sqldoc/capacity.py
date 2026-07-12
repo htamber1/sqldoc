@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqldoc.dbutil import cell
 
-CAPACITY_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+CAPACITY_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 
 def _f(v):
@@ -56,7 +56,7 @@ def collect_capacity_snapshot(adapter) -> dict:
             pass
 
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             _capacity_sqlserver(cursor, snap, sub)
         elif dialect == "postgres":
             _capacity_postgres(cursor, snap, sub)

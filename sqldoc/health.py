@@ -531,7 +531,7 @@ def _checks_for(dialect, cursor, top, min_fragmentation, min_pages):
     def unavailable():
         raise RuntimeError(_NOT_AVAILABLE)
 
-    if dialect in ("sqlserver", "azuresql"):
+    if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
         return [
             ("Slow queries", lambda: collect_slow_queries(cursor, top), "slow_queries"),
             ("Dead tables", lambda: collect_dead_tables(cursor), "dead_tables"),

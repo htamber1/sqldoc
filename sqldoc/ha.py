@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from sqldoc.dbutil import cell
 
-HA_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+HA_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 
 def _s(v) -> str:
@@ -70,7 +70,8 @@ class Replica:
         # (PostgreSQL sync_state is sync/async — a replication *mode*, not health;
         # the health signal is the streaming `state`.)
         if self.role.upper() in ("REPLICA", "STANDBY", "SECONDARY") and self.state:
-            if self.state.lower() not in ("streaming", "running", "connected", "online", "synchronized"):
+            if self.state.lower() not in ("streaming", "running", "connected", "online",
+                                          "synchronized", "catch_up", "seeding"):
                 return False
         return True
 
@@ -210,6 +211,8 @@ def collect_ha(adapter) -> HaReport:
     conn = adapter.connect()
     cursor = adapter.cursor(conn)
     try:
+        if dialect == "azure_managed_instance":
+            return _collect_azure_geo(cursor)
         if dialect in ("sqlserver", "azuresql"):
             return _collect_sqlserver(cursor)
         if dialect == "postgres":
@@ -217,6 +220,33 @@ def collect_ha(adapter) -> HaReport:
         return _collect_mysql(cursor)
     finally:
         conn.close()
+
+
+def _collect_azure_geo(cursor) -> HaReport:
+    """Azure SQL Managed Instance HA is built in; show geo-replication links
+    (auto-failover groups / geo-replicas) instead of Always On."""
+    report = HaReport(dialect="azure_managed_instance", mechanism="Azure geo-replication")
+    cursor.execute("""
+        SELECT partner_server, partner_database, role_desc,
+               replication_state_desc, secondary_allow_connections_desc,
+               last_replication, replication_lag_sec
+        FROM sys.dm_geo_replication_link_status
+    """)
+    for r in cursor.fetchall():
+        report.replicas.append(Replica(
+            server=_s(cell(r, "partner_server")),
+            role=_s(cell(r, "role_desc")).upper() or "GEO-SECONDARY",
+            state=_s(cell(r, "replication_state_desc")),
+            sync_state=_s(cell(r, "replication_state_desc")),
+            lag_seconds=_f(cell(r, "replication_lag_sec")),
+        ))
+    report.ha_enabled = bool(report.replicas)
+    if not report.ha_enabled:
+        report.notes.append("No geo-replication links configured (single instance). "
+                            "Azure still provides built-in local HA.")
+    else:
+        report.notes.append("Azure-managed geo-replication. Local HA is built in and always on.")
+    return report
 
 
 def behind_replicas(report: HaReport, threshold_seconds: float) -> list:

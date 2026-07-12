@@ -696,7 +696,7 @@ def collect_server(adapter, top: int = 10, include_jobs: bool = True,
             return None
 
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             report.info = run("Server info", lambda: collect_server_info(cursor))
             report.cpu = run("CPU usage", lambda: collect_cpu(cursor))
             report.memory = run("Memory", lambda: collect_memory(cursor))

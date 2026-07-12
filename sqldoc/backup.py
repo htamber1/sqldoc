@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from sqldoc.dbutil import cell
 
-BACKUP_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+BACKUP_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 
 def _s(v) -> str:
@@ -194,8 +194,45 @@ def _collect_mysql(cursor) -> BackupReport:
 
 # --- dispatch --------------------------------------------------------------
 
+def _collect_azure_mi(cursor) -> BackupReport:
+    """Azure SQL Managed Instance backups are managed by Azure — surface the
+    automated-backup status from sys.dm_database_backups rather than msdb."""
+    report = BackupReport(dialect="azure_managed_instance", pitr_mechanism="Azure automated backups")
+    report.pitr_enabled = True     # Azure always keeps automated PITR backups
+    report.notes.append("Backups are managed automatically by Azure (point-in-time restore is always on). "
+                        "Showing the latest automated backup per database.")
+    cursor.execute("""
+        SELECT database_name,
+               MAX(CASE WHEN backup_type = 'FULL' THEN backup_finish_date END) AS last_full,
+               MAX(CASE WHEN backup_type = 'DIFF' THEN backup_finish_date END) AS last_diff,
+               MAX(CASE WHEN backup_type = 'LOG' THEN backup_finish_date END) AS last_log,
+               DATEDIFF(HOUR, MAX(CASE WHEN backup_type = 'FULL' THEN backup_finish_date END), GETDATE()) AS full_age_hours
+        FROM sys.dm_database_backups
+        GROUP BY database_name
+        ORDER BY database_name
+    """)
+    for r in cursor.fetchall():
+        last_full = _s(cell(r, "last_full"))
+        db = DatabaseBackup(
+            database=_s(cell(r, "database_name")),
+            recovery_model="Azure managed",
+            last_full_backup=last_full,
+            last_diff_backup=_s(cell(r, "last_diff")),
+            last_log_backup=_s(cell(r, "last_log")),
+            last_backup_age_hours=_f(cell(r, "full_age_hours")),
+            never_backed_up=not last_full,
+            pitr_capable=True,
+        )
+        if db.never_backed_up:
+            db.issues.append("No automated backup recorded yet (new database?).")
+        report.databases.append(db)
+    return report
+
+
 def collect_backups_from_cursor(dialect, cursor) -> BackupReport:
-    if dialect in ("sqlserver", "azuresql"):
+    if dialect == "azure_managed_instance":
+        return _collect_azure_mi(cursor)
+    if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
         return _collect_sqlserver(cursor)
     if dialect == "postgres":
         return _collect_postgres(cursor)

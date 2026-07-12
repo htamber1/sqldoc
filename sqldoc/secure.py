@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from sqldoc.dbutil import cell
 
-SECURE_DIALECTS = {"sqlserver", "azuresql", "postgres", "mysql"}
+SECURE_DIALECTS = {"sqlserver", "azuresql", "azure_managed_instance", "postgres", "mysql"}
 
 _SEVERITY_ORDER = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
 _SEVERITY_WEIGHT = {"HIGH": 15, "MEDIUM": 7, "LOW": 3}
@@ -260,7 +260,7 @@ def collect_security(adapter) -> SecurityReport:
     cursor = adapter.cursor(conn)
     collector = _Collector(cursor, report)
     try:
-        if dialect in ("sqlserver", "azuresql"):
+        if dialect in ("sqlserver", "azuresql", "azure_managed_instance"):
             _scan_sqlserver(collector)
         elif dialect == "postgres":
             _scan_postgres(collector)

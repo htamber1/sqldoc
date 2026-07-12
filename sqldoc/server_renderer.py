@@ -382,7 +382,7 @@ def render_server_html(server_name, report, output_path):
         server_name=server_name,
         report=report,
         summary=summarize(report),
-        is_sqlserver=report.dialect in ("sqlserver", "azuresql"),
+        is_sqlserver=report.dialect in ("sqlserver", "azuresql", "azure_managed_instance"),
         generated_at=datetime.now().strftime("%B %d, %Y at %I:%M %p"),
     )
     with open(output_path, "w", encoding="utf-8") as f:

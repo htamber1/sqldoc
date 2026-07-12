@@ -193,6 +193,10 @@ class FakeCursor:
             self._last = "linkedprobe"
         elif "sys.servers" in sql:
             self._last = "linkedservers"
+        elif "dm_database_backups" in sql:
+            self._last = "mi_backups"
+        elif "dm_geo_replication_link_status" in sql:
+            self._last = "mi_geo"
         elif "backupset" in sql:
             self._last = "backups"
         elif "'archive_mode'" in sql:
