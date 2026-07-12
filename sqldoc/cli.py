@@ -3080,8 +3080,13 @@ def _access_tables_for(cfg, database):
 @click.option('--output', default='access-script.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
 @click.option('--sql-out', default=None, help='Write the grant script to this .sql file (rollback alongside)')
+@click.option('--format', 'out_format', default=None,
+              type=click.Choice(['sql', 'powershell', 'runbook', 'ansible']),
+              help='Also render the script in this execution format')
+@click.option('--out', 'out_path', default=None, help='Write the --format output to this file')
 def access_script(config, identifier, request_text, database, level, login_override,
-                  login_type, mode, model, ai_backend, no_ai, output, json_out, sql_out):
+                  login_type, mode, model, ai_backend, no_ai, output, json_out, sql_out,
+                  out_format, out_path):
     """Generate the grant + rollback SQL for an access request.
 
     Follows SQL Server best practices: check-then-create the login (Windows group
@@ -3145,6 +3150,108 @@ def access_script(config, identifier, request_text, database, level, login_overr
             import json as _json
             _json.dump(build_script_json(gs), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
+    if out_format:
+        from sqldoc.access.formats import render_format, extension_for
+        text = render_format(gs, out_format)
+        dest = out_path or (f"access-grant{extension_for(out_format)}")
+        with open(dest, 'w', encoding='utf-8') as f:
+            f.write(text)
+        click.echo(f"{out_format} script written to {dest}")
+
+
+@access.command('execute')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--user', 'identifier', required=True, help='User who needs access')
+@click.option('--request', 'request_text', default=None, help='Plain-English access request')
+@click.option('--database', default=None, help='Target database')
+@click.option('--level', default=None, type=click.Choice(['read', 'write', 'admin']))
+@click.option('--login', 'login_override', default=None, help='Force a specific login/group')
+@click.option('--login-type', 'login_type', default=None,
+              type=click.Choice(['windows', 'sql', 'azure_ad', 'managed_identity']))
+@click.option('--no-ai', is_flag=True, default=False, help='Use the deterministic parser')
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip the confirmation prompt')
+def access_execute(config, identifier, request_text, database, level, login_override,
+                   login_type, no_ai, yes):
+    """Generate AND run the grant script directly, with confirmation + audit.
+
+    Requires explicit confirmation (or --yes). The run is recorded in the audit
+    trail. A rollback script is printed so the change can be undone.
+    """
+    from sqldoc.access.checker import check_access
+    from sqldoc.access.parse import parse_request, ParsedRequest
+    from sqldoc.access import config as access_config
+    from sqldoc.access.script import generate_script
+    from sqldoc.access.formats import execute_batches
+    from sqldoc.access.checker import build_db_adapter
+    from sqldoc.integrations.base import IntegrationError
+    from sqldoc import audit as audit_mod
+    cfg = _access_cfg(config)
+
+    known = [db for s in access_config.servers(cfg) for db in s["databases"]]
+    if request_text:
+        parsed = parse_request(request_text, known_databases=known, no_ai=no_ai)
+    elif database and level:
+        parsed = ParsedRequest(raw=f"{level} access to {database}", database=database, level=level)
+    else:
+        raise click.UsageError("Provide --request, or both --database and --level.")
+
+    entry = next((s for s in access_config.servers(cfg)
+                  if any(db.lower() == (parsed.database or "").lower() for db in s["databases"])), None)
+    if entry is None:
+        raise click.UsageError(f"Database '{parsed.database}' is not in access.servers.")
+    try:
+        report = check_access(cfg, identifier)
+    except IntegrationError as e:
+        raise click.UsageError(str(e))
+    tables, pii, server_name, dialect, _n = _access_tables_for(cfg, parsed.database)
+    gs = generate_script(report, parsed, entry["name"], parsed.database, tables=tables,
+                         pii_findings=pii, login_override=login_override,
+                         dialect=dialect, login_type=login_type)
+
+    click.echo(f"\nsqldoc v{__version__}  -  access execute")
+    click.echo(f"{'='*44}")
+    if "No changes" in (gs.note or ""):
+        click.echo(click.style(gs.note, fg='green'))
+        return
+    click.echo(f"Target: {entry['name']} / {parsed.database}   Grantee: {gs.login_name} ({gs.login_type})")
+    click.echo("\n--- script to execute ---")
+    click.echo(gs.grant_sql)
+    if gs.pii_exposed:
+        click.echo(click.style(f"  ! {len(gs.pii_exposed)} PII-flagged table(s) become accessible.", fg='yellow'))
+
+    if not yes:
+        if not click.confirm(click.style("Execute this grant against the live database?", fg='red'),
+                             default=False):
+            click.echo("Aborted. Nothing was changed.")
+            return
+
+    result = "executed"
+    try:
+        adapter = build_db_adapter(entry, parsed.database)
+        conn = adapter.connect()
+        try:
+            cursor = adapter.cursor(conn)
+            n = execute_batches(cursor, gs.grant_sql)
+            try:
+                conn.commit()
+            except Exception:
+                pass
+        finally:
+            conn.close()
+        click.echo(click.style(f"\nDone — {n} batch(es) executed.", fg='green'))
+        click.echo("\n--- rollback (run to undo) ---")
+        click.echo(gs.rollback_sql)
+    except Exception as e:
+        result = f"error: {type(e).__name__}: {e}"
+        click.echo(click.style(f"Execution failed: {e}", fg='red'), err=True)
+    finally:
+        try:
+            audit_mod.record(command="access.execute", dialect=dialect, database=parsed.database,
+                             options={"server": entry["name"], "login": gs.login_name,
+                                      "role": gs.role, "level": parsed.level, "requested_for": identifier},
+                             result=result)
+        except Exception:
+            pass
 
 
 @access.command('jira')
