@@ -4,6 +4,64 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-07-11
+
+**sqldoc is now a full SQL Server infrastructure platform, not just a database
+tool.** This major release adds instance-level and infrastructure monitoring on
+top of the existing database-level commands — hence the 2.0 bump. Everything
+from the 1.x line is unchanged and backward-compatible; these are all additions.
+
+### Added — `sqldoc server` (instance-level health)
+Connects at the SQL Server **instance** level and reports:
+- **CPU** via `sys.dm_os_ring_buffers` (RING_BUFFER_SCHEDULER_MONITOR): SQL /
+  other-process / idle split, plus core + scheduler counts from
+  `sys.dm_os_sys_info`.
+- **Memory** via `sys.dm_os_memory_clerks`: buffer pool / plan cache / stolen /
+  other breakdown.
+- **Disk** via `sys.dm_os_volume_stats` (free space per volume) merged with
+  `sys.dm_io_virtual_file_stats` (read/write latency per drive); volumes under
+  10% free are flagged LOW.
+- **Uptime / last restart** from `sqlserver_start_time`.
+- **Connections + blocking chains** from `sys.dm_exec_sessions` /
+  `sys.dm_exec_requests`; **top queries running right now** by CPU with the
+  blocking SPID resolved.
+
+### Added — SQL Server Agent job monitoring (part of `server`)
+`msdb.dbo.sysjobs` / `sysjobhistory` / `sysjobsteps` / `sysjobschedules`: per-job
+last-run status + duration, **step-level failure messages**, **jobs that failed
+in the last 24h (highlighted red)**, **long-running jobs** (last run over 1.5×
+their average), **disabled jobs**, and **next scheduled run** times. `--no-jobs`
+to skip.
+
+### Added — `sqldoc logs` (ERRORLOG reader)
+Reads `sys.xp_readerrorlog` with `--search`, `--severity`, `--last-hours`, and
+`--log-number`, and **auto-highlights critical patterns**: corruption
+(823/824/825), deadlocks (1205), memory pressure (701), disk-full (1105/9002),
+and login failures (18456). HTML + `--json`.
+
+### Added — linked-server network mapping (in `sqldoc intel`)
+`--linked-servers` discovers all linked servers via `sys.servers`, maps their
+security config + login mappings (`sys.linked_logins`), and **tests connectivity**
+(`sp_testlinkedserver`); `--traverse-linked-servers` additionally probes each
+reachable server for a version/health check across the network. The report
+renders a **star topology diagram** (local instance in the centre,
+reachability-coloured edges) plus a full configuration table.
+
+### Added — server monitoring in the agent
+`sqldoc agent` can now poll server-level metrics each pass and raises four new
+notification triggers: **job failures**, **disk space below a configurable
+threshold**, **ERRORLOG severity 17+ events**, and **linked-server connectivity
+failures**. New `agent:` config: `server_monitoring`, `disk_threshold_percent`,
+`errorlog_severity`.
+
+### Notes
+- New `server_monitoring` adapter capability (SQL Server / Azure SQL). All new
+  commands degrade cleanly on other dialects and on missing VIEW SERVER STATE /
+  msdb access.
+- All new reports use the existing dark theme and are fully self-contained
+  (air-gap safe, enforced by the test suite).
+- 372 tests passing (all mocked — no live SQL Server).
+
 ## [1.9.0] — 2026-07-11
 
 **Ecosystem reach: VS Code, dbt, and a board-level cross-database report.**
