@@ -216,6 +216,14 @@ class FakeCursor:
             self._last = "pg_walrecv"
         elif "REPLICA STATUS" in sql or "SLAVE STATUS" in sql:
             self._last = "mysql_repl"
+        elif "xml_deadlock_report" in sql:
+            self._last = "mssql_deadlocks"
+        elif "pg_blocking_pids" in sql:
+            self._last = "pg_blocking"
+        elif "pg_stat_database" in sql:
+            self._last = "pg_deadlock_count"
+        elif "events_errors_summary_global_by_error" in sql:
+            self._last = "mysql_deadlocks"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -357,6 +365,56 @@ def fake_health_rows():
                     create_date="2021-01-01", modify_date="2021-01-01"),
         ],
     }
+
+
+_DEADLOCK_XML = """<RingBufferTarget>
+  <event name="xml_deadlock_report" timestamp="2026-07-11T10:00:00.000Z">
+    <data name="xml_report"><value>
+      <deadlock>
+        <victim-list><victimProcess id="process1"/></victim-list>
+        <process-list>
+          <process id="process1" spid="55" currentdb="5" lockMode="X" waitresource="KEY: 5:72" loginname="app" hostname="web1">
+            <inputbuf>UPDATE Orders SET Total=1 WHERE Id=10</inputbuf>
+          </process>
+          <process id="process2" spid="60" currentdb="5" lockMode="X" waitresource="KEY: 5:73" loginname="app" hostname="web2">
+            <inputbuf>UPDATE Orders SET Total=2 WHERE Id=11</inputbuf>
+          </process>
+        </process-list>
+        <resource-list>
+          <keylock dbid="5" objectname="db.dbo.Orders" indexname="PK" mode="X">
+            <owner-list><owner id="process2" mode="X"/></owner-list>
+            <waiter-list><waiter id="process1" mode="X"/></waiter-list>
+          </keylock>
+          <keylock dbid="5" objectname="db.dbo.Orders" indexname="PK" mode="X">
+            <owner-list><owner id="process1" mode="X"/></owner-list>
+            <waiter-list><waiter id="process2" mode="X"/></waiter-list>
+          </keylock>
+        </resource-list>
+      </deadlock>
+    </value></data>
+  </event>
+</RingBufferTarget>"""
+
+
+@pytest.fixture
+def fake_mssql_deadlock_rows():
+    return {"mssql_deadlocks": [FakeRow(target_xml=_DEADLOCK_XML)]}
+
+
+@pytest.fixture
+def fake_pg_deadlock_rows():
+    return {
+        "pg_deadlock_count": [FakeRow(total_deadlocks=7)],
+        "pg_blocking": [FakeRow(blocked_pid=100, blocked_user="app",
+                                blocked_query="UPDATE t SET x=1 WHERE id=5",
+                                blocking_pid=101, blocking_user="app",
+                                blocking_query="UPDATE t SET x=2 WHERE id=6")],
+    }
+
+
+@pytest.fixture
+def fake_mysql_deadlock_rows():
+    return {"mysql_deadlocks": [FakeRow(n=3)]}
 
 
 @pytest.fixture

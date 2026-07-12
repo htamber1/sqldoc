@@ -46,6 +46,8 @@ from sqldoc.waits import collect_waits, explain_waits, summarize as waits_summar
 from sqldoc.waits_renderer import render_waits_html, build_waits_json
 from sqldoc.ha import collect_ha, summarize as ha_summarize
 from sqldoc.ha_renderer import render_ha_html, build_ha_json
+from sqldoc.deadlocks import collect_deadlocks, explain_deadlock, summarize as deadlocks_summarize
+from sqldoc.deadlocks_renderer import render_deadlocks_html, build_deadlocks_json
 
 load_dotenv()
 
@@ -1800,6 +1802,94 @@ def ha(config, server, database, username, password, connection_string, dialect,
     click.echo(f"Open {output} in your browser for the full HA report.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='Database hostname or IP')
+@click.option('--database', default='master', help='Database to connect through')
+@click.option('--username', default=None, help='Database username')
+@click.option('--password', default=None, help='Database password')
+@click.option('--connection-string', default=None, help='Full connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (SQL Server / PostgreSQL / MySQL)')
+@click.option('--output', default='deadlocks-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the deadlock report as machine-readable JSON to this path')
+@click.option('--no-ai', is_flag=True, default=False, help='Skip the AI explanation of the deadlock')
+@click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI backend for the explanation')
+@click.option('--model', default=None, help='Model to use (default per mode)')
+@click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def deadlocks(config, server, database, username, password, connection_string, dialect,
+              output, json_out, no_ai, mode, model, yes, verify_offline):
+    """Find and visualize deadlocks, with an AI explanation of the cause and fix.
+
+    SQL Server parses deadlock graphs from the system_health extended-events
+    session; PostgreSQL reports the pg_stat_database deadlock count + current
+    blocking chains; MySQL reports the ER_LOCK_DEADLOCK error count. Deadlock
+    graphs are drawn as SVG wait-for diagrams. With AI (default), explains the
+    cyclic dependency and how to prevent it (this sends the deadlock's SQL to
+    the model).
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'infra_monitoring', 'deadlocks')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    no_ai = resolve('no_ai', no_ai)
+    mode = resolve('mode', mode)
+    model = resolve('model', model)
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  Deadlock analysis")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and looking for deadlocks...")
+    try:
+        report = collect_deadlocks(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
+
+    s = deadlocks_summarize(report)
+    click.echo(
+        click.style(f"Deadlocks recorded: {s['total_count']}", fg='red' if s['total_count'] else 'green')
+        + f"    Graphs: {s['graph_events']}"
+        + (f"    Current blocking: {s['current_blocking']}" if s['current_blocking'] else "")
+    )
+
+    graph_events = [e for e in report.events if e.processes]
+    if not no_ai and graph_events:
+        if mode == "cloud":
+            click.echo("Cloud AI: the deadlock's SQL statements are sent to Anthropic for the explanation.")
+            if not yes and not click.confirm("Proceed with cloud mode?", default=False):
+                click.echo("Skipping AI (re-run with --mode local or --no-ai).")
+                no_ai = True
+        if not no_ai:
+            click.echo(f"Explaining the deadlock with AI ({mode})...")
+            try:
+                report.ai_explanation = explain_deadlock(report, mode=mode, model=model)
+            except Exception as e:
+                click.echo(click.style(f"  ! AI explanation skipped: {type(e).__name__}: {e}", fg='yellow'), err=True)
+
+    click.echo("\nRendering report...")
+    render_deadlocks_html(label, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_deadlocks_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable deadlock report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the full deadlock report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1830,6 +1920,7 @@ cli.add_command(logs, name='logs')
 cli.add_command(secure, name='secure')
 cli.add_command(waits, name='waits')
 cli.add_command(ha, name='ha')
+cli.add_command(deadlocks, name='deadlocks')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

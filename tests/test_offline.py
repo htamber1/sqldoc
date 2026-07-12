@@ -16,6 +16,7 @@ from sqldoc.logs_renderer import LOGS_TEMPLATE
 from sqldoc.secure_renderer import SECURE_TEMPLATE
 from sqldoc.waits_renderer import WAITS_TEMPLATE
 from sqldoc.ha_renderer import HA_TEMPLATE
+from sqldoc.deadlocks_renderer import DEADLOCK_TEMPLATE
 
 
 # --- detector ---------------------------------------------------------------
@@ -78,6 +79,7 @@ _TEMPLATES = {
     "secure": SECURE_TEMPLATE,
     "waits": WAITS_TEMPLATE,
     "ha": HA_TEMPLATE,
+    "deadlocks": DEADLOCK_TEMPLATE,
 }
 
 
