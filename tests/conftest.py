@@ -366,9 +366,9 @@ def fake_server_rows():
         ],
         "srv_vol": [
             FakeRow(volume_mount_point="C:\\", logical_volume_name="OS",
-                    total_gb=200.0, available_gb=60.0),          # 30% free: OK
+                    total_gb=200.0, available_gb=60.0, drive="C"),  # 30% free: OK
             FakeRow(volume_mount_point="D:\\", logical_volume_name="Data",
-                    total_gb=500.0, available_gb=20.0),          # 4% free: LOW
+                    total_gb=500.0, available_gb=20.0, drive="D"),  # 4% free: LOW
         ],
         "srv_io": [
             FakeRow(drive="C", read_latency_ms=5.0, write_latency_ms=3.0),

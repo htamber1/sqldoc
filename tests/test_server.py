@@ -7,7 +7,11 @@ from click.testing import CliRunner
 from sqldoc import server, cli
 from sqldoc.server_renderer import build_server_json, render_server_html
 from sqldoc.adapters.sqlserver import SqlServerAdapter
-from conftest import FakeConnection, FakeAdapter
+from conftest import FakeConnection, FakeAdapter, FakeRow
+
+
+def _cursor(data):
+    return FakeConnection(data).cursor()
 
 
 @pytest.fixture
@@ -93,6 +97,44 @@ def test_render_server_html(report, tmp_path):
     h = out.read_text(encoding="utf-8")
     assert "Server Health" in h and "PRODSQL01" in h
     assert "Blocking chains" in h and "Disk volumes" in h and "Memory" in h
+
+
+# --- regression tests for bugs found in live SQL Server smoke testing --------
+
+def test_cpu_all_zero_sample_not_reported_as_100_other():
+    # On Linux SQL Server the ring buffer often reports 0 for both SQL and idle;
+    # 100 - 0 - 0 must NOT become a misleading "100% other-process".
+    cpu = server.collect_cpu(_cursor(
+        {"srv_cpu": [FakeRow(sql_cpu=0, idle_cpu=0, other_cpu=100, record_id=1)]}))
+    assert cpu.other_process_percent == 0
+    assert cpu.sql_process_percent == 0 and cpu.idle_percent == 0
+
+
+def test_volume_linux_path_label_and_latency_merge():
+    # Linux: volume_mount_point is NULL, drive is "/". Must get a readable label
+    # and still merge I/O latency by the drive key.
+    vols = server.collect_volumes(_cursor({
+        "srv_vol": [FakeRow(volume_mount_point=None, logical_volume_name=None,
+                            total_gb=1000.0, available_gb=940.0, drive="/")],
+        "srv_io": [FakeRow(drive="/", read_latency_ms=2.0, write_latency_ms=1.0)],
+    }))
+    assert len(vols) == 1
+    assert vols[0].volume == "/ (root)"
+    assert vols[0].read_latency_ms == 2.0 and vols[0].write_latency_ms == 1.0
+    assert not vols[0].is_low                         # 94% free
+
+
+def test_agent_job_next_run_zero_is_blank():
+    # sysjobschedules.next_run_date is 0 until the Agent computes it (0 while the
+    # Agent service is stopped) -> should render blank, not "0".
+    jobs = server.collect_agent_jobs(_cursor({
+        "agentjobs": [FakeRow(job_id="J", job_name="J", enabled=1, owner="sa",
+                              category="c", last_run_status=1, last_run_time="t",
+                              run_duration_seconds=1, avg_duration_seconds=1,
+                              next_run_datetime="0")],
+        "agentjobsteps": [],
+    }))
+    assert jobs[0].next_run_time == ""
 
 
 # --- SQL Agent job monitoring -----------------------------------------------

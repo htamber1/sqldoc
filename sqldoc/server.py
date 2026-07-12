@@ -256,10 +256,20 @@ def collect_cpu(cursor) -> CpuUsage:
     if not rows:
         return CpuUsage()
     r = rows[0]
+    sql = _i(cell(r, "sql_cpu"))
+    idle = _i(cell(r, "idle_cpu"))
+    other = _i(cell(r, "other_cpu"))
+    # On Linux SQL Server the scheduler-monitor ring buffer often reports 0 for
+    # both SQL and idle utilization, which would make "other" a misleading 100%.
+    # Treat an all-zero sample as "no data" rather than 100% other-process.
+    if sql == 0 and idle == 0:
+        other = 0
+    else:
+        other = max(0, other)
     return CpuUsage(
-        sql_process_percent=_i(cell(r, "sql_cpu")),
-        other_process_percent=_i(cell(r, "other_cpu")),
-        idle_percent=_i(cell(r, "idle_cpu")),
+        sql_process_percent=sql,
+        other_process_percent=other,
+        idle_percent=idle,
         sample_time=_s(cell(r, "record_id")),
     )
 
@@ -300,26 +310,41 @@ def collect_memory(cursor) -> MemoryBreakdown:
 
 
 def collect_volumes(cursor) -> list:
+    # Key volumes by the first char of the data-file path (drive letter on
+    # Windows, "/" on Linux) so the I/O-latency query can be merged onto them.
+    # On Linux volume_mount_point is NULL, so fall back to a readable label.
     cursor.execute("""
-        SELECT DISTINCT
+        SELECT
             vs.volume_mount_point,
             vs.logical_volume_name,
             CAST(vs.total_bytes / 1073741824.0 AS DECIMAL(18,1)) AS total_gb,
-            CAST(vs.available_bytes / 1073741824.0 AS DECIMAL(18,1)) AS available_gb
-        FROM sys.master_files AS f
-        CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id) AS vs
+            CAST(vs.available_bytes / 1073741824.0 AS DECIMAL(18,1)) AS available_gb,
+            LEFT(mf.physical_name, 1) AS drive
+        FROM sys.master_files AS mf
+        CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs
     """)
-    volumes = {}
+    by_drive = {}
     for r in cursor.fetchall():
-        vol = _s(cell(r, "volume_mount_point"))
-        volumes[vol] = VolumeHealth(
-            volume=vol,
+        drive = _s(cell(r, "drive")).upper()
+        if drive in by_drive:
+            continue
+        mount = _s(cell(r, "volume_mount_point"))
+        if mount:
+            label = mount
+        elif drive == "/":
+            label = "/ (root)"
+        elif drive:
+            label = f"{drive}:\\"
+        else:
+            label = "(default)"
+        by_drive[drive] = VolumeHealth(
+            volume=label,
             logical_name=_s(cell(r, "logical_volume_name")),
             total_gb=_f(cell(r, "total_gb")),
             available_gb=_f(cell(r, "available_gb")),
         )
 
-    # I/O latency per drive letter, merged onto the matching volume.
+    # I/O latency per drive, merged onto the matching volume by drive key.
     try:
         cursor.execute("""
             SELECT LEFT(mf.physical_name, 1) AS drive,
@@ -334,14 +359,14 @@ def collect_volumes(cursor) -> list:
         """)
         for r in cursor.fetchall():
             drive = _s(cell(r, "drive")).upper()
-            for vol, vh in volumes.items():
-                if vol[:1].upper() == drive:
-                    vh.read_latency_ms = _f(cell(r, "read_latency_ms"))
-                    vh.write_latency_ms = _f(cell(r, "write_latency_ms"))
+            vh = by_drive.get(drive)
+            if vh:
+                vh.read_latency_ms = _f(cell(r, "read_latency_ms"))
+                vh.write_latency_ms = _f(cell(r, "write_latency_ms"))
     except Exception:
         pass  # latency is best-effort; keep the space figures
 
-    return sorted(volumes.values(), key=lambda v: v.free_percent)
+    return sorted(by_drive.values(), key=lambda v: v.free_percent)
 
 
 def collect_active_requests(cursor, top: int) -> list:
@@ -441,7 +466,7 @@ def collect_agent_jobs(cursor) -> list:
                ja.run_status AS last_run_status,
                ja.run_datetime AS last_run_time,
                ja.run_duration_seconds,
-               ja.avg_duration_seconds,
+               agg.avg_duration_seconds,
                sched.next_run_datetime
         FROM msdb.dbo.sysjobs AS j
         LEFT JOIN msdb.dbo.syscategories AS c ON j.category_id = c.category_id
@@ -470,6 +495,11 @@ def collect_agent_jobs(cursor) -> list:
     for r in job_rows:
         status_code = cell(r, "last_run_status")
         status = _JOB_STATUS.get(_i(status_code), "Unknown") if status_code is not None else "Never run"
+        # sysjobschedules.next_run_date is 0 until SQL Agent computes it (and is
+        # 0 while the Agent service is stopped) — show that as "no next run".
+        next_run = _s(cell(r, "next_run_datetime"))
+        if next_run in ("0", "", "None"):
+            next_run = ""
         jobs.append(AgentJob(
             name=_s(cell(r, "job_name")),
             enabled=bool(_i(cell(r, "enabled"))),
@@ -477,7 +507,7 @@ def collect_agent_jobs(cursor) -> list:
             last_run_time=_s(cell(r, "last_run_time")),
             last_run_duration_seconds=_i(cell(r, "run_duration_seconds")),
             avg_duration_seconds=_i(cell(r, "avg_duration_seconds")),
-            next_run_time=_s(cell(r, "next_run_datetime")),
+            next_run_time=next_run,
             category=_s(cell(r, "category")),
             owner=_s(cell(r, "owner")),
         ))
