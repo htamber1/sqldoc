@@ -18,6 +18,7 @@ from sqldoc.adapters.sqlite import SqliteAdapter
 from sqldoc.adapters.snowflake import SnowflakeAdapter
 from sqldoc.adapters.oracle import OracleAdapter
 from sqldoc.adapters.azure_mi import AzureMiAdapter
+from sqldoc.adapters.synapse import SynapseAdapter
 
 
 class UnsupportedDialectError(Exception):
@@ -33,6 +34,7 @@ DIALECTS: dict = {
     "sqlserver": SqlServerAdapter,
     "azuresql": SqlServerAdapter,
     "azure_managed_instance": AzureMiAdapter,
+    "synapse": SynapseAdapter,
     "postgres": PostgresAdapter,
     "mysql": MySQLAdapter,
     "sqlite": SqliteAdapter,
@@ -54,6 +56,8 @@ def detect_dialect(connection_string: str) -> str:
     default), so an ordinary ODBC connection string keeps its behavior.
     """
     cs = (connection_string or "").lower()
+    if "sql.azuresynapse.net" in cs or "database.windows.net/synapse" in cs:
+        return "synapse"
     if "database.windows.net" in cs:
         # Managed Instance hosts carry an MI marker (".mi." / "managedinstance");
         # a plain Azure host is Azure SQL Database.
@@ -99,7 +103,7 @@ def get_adapter(connection_string: str, dialect: str = None,
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
-    "OracleAdapter", "AzureMiAdapter",
+    "OracleAdapter", "AzureMiAdapter", "SynapseAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
 ]

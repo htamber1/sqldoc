@@ -197,6 +197,10 @@ class FakeCursor:
             self._last = "mi_backups"
         elif "dm_geo_replication_link_status" in sql:
             self._last = "mi_geo"
+        elif "pdw_table_distribution_properties" in sql:
+            self._last = "synapse_dist"
+        elif "workload_management_workload_groups" in sql:
+            self._last = "synapse_workload"
         elif "backupset" in sql:
             self._last = "backups"
         elif "'archive_mode'" in sql:
