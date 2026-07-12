@@ -2859,6 +2859,17 @@ box = make_integration_command(
     push_mode='reports')
 
 
+jira = make_integration_command(
+    'jira',
+    "Raise Jira issues from sqldoc findings that exceed thresholds.\n\n"
+    "--test verifies the project; --push scans the database and creates issues —\n"
+    "HIGH PII -> Security, failed health -> Bug, backup staleness -> Task (all\n"
+    "configurable) — with full detail, a link back to the report, and no duplicate\n"
+    "of an already-open issue. Configure base_url, email, api_token, project_key,\n"
+    "issue_types, and thresholds (security_min/health_min) under 'jira:'.",
+    push_mode='issues')
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -2903,6 +2914,7 @@ cli.add_command(confluence, name='confluence')
 cli.add_command(notion, name='notion')
 cli.add_command(gdrive, name='gdrive')
 cli.add_command(box, name='box')
+cli.add_command(jira, name='jira')
 
 
 # --- audit trail hook ------------------------------------------------------
