@@ -709,6 +709,94 @@ def scan(config, server, database, username, password, connection_string, dialec
         ctx.exit(1)
 
 
+@click.command('scan-files')
+@click.argument('files', nargs=-1, required=True, type=click.Path())
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--fail-on', 'fail_on', type=click.Choice(['none', 'high']), default='none',
+              help='Exit non-zero if any (high) HIGH-risk PII column is found (for the pre-commit hook / CI)')
+@click.option('--json', 'json_out', default=None, help='Write machine-readable findings to this path')
+def scan_files(files, config, fail_on, json_out):
+    """Scan .sql DDL FILES for likely-PII columns (no database connection).
+
+    Parses column definitions out of CREATE TABLE / ALTER TABLE ... ADD in the
+    given files and runs them through the same PII matcher as `sqldoc scan`.
+    Used by the `sqldoc install-hooks` pre-commit hook to gate staged SQL, but
+    runs standalone too. Honours the `pii_patterns:` / `pii_allowlist:` config.
+    """
+    from sqldoc.pii import scan_sql_files
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+
+    try:
+        custom_cats = load_custom_categories(cfg.get('pii_patterns'))
+    except ValueError as e:
+        raise click.UsageError(f"Invalid pii_patterns in config: {e}")
+    allowlist = cfg.get('pii_allowlist') or []
+    if not isinstance(allowlist, list):
+        raise click.UsageError("pii_allowlist in config must be a list of column patterns.")
+
+    findings = scan_sql_files(files, extra_categories=custom_cats)
+    if allowlist:
+        findings, suppressed = apply_allowlist(findings, allowlist)
+        if suppressed:
+            click.echo(f"Allowlist suppressed {suppressed} finding(s).")
+
+    if not findings:
+        click.echo(click.style(f"sqldoc scan-files: no PII columns found in {len(files)} file(s).", fg='green'))
+    else:
+        by_file = {}
+        for f in findings:
+            by_file.setdefault(f.schema, []).append(f)
+        for path, fs in by_file.items():
+            click.echo(f"\n{path}:")
+            for f in sorted(fs, key=lambda x: -{'HIGH': 2, 'MEDIUM': 1, 'LOW': 0}.get(x.risk, 0)):
+                colr = {'HIGH': 'red', 'MEDIUM': 'yellow', 'LOW': None}.get(f.risk)
+                click.echo("  " + click.style(f"[{f.risk}]", fg=colr, bold=(f.risk == 'HIGH'))
+                           + f" {f.table}.{f.column}  {f.category}  ({', '.join(f.regulations)})")
+        s = summarize(findings)
+        click.echo(
+            click.style(f"\nHIGH: {s['by_risk']['HIGH']}", fg='red', bold=True)
+            + click.style(f"    MEDIUM: {s['by_risk']['MEDIUM']}", fg='yellow')
+            + f"    LOW: {s['by_risk']['LOW']}")
+
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(findings_json("staged-sql", findings), f, indent=2, default=str)
+        click.echo(f"Machine-readable findings written to {json_out}")
+
+    if fail_on == 'high':
+        n = summarize(findings)['by_risk']['HIGH']
+        if n:
+            click.echo(click.style(
+                f"\nGATE FAILED: {n} HIGH-risk PII column(s) in staged SQL (--fail-on high).",
+                fg='red', bold=True))
+            ctx.exit(1)
+
+
+@click.command('install-hooks')
+@click.option('--repo', default='.', type=click.Path(), help='Repository root (default: current directory)')
+@click.option('--force', is_flag=True, default=False, help='Overwrite an existing non-sqldoc pre-commit hook')
+def install_hooks(repo, force):
+    """Install a git pre-commit hook that PII-scans staged .sql files.
+
+    The hook runs `sqldoc scan-files --fail-on high` over any staged .sql files
+    and blocks the commit if a HIGH-risk PII column (e.g. an unflagged `ssn` or
+    `credit_card`) is being introduced. Bypass a single commit with
+    `git commit --no-verify`.
+    """
+    from sqldoc.hooks import install_hooks as _install
+    result = _install(repo, force=force)
+    if result["status"] == "installed":
+        click.echo(click.style(result["message"], fg='green'))
+        click.echo("Staged .sql files will now be PII-scanned before each commit.")
+    elif result["status"] == "exists":
+        click.echo(click.style(result["message"], fg='yellow'), err=True)
+        raise click.exceptions.Exit(1)
+    else:
+        raise click.UsageError(result["message"])
+
+
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
@@ -2237,6 +2325,8 @@ def cli():
 
 cli.add_command(main, name='doc')
 cli.add_command(scan, name='scan')
+cli.add_command(scan_files, name='scan-files')
+cli.add_command(install_hooks, name='install-hooks')
 cli.add_command(health, name='health')
 cli.add_command(quality, name='quality')
 cli.add_command(intel, name='intel')

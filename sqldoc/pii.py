@@ -9,7 +9,7 @@ confidence scoring and are never stored or returned.
 import re
 from dataclasses import dataclass, field, asdict
 
-from sqldoc.extractor import get_connection
+from sqldoc.extractor import get_connection, Table, Column
 import sqldoc.ai as ai
 
 STRING_TYPES = {"char", "varchar", "nchar", "nvarchar", "text", "ntext"}
@@ -210,7 +210,10 @@ def scan_tables(tables, extra_categories=None) -> list:
             dtype = (col.data_type or "").lower()
             if cat.expected_types and dtype in cat.expected_types:
                 risk, confidence, score = cat.severity, "name + type match", 0.9
-            elif cat.expected_types and dtype not in cat.expected_types:
+            elif cat.expected_types and dtype and dtype not in cat.expected_types:
+                # Only downgrade when a type is actually known to mismatch — DDL
+                # parsed from a .sql file may carry no type, which is not evidence
+                # against the name match.
                 risk, confidence, score = _downgrade(cat.severity), "name match (type mismatch)", 0.4
             else:
                 risk, confidence, score = cat.severity, "name match", 0.7
@@ -339,6 +342,125 @@ def findings_json(database: str, findings: list, sampled: bool = False) -> dict:
         "summary": summarize(findings),
         "findings": [asdict(f) for f in findings],
     }
+
+
+# --- Scanning DDL text (for the pre-commit hook) ---------------------------
+# The pre-commit hook scans *staged .sql files* — migrations, DDL scripts —
+# rather than a live database. We parse column definitions out of CREATE TABLE
+# / ALTER TABLE ... ADD statements and run them through the same name-based
+# matcher, so a developer who stages a column named `ssn` or `credit_card` is
+# gated before the schema ever reaches a server. No database connection needed.
+
+# leading identifier of a column definition, tolerating "quoted", `back-ticked`
+# and [bracketed] names across dialects.
+_COL_IDENT = re.compile(r'^\s*(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][\w$]*))')
+# lines inside a CREATE TABLE body that are table constraints, not columns.
+_CONSTRAINT_LEAD = re.compile(
+    r'^\s*(?:CONSTRAINT|PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|KEY|INDEX|'
+    r'FULLTEXT|SPATIAL|PERIOD|EXCLUDE)\b', re.IGNORECASE)
+_CREATE_TABLE = re.compile(
+    r'CREATE\s+(?:GLOBAL\s+|LOCAL\s+|TEMPORARY\s+|TEMP\s+|UNLOGGED\s+)*TABLE\s+'
+    r'(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)\s*\(', re.IGNORECASE)
+_ALTER_ADD = re.compile(
+    r'ALTER\s+TABLE\s+([^\s]+)\s+ADD\s+(?:COLUMN\s+)?'
+    r'(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][\w$]*))', re.IGNORECASE)
+
+
+def _strip_sql_comments(text: str) -> str:
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.DOTALL)   # block comments
+    text = re.sub(r'--[^\n]*', ' ', text)                     # line comments
+    return text
+
+
+def _unquote_ident(raw: str) -> str:
+    return raw.strip().strip('"`[]').split('.')[-1]
+
+
+def _split_top_level(body: str) -> list:
+    """Split a CREATE TABLE body on top-level commas (ignoring commas nested in
+    parentheses, e.g. decimal(10,2) or a nested constraint list)."""
+    parts, depth, buf = [], 0, []
+    for ch in body:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            parts.append(''.join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append(''.join(buf))
+    return parts
+
+
+def _table_body(text: str, open_paren_idx: int) -> str:
+    """Return the substring inside the balanced parentheses whose opening paren
+    is at open_paren_idx (which points *at* the '(')."""
+    depth, start = 0, open_paren_idx
+    for i in range(open_paren_idx, len(text)):
+        if text[i] == '(':
+            depth += 1
+        elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i]
+    return text[start + 1:]      # unbalanced — take the rest
+
+
+def columns_from_sql(text: str) -> list:
+    """Parse (table_name, column_name) pairs from DDL text — CREATE TABLE bodies
+    and ALTER TABLE ... ADD statements. Best-effort and dialect-tolerant; used to
+    feed the PII matcher from staged .sql files."""
+    text = _strip_sql_comments(text)
+    out = []
+    for m in _CREATE_TABLE.finditer(text):
+        table = _unquote_ident(m.group(1))
+        body = _table_body(text, m.end() - 1)
+        for part in _split_top_level(body):
+            if not part.strip() or _CONSTRAINT_LEAD.match(part):
+                continue
+            cm = _COL_IDENT.match(part)
+            if not cm:
+                continue
+            col = next(g for g in cm.groups() if g)
+            out.append((table, col))
+    for m in _ALTER_ADD.finditer(text):
+        table = _unquote_ident(m.group(1))
+        col = next(g for g in m.groups()[1:] if g)
+        out.append((table, col))
+    return out
+
+
+def scan_sql_files(paths, extra_categories=None) -> list:
+    """Run the PII matcher over the DDL in one or more .sql files. Columns are
+    parsed from the file text (no database connection). Findings carry the file
+    path in the `schema` slot so reports/allowlists can address them. Files that
+    can't be read are skipped silently (a git hook shouldn't crash on a rename)."""
+    tables_by_file = {}
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        by_table = {}
+        for table, col in columns_from_sql(text):
+            by_table.setdefault(table, []).append(col)
+        tabs = []
+        for table, cols in by_table.items():
+            tabs.append(Table(
+                schema=path, name=table, row_count=0,
+                columns=[Column(name=c, data_type="", max_length=None,
+                                is_nullable=True, is_primary_key=False,
+                                is_foreign_key=False, references_table=None,
+                                references_column=None) for c in cols]))
+        tables_by_file[path] = tabs
+    findings = []
+    for tabs in tables_by_file.values():
+        findings.extend(scan_tables(tabs, extra_categories))
+    return findings
 
 
 def summarize(findings: list) -> dict:
