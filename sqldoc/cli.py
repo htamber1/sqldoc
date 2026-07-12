@@ -35,6 +35,8 @@ from sqldoc.comply_multi_renderer import render_multi_comply_html, build_multi_c
 from sqldoc.offline import verify_file, blocking_refs
 from sqldoc.dbt import find_dbt_project, parse_dbt_project, merge as dbt_merge, summarize as dbt_summarize
 from sqldoc.dbt_renderer import render_dbt_html, build_dbt_json
+from sqldoc.server import collect_server, summarize as server_summarize
+from sqldoc.server_renderer import render_server_html, build_server_json
 
 load_dotenv()
 
@@ -1359,6 +1361,80 @@ def dbt(config, project_dir, server, database, username, password, connection_st
     click.echo(f"Open {output} in your browser for the unified dbt + database docs.")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default='master', help='Database to connect through (default: master; server metrics are instance-wide)')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (alternative to the four flags above)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (server monitoring is SQL Server / Azure SQL MI only)')
+@click.option('--output', default='server-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the server report as machine-readable JSON to this path')
+@click.option('--top', default=10, type=click.IntRange(1, 200), help='How many top running queries to show (default: 10)')
+@click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
+              help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+def server(config, server, database, username, password, connection_string, dialect,
+           output, json_out, top, verify_offline):
+    """Instance-level SQL Server health: CPU, memory, disk, connections, blocking.
+
+    Connects at the SQL Server *instance* level (not just one database) and
+    reports CPU utilization, memory breakdown (buffer pool / plan cache /
+    stolen), disk volume free space + I/O latency, uptime, active connections
+    and blocking chains, and the top queries running right now. Reads only
+    server-scoped DMVs — never table row data. Needs VIEW SERVER STATE.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    conn_str, database, server_name = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'server_monitoring', 'server')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+    top = resolve('top', top)
+
+    label = server_name or database
+    click.echo(f"\nsqldoc v{__version__}  -  Server health (instance-level)")
+    click.echo(f"{'='*44}")
+    click.echo(f"Server:   {server_name if server_name else '(connection string)'}")
+    click.echo(f"Output:   {output}")
+    click.echo(f"{'='*44}\n")
+
+    click.echo(f"Connecting to {adapter.display_name} and reading server DMVs...")
+    try:
+        report = collect_server(adapter, top=int(top), include_jobs=False)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+    report.server_name = label
+
+    for section, msg in report.errors:
+        click.echo(click.style(f"  ! skipped {section}: {msg}", fg='yellow'), err=True)
+
+    s = server_summarize(report)
+    click.echo(
+        click.style(f"CPU (SQL): {s['cpu_sql_percent']}%", fg='blue')
+        + f"    Memory: {round(s['memory_total_mb']/1024, 1)} GB"
+        + f"    Sessions: {s['sessions']}"
+        + click.style(f"    Blocking: {s['blocking_chains']}", fg='red' if s['blocking_chains'] else 'green')
+        + click.style(f"    Low-disk vols: {s['low_disk_volumes']}", fg='red' if s['low_disk_volumes'] else 'green')
+    )
+
+    click.echo("\nRendering report...")
+    render_server_html(label, report, output)
+    if json_out:
+        import json as _json
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(build_server_json(label, report), f, indent=2, default=str)
+        click.echo(f"Machine-readable server report written to {json_out}")
+    _verify_offline(output, resolve('verify_offline', verify_offline))
+    click.echo(f"Open {output} in your browser for the full server health report.")
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -1384,6 +1460,7 @@ cli.add_command(intel, name='intel')
 cli.add_command(insights, name='insights')
 cli.add_command(comply, name='comply')
 cli.add_command(dbt, name='dbt')
+cli.add_command(server, name='server')
 
 # The agent subgroup is defined in sqldoc.agent.cli; imported here (after this
 # module is otherwise defined) to attach it without a circular import.

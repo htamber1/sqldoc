@@ -136,6 +136,20 @@ class FakeCursor:
             self._last = "frag"
         elif "dm_exec_procedure_stats" in sql or "pg_stat_user_functions" in sql:
             self._last = "unusedprocs"
+        elif "RING_BUFFER_SCHEDULER_MONITOR" in sql:
+            self._last = "srv_cpu"
+        elif "dm_os_memory_clerks" in sql:
+            self._last = "srv_mem"
+        elif "dm_os_volume_stats" in sql:
+            self._last = "srv_vol"
+        elif "dm_io_virtual_file_stats" in sql:
+            self._last = "srv_io"
+        elif "dm_exec_requests" in sql:
+            self._last = "srv_req"
+        elif "dm_os_sys_info" in sql:
+            self._last = "srv_info"
+        elif "dm_exec_sessions" in sql:
+            self._last = "srv_sess"
         elif "database_role_members" in sql:
             self._last = "rolemembers"
         elif "pg_auth_members" in sql:
@@ -275,6 +289,48 @@ def fake_health_rows():
             FakeRow(schema_name="Sales", procedure_name="uspLegacyExport",
                     execution_count=0, last_execution_time=None,
                     create_date="2021-01-01", modify_date="2021-01-01"),
+        ],
+    }
+
+
+@pytest.fixture
+def fake_server_rows():
+    """Rows the instance-level server DMV queries would see."""
+    return {
+        "srv_info": [FakeRow(cpu_count=8, scheduler_count=8, hyperthread_ratio=2,
+                             physical_memory_mb=32768,
+                             sqlserver_start_time="2026-07-01 00:00:00",
+                             uptime_seconds=864000)],           # 10 days
+        "srv_cpu": [FakeRow(sql_cpu=35, idle_cpu=55, other_cpu=10, record_id=12345)],
+        "srv_mem": [
+            FakeRow(clerk_type="MEMORYCLERK_SQLBUFFERPOOL", mb=20480.0),
+            FakeRow(clerk_type="CACHESTORE_SQLCP", mb=2048.0),
+            FakeRow(clerk_type="OBJECTSTORE_LOCK_MANAGER", mb=512.0),
+        ],
+        "srv_vol": [
+            FakeRow(volume_mount_point="C:\\", logical_volume_name="OS",
+                    total_gb=200.0, available_gb=60.0),          # 30% free: OK
+            FakeRow(volume_mount_point="D:\\", logical_volume_name="Data",
+                    total_gb=500.0, available_gb=20.0),          # 4% free: LOW
+        ],
+        "srv_io": [
+            FakeRow(drive="C", read_latency_ms=5.0, write_latency_ms=3.0),
+            FakeRow(drive="D", read_latency_ms=12.0, write_latency_ms=8.0),
+        ],
+        "srv_req": [
+            FakeRow(session_id=55, login_name="app", host_name="web1",
+                    database_name="Sales", status="running", command="SELECT",
+                    blocking_session_id=0, wait_type=None, cpu_ms=1200,
+                    elapsed_ms=3400, reads=900, query_text="SELECT * FROM Orders"),
+            FakeRow(session_id=60, login_name="rep", host_name="web2",
+                    database_name="Sales", status="suspended", command="SELECT",
+                    blocking_session_id=55, wait_type="LCK_M_S", cpu_ms=10,
+                    elapsed_ms=5000, reads=3, query_text="SELECT * FROM Orders WHERE Id=1"),
+        ],
+        "srv_sess": [
+            FakeRow(login_name="app", database_name="Sales", status="running"),
+            FakeRow(login_name="app", database_name="Sales", status="sleeping"),
+            FakeRow(login_name="rep", database_name="HR", status="running"),
         ],
     }
 

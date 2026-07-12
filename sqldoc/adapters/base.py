@@ -142,6 +142,7 @@ class Capabilities:
     quality: bool = False            # aggregate profiling (needs dialect SQL)
     health: bool = False             # DMV performance/health checks
     access_audit: bool = False       # comply access audit over object grants
+    server_monitoring: bool = False  # instance-level DMVs, SQL Agent, ERRORLOG, linked servers
 
 
 class DatabaseAdapter(ABC):

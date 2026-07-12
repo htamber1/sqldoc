@@ -1,0 +1,568 @@
+"""Instance-level SQL Server health + SQL Agent job monitoring.
+
+Where :mod:`sqldoc.health` looks at one database, this looks at the whole SQL
+Server **instance** via server-scoped DMVs and the ``msdb`` catalog:
+
+* **CPU** — ``sys.dm_os_ring_buffers`` (RING_BUFFER_SCHEDULER_MONITOR) split into
+  SQL / other-process / idle, plus core/scheduler counts from
+  ``sys.dm_os_sys_info``.
+* **Memory** — ``sys.dm_os_memory_clerks`` broken into buffer pool / plan cache /
+  stolen / other.
+* **Disk** — ``sys.dm_os_volume_stats`` (free space per volume) joined with
+  ``sys.dm_io_virtual_file_stats`` (read/write latency per drive).
+* **Uptime** — ``sqlserver_start_time`` from ``sys.dm_os_sys_info``.
+* **Connections + blocking** — ``sys.dm_exec_sessions`` / ``sys.dm_exec_requests``
+  (active requests, blocking chains, top consumers running right now).
+* **SQL Agent jobs** — ``msdb.dbo.sysjobs`` / ``sysjobhistory`` / ``sysjobsteps``
+  / ``sysjobschedules``: last run status + duration, step-level failure
+  messages, jobs failed in the last 24h, long runners over their average, and
+  next scheduled run.
+
+Every check runs in its own try/except: server-scoped DMVs need ``VIEW SERVER
+STATE`` and the Agent views need msdb access, so a permission failure degrades
+that one section to a note instead of failing the whole report. Reads only
+server statistics + job history — never table row data. SQL Server only.
+"""
+from dataclasses import dataclass, field
+
+from sqldoc.dbutil import cell
+
+
+def _s(v) -> str:
+    return "" if v is None else str(v)
+
+
+def _i(v) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _f(v) -> float:
+    try:
+        return round(float(v or 0), 1)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _collapse_ws(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _fmt_duration(seconds: int) -> str:
+    seconds = int(seconds or 0)
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h {m}m"
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+# --- dataclasses -----------------------------------------------------------
+
+@dataclass
+class ServerInfo:
+    cpu_count: int = 0
+    scheduler_count: int = 0
+    hyperthread_ratio: int = 0
+    physical_memory_mb: int = 0
+    sql_server_start_time: str = ""
+    uptime_seconds: int = 0
+
+    @property
+    def uptime_text(self) -> str:
+        return _fmt_duration(self.uptime_seconds)
+
+
+@dataclass
+class CpuUsage:
+    sql_process_percent: int = 0
+    other_process_percent: int = 0
+    idle_percent: int = 0
+    sample_time: str = ""
+
+
+@dataclass
+class MemoryBreakdown:
+    total_mb: float = 0.0
+    buffer_pool_mb: float = 0.0
+    plan_cache_mb: float = 0.0
+    stolen_mb: float = 0.0
+    other_mb: float = 0.0
+    clerks: list = field(default_factory=list)   # (clerk_type, mb)
+
+
+@dataclass
+class VolumeHealth:
+    volume: str
+    logical_name: str = ""
+    total_gb: float = 0.0
+    available_gb: float = 0.0
+    read_latency_ms: float = 0.0
+    write_latency_ms: float = 0.0
+
+    @property
+    def used_gb(self) -> float:
+        return round(self.total_gb - self.available_gb, 1)
+
+    @property
+    def used_percent(self) -> float:
+        return round(100.0 * (self.total_gb - self.available_gb) / self.total_gb, 1) if self.total_gb else 0.0
+
+    @property
+    def free_percent(self) -> float:
+        return round(100.0 * self.available_gb / self.total_gb, 1) if self.total_gb else 0.0
+
+    @property
+    def is_low(self) -> bool:
+        return self.total_gb > 0 and self.free_percent < 10.0
+
+
+@dataclass
+class ActiveRequest:
+    session_id: int
+    login_name: str = ""
+    host_name: str = ""
+    database: str = ""
+    status: str = ""
+    command: str = ""
+    blocking_session_id: int = 0
+    wait_type: str = ""
+    cpu_ms: int = 0
+    elapsed_ms: int = 0
+    reads: int = 0
+    query_text: str = ""
+
+
+@dataclass
+class BlockingChain:
+    blocker_session_id: int
+    blocked_session_id: int
+    wait_type: str = ""
+    wait_time_ms: int = 0
+    blocked_query: str = ""
+    blocker_query: str = ""
+
+
+@dataclass
+class ConnectionSummary:
+    total_sessions: int = 0
+    active_requests: int = 0
+    blocked_requests: int = 0
+    by_login: list = field(default_factory=list)      # (login, count)
+    by_database: list = field(default_factory=list)   # (database, count)
+
+
+# --- SQL Agent job dataclasses ---------------------------------------------
+
+@dataclass
+class JobStepFailure:
+    step_id: int
+    step_name: str
+    message: str
+
+
+@dataclass
+class AgentJob:
+    name: str
+    enabled: bool = True
+    last_run_status: str = ""          # Succeeded / Failed / Retry / Canceled / In progress / Unknown
+    last_run_time: str = ""
+    last_run_duration_seconds: int = 0
+    avg_duration_seconds: int = 0
+    next_run_time: str = ""
+    category: str = ""
+    owner: str = ""
+    failed_last_24h: bool = False
+    step_failures: list = field(default_factory=list)  # JobStepFailure
+
+    @property
+    def is_long_running(self) -> bool:
+        # Flag the last run when it ran materially longer than its average.
+        return (self.avg_duration_seconds > 0
+                and self.last_run_duration_seconds > 1.5 * self.avg_duration_seconds
+                and self.last_run_duration_seconds - self.avg_duration_seconds >= 30)
+
+    @property
+    def duration_text(self) -> str:
+        return _fmt_duration(self.last_run_duration_seconds)
+
+
+@dataclass
+class ServerReport:
+    server_name: str
+    info: ServerInfo = None
+    cpu: CpuUsage = None
+    memory: MemoryBreakdown = None
+    volumes: list = field(default_factory=list)
+    connections: ConnectionSummary = None
+    blocking_chains: list = field(default_factory=list)
+    top_queries: list = field(default_factory=list)      # ActiveRequest
+    agent_jobs: list = field(default_factory=list)        # AgentJob
+    errors: list = field(default_factory=list)            # (section, message)
+
+
+# --- collectors ------------------------------------------------------------
+
+def collect_server_info(cursor) -> ServerInfo:
+    cursor.execute("""
+        SELECT cpu_count,
+               scheduler_count,
+               hyperthread_ratio,
+               physical_memory_kb / 1024 AS physical_memory_mb,
+               sqlserver_start_time,
+               DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) AS uptime_seconds
+        FROM sys.dm_os_sys_info
+    """)
+    r = cursor.fetchall()
+    if not r:
+        return ServerInfo()
+    r = r[0]
+    return ServerInfo(
+        cpu_count=_i(cell(r, "cpu_count")),
+        scheduler_count=_i(cell(r, "scheduler_count")),
+        hyperthread_ratio=_i(cell(r, "hyperthread_ratio")),
+        physical_memory_mb=_i(cell(r, "physical_memory_mb")),
+        sql_server_start_time=_s(cell(r, "sqlserver_start_time")),
+        uptime_seconds=_i(cell(r, "uptime_seconds")),
+    )
+
+
+def collect_cpu(cursor) -> CpuUsage:
+    # Latest scheduler-monitor snapshot from the ring buffer (shredded XML).
+    cursor.execute("""
+        SELECT TOP 1
+            record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS sql_cpu,
+            record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') AS idle_cpu,
+            100
+              - record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int')
+              - record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') AS other_cpu,
+            record.value('(./Record/@id)[1]', 'int') AS record_id
+        FROM (
+            SELECT CONVERT(xml, record) AS record
+            FROM sys.dm_os_ring_buffers
+            WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR'
+              AND record LIKE '%<SystemHealth>%'
+        ) AS x
+        ORDER BY record_id DESC
+    """)
+    rows = cursor.fetchall()
+    if not rows:
+        return CpuUsage()
+    r = rows[0]
+    return CpuUsage(
+        sql_process_percent=_i(cell(r, "sql_cpu")),
+        other_process_percent=_i(cell(r, "other_cpu")),
+        idle_percent=_i(cell(r, "idle_cpu")),
+        sample_time=_s(cell(r, "record_id")),
+    )
+
+
+# Clerk types that make up the plan cache.
+_PLAN_CACHE_TYPES = {"CACHESTORE_SQLCP", "CACHESTORE_OBJCP", "CACHESTORE_PHDR",
+                     "CACHESTORE_XPROC", "CACHESTORE_TEMPTABLES"}
+_BUFFER_POOL_TYPE = "MEMORYCLERK_SQLBUFFERPOOL"
+
+
+def collect_memory(cursor) -> MemoryBreakdown:
+    cursor.execute("""
+        SELECT [type] AS clerk_type,
+               CAST(SUM(pages_kb) / 1024.0 AS DECIMAL(18,1)) AS mb
+        FROM sys.dm_os_memory_clerks
+        GROUP BY [type]
+        HAVING SUM(pages_kb) > 0
+        ORDER BY SUM(pages_kb) DESC
+    """)
+    mem = MemoryBreakdown()
+    for r in cursor.fetchall():
+        ctype = _s(cell(r, "clerk_type"))
+        mb = _f(cell(r, "mb"))
+        mem.total_mb += mb
+        if ctype == _BUFFER_POOL_TYPE:
+            mem.buffer_pool_mb += mb
+        elif ctype in _PLAN_CACHE_TYPES:
+            mem.plan_cache_mb += mb
+        mem.clerks.append((ctype, mb))
+    mem.total_mb = round(mem.total_mb, 1)
+    mem.buffer_pool_mb = round(mem.buffer_pool_mb, 1)
+    mem.plan_cache_mb = round(mem.plan_cache_mb, 1)
+    # Stolen ~= everything that is not buffer pool (SQL Server's "stolen" pages).
+    mem.stolen_mb = round(mem.total_mb - mem.buffer_pool_mb, 1)
+    mem.other_mb = round(mem.total_mb - mem.buffer_pool_mb - mem.plan_cache_mb, 1)
+    mem.clerks = mem.clerks[:12]
+    return mem
+
+
+def collect_volumes(cursor) -> list:
+    cursor.execute("""
+        SELECT DISTINCT
+            vs.volume_mount_point,
+            vs.logical_volume_name,
+            CAST(vs.total_bytes / 1073741824.0 AS DECIMAL(18,1)) AS total_gb,
+            CAST(vs.available_bytes / 1073741824.0 AS DECIMAL(18,1)) AS available_gb
+        FROM sys.master_files AS f
+        CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id) AS vs
+    """)
+    volumes = {}
+    for r in cursor.fetchall():
+        vol = _s(cell(r, "volume_mount_point"))
+        volumes[vol] = VolumeHealth(
+            volume=vol,
+            logical_name=_s(cell(r, "logical_volume_name")),
+            total_gb=_f(cell(r, "total_gb")),
+            available_gb=_f(cell(r, "available_gb")),
+        )
+
+    # I/O latency per drive letter, merged onto the matching volume.
+    try:
+        cursor.execute("""
+            SELECT LEFT(mf.physical_name, 1) AS drive,
+                   CASE WHEN SUM(vfs.num_of_reads) = 0 THEN 0
+                        ELSE SUM(vfs.io_stall_read_ms) / SUM(vfs.num_of_reads) END AS read_latency_ms,
+                   CASE WHEN SUM(vfs.num_of_writes) = 0 THEN 0
+                        ELSE SUM(vfs.io_stall_write_ms) / SUM(vfs.num_of_writes) END AS write_latency_ms
+            FROM sys.dm_io_virtual_file_stats(NULL, NULL) AS vfs
+            JOIN sys.master_files AS mf
+              ON vfs.database_id = mf.database_id AND vfs.file_id = mf.file_id
+            GROUP BY LEFT(mf.physical_name, 1)
+        """)
+        for r in cursor.fetchall():
+            drive = _s(cell(r, "drive")).upper()
+            for vol, vh in volumes.items():
+                if vol[:1].upper() == drive:
+                    vh.read_latency_ms = _f(cell(r, "read_latency_ms"))
+                    vh.write_latency_ms = _f(cell(r, "write_latency_ms"))
+    except Exception:
+        pass  # latency is best-effort; keep the space figures
+
+    return sorted(volumes.values(), key=lambda v: v.free_percent)
+
+
+def collect_active_requests(cursor, top: int) -> list:
+    cursor.execute(f"""
+        SELECT TOP ({int(top)})
+            r.session_id,
+            s.login_name,
+            s.host_name,
+            DB_NAME(r.database_id) AS database_name,
+            r.status,
+            r.command,
+            r.blocking_session_id,
+            r.wait_type,
+            r.cpu_time AS cpu_ms,
+            r.total_elapsed_time AS elapsed_ms,
+            r.reads,
+            SUBSTRING(t.text, (r.statement_start_offset/2)+1,
+                ((CASE r.statement_end_offset WHEN -1 THEN DATALENGTH(t.text)
+                  ELSE r.statement_end_offset END - r.statement_start_offset)/2)+1) AS query_text
+        FROM sys.dm_exec_requests AS r
+        INNER JOIN sys.dm_exec_sessions AS s ON r.session_id = s.session_id
+        OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+        WHERE s.is_user_process = 1 AND r.session_id <> @@SPID
+        ORDER BY r.cpu_time DESC
+    """)
+    out = []
+    for r in cursor.fetchall():
+        out.append(ActiveRequest(
+            session_id=_i(cell(r, "session_id")),
+            login_name=_s(cell(r, "login_name")),
+            host_name=_s(cell(r, "host_name")),
+            database=_s(cell(r, "database_name")),
+            status=_s(cell(r, "status")),
+            command=_s(cell(r, "command")),
+            blocking_session_id=_i(cell(r, "blocking_session_id")),
+            wait_type=_s(cell(r, "wait_type")),
+            cpu_ms=_i(cell(r, "cpu_ms")),
+            elapsed_ms=_i(cell(r, "elapsed_ms")),
+            reads=_i(cell(r, "reads")),
+            query_text=_collapse_ws(_s(cell(r, "query_text")))[:400],
+        ))
+    return out
+
+
+def collect_connections(cursor) -> ConnectionSummary:
+    cursor.execute("""
+        SELECT login_name, DB_NAME(database_id) AS database_name, status
+        FROM sys.dm_exec_sessions
+        WHERE is_user_process = 1
+    """)
+    by_login, by_db = {}, {}
+    total = 0
+    for r in cursor.fetchall():
+        total += 1
+        login = _s(cell(r, "login_name")) or "(unknown)"
+        db = _s(cell(r, "database_name")) or "(none)"
+        by_login[login] = by_login.get(login, 0) + 1
+        by_db[db] = by_db.get(db, 0) + 1
+    summary = ConnectionSummary(total_sessions=total)
+    summary.by_login = sorted(by_login.items(), key=lambda kv: -kv[1])[:12]
+    summary.by_database = sorted(by_db.items(), key=lambda kv: -kv[1])[:12]
+    return summary
+
+
+def build_blocking_chains(requests) -> list:
+    """From the active requests, pair each blocked request with its blocker."""
+    by_session = {r.session_id: r for r in requests}
+    chains = []
+    for r in requests:
+        if r.blocking_session_id and r.blocking_session_id != 0:
+            blocker = by_session.get(r.blocking_session_id)
+            chains.append(BlockingChain(
+                blocker_session_id=r.blocking_session_id,
+                blocked_session_id=r.session_id,
+                wait_type=r.wait_type,
+                wait_time_ms=r.elapsed_ms,
+                blocked_query=r.query_text,
+                blocker_query=(blocker.query_text if blocker else ""),
+            ))
+    return chains
+
+
+# --- SQL Agent job collectors ----------------------------------------------
+
+_JOB_STATUS = {0: "Failed", 1: "Succeeded", 2: "Retry", 3: "Canceled", 4: "In progress"}
+
+
+def collect_agent_jobs(cursor) -> list:
+    """Jobs with their last outcome, average duration, step-level failures, and
+    next scheduled run. Reads msdb only."""
+    cursor.execute("""
+        SELECT j.job_id,
+               j.name AS job_name,
+               j.enabled,
+               SUSER_SNAME(j.owner_sid) AS owner,
+               c.name AS category,
+               ja.run_status AS last_run_status,
+               ja.run_datetime AS last_run_time,
+               ja.run_duration_seconds,
+               ja.avg_duration_seconds,
+               sched.next_run_datetime
+        FROM msdb.dbo.sysjobs AS j
+        LEFT JOIN msdb.dbo.syscategories AS c ON j.category_id = c.category_id
+        OUTER APPLY (
+            SELECT TOP 1 h.run_status,
+                   msdb.dbo.agent_datetime(h.run_date, h.run_time) AS run_datetime,
+                   (h.run_duration/10000*3600) + ((h.run_duration/100)%100*60) + (h.run_duration%100) AS run_duration_seconds
+            FROM msdb.dbo.sysjobhistory AS h
+            WHERE h.job_id = j.job_id AND h.step_id = 0
+            ORDER BY h.run_date DESC, h.run_time DESC
+        ) AS ja
+        OUTER APPLY (
+            SELECT AVG((h.run_duration/10000*3600) + ((h.run_duration/100)%100*60) + (h.run_duration%100)) AS avg_duration_seconds
+            FROM msdb.dbo.sysjobhistory AS h
+            WHERE h.job_id = j.job_id AND h.step_id = 0
+        ) AS agg
+        OUTER APPLY (
+            SELECT MIN(js.next_run_date) AS next_run_datetime
+            FROM msdb.dbo.sysjobschedules AS js
+            WHERE js.job_id = j.job_id
+        ) AS sched
+        ORDER BY j.name
+    """)
+    jobs = []
+    job_rows = cursor.fetchall()
+    for r in job_rows:
+        status_code = cell(r, "last_run_status")
+        status = _JOB_STATUS.get(_i(status_code), "Unknown") if status_code is not None else "Never run"
+        jobs.append(AgentJob(
+            name=_s(cell(r, "job_name")),
+            enabled=bool(_i(cell(r, "enabled"))),
+            last_run_status=status,
+            last_run_time=_s(cell(r, "last_run_time")),
+            last_run_duration_seconds=_i(cell(r, "run_duration_seconds")),
+            avg_duration_seconds=_i(cell(r, "avg_duration_seconds")),
+            next_run_time=_s(cell(r, "next_run_datetime")),
+            category=_s(cell(r, "category")),
+            owner=_s(cell(r, "owner")),
+        ))
+
+    # Step-level failure messages from the last 24 hours.
+    try:
+        cursor.execute("""
+            SELECT j.name AS job_name, h.step_id, h.step_name, h.message
+            FROM msdb.dbo.sysjobhistory AS h
+            INNER JOIN msdb.dbo.sysjobs AS j ON h.job_id = j.job_id
+            WHERE h.run_status = 0 AND h.step_id > 0
+              AND msdb.dbo.agent_datetime(h.run_date, h.run_time) >= DATEADD(HOUR, -24, GETDATE())
+            ORDER BY h.run_date DESC, h.run_time DESC
+        """)
+        fails_by_job = {}
+        for r in cursor.fetchall():
+            fails_by_job.setdefault(_s(cell(r, "job_name")), []).append(JobStepFailure(
+                step_id=_i(cell(r, "step_id")),
+                step_name=_s(cell(r, "step_name")),
+                message=_collapse_ws(_s(cell(r, "message")))[:500],
+            ))
+        for job in jobs:
+            if job.name in fails_by_job:
+                job.step_failures = fails_by_job[job.name]
+                job.failed_last_24h = True
+    except Exception:
+        pass
+
+    # Also mark a job failed-in-24h if its last outcome was Failed.
+    for job in jobs:
+        if job.last_run_status == "Failed" and job.step_failures:
+            job.failed_last_24h = True
+    return jobs
+
+
+# --- orchestration ---------------------------------------------------------
+
+def collect_server(adapter, top: int = 10, include_jobs: bool = True) -> ServerReport:
+    """Run the instance-level checks appropriate to the adapter. Each check is
+    isolated so a missing permission (VIEW SERVER STATE / msdb access) degrades
+    to a note in `report.errors` rather than failing the whole run."""
+    report = ServerReport(server_name="")
+    conn = adapter.connect()
+    cursor = adapter.cursor(conn)
+
+    def run(label, fn):
+        try:
+            return fn()
+        except Exception as e:
+            report.errors.append((label, f"{type(e).__name__}: {e}"))
+            return None
+
+    try:
+        report.info = run("Server info", lambda: collect_server_info(cursor))
+        report.cpu = run("CPU usage", lambda: collect_cpu(cursor))
+        report.memory = run("Memory", lambda: collect_memory(cursor))
+        report.volumes = run("Disk volumes", lambda: collect_volumes(cursor)) or []
+        report.connections = run("Connections", lambda: collect_connections(cursor))
+        requests = run("Active requests", lambda: collect_active_requests(cursor, top)) or []
+        report.top_queries = requests
+        report.blocking_chains = build_blocking_chains(requests)
+        if report.connections is not None:
+            report.connections.active_requests = len(requests)
+            report.connections.blocked_requests = len(report.blocking_chains)
+        if include_jobs:
+            report.agent_jobs = run("SQL Agent jobs", lambda: collect_agent_jobs(cursor)) or []
+    finally:
+        conn.close()
+    return report
+
+
+def summarize(report: ServerReport) -> dict:
+    jobs = report.agent_jobs
+    return {
+        "cpu_sql_percent": report.cpu.sql_process_percent if report.cpu else 0,
+        "memory_total_mb": report.memory.total_mb if report.memory else 0,
+        "uptime": report.info.uptime_text if report.info else "",
+        "volumes": len(report.volumes),
+        "low_disk_volumes": sum(1 for v in report.volumes if v.is_low),
+        "sessions": report.connections.total_sessions if report.connections else 0,
+        "blocking_chains": len(report.blocking_chains),
+        "active_requests": len(report.top_queries),
+        "jobs": len(jobs),
+        "failed_jobs_24h": sum(1 for j in jobs if j.failed_last_24h),
+        "disabled_jobs": sum(1 for j in jobs if not j.enabled),
+        "long_running_jobs": sum(1 for j in jobs if j.is_long_running),
+        "degraded": len(report.errors),
+    }
