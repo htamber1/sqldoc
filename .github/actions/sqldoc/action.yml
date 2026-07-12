@@ -1,0 +1,118 @@
+name: 'sqldoc'
+description: 'Document, PII/compliance-scan, and health-check your database in CI — local-first, 7 engines, self-contained HTML reports.'
+author: 'htamber1'
+branding:
+  icon: 'database'
+  color: 'blue'
+
+inputs:
+  command:
+    description: 'Which sqldoc command to run: doc, scan, or health.'
+    required: false
+    default: 'doc'
+  connection-string:
+    description: 'Full connection string / ODBC connection string for the target database. Use a repository secret — never hard-code credentials.'
+    required: true
+  dialect:
+    description: 'Database dialect: sqlserver, azuresql, postgres, mysql, sqlite, snowflake, or oracle. Leave empty to auto-detect from the connection string.'
+    required: false
+    default: ''
+  output-path:
+    description: 'Path to write the generated self-contained HTML report.'
+    required: false
+    default: 'sqldoc-report.html'
+  fail-on-high-pii:
+    description: 'For command=scan: fail the job (non-zero exit) if any HIGH-risk PII is found. true/false.'
+    required: false
+    default: 'false'
+  json-output:
+    description: 'Optional path to also write a machine-readable JSON report.'
+    required: false
+    default: ''
+  extra-args:
+    description: 'Extra CLI arguments passed through verbatim (e.g. "--no-ai" for doc in CI, "--schemas dbo,Sales", "--sample").'
+    required: false
+    default: ''
+  sqldoc-version:
+    description: 'Version of sqldoc to install from PyPI (e.g. 1.8.0). Default: latest.'
+    required: false
+    default: ''
+  python-version:
+    description: 'Python version to set up for the run.'
+    required: false
+    default: '3.11'
+
+outputs:
+  report-path:
+    description: 'Path to the generated HTML report.'
+    value: ${{ inputs.output-path }}
+  json-path:
+    description: 'Path to the generated JSON report (empty if not requested).'
+    value: ${{ inputs.json-output }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install sqldoc
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Pick the driver extra that matches the dialect, so the right DB driver
+        # gets installed alongside sqldoc.
+        extra=""
+        case "${{ inputs.dialect }}" in
+          postgres)  extra="[postgres]";;
+          mysql)     extra="[mysql]";;
+          snowflake) extra="[snowflake]";;
+          oracle)    extra="[oracle]";;
+          *)         extra="";;
+        esac
+        version=""
+        if [ -n "${{ inputs.sqldoc-version }}" ]; then version="==${{ inputs.sqldoc-version }}"; fi
+        python -m pip install --upgrade pip
+        python -m pip install "sqldoc${extra}${version}"
+        sqldoc --version || true
+
+    - name: Run sqldoc ${{ inputs.command }}
+      shell: bash
+      env:
+        SQLDOC_CONNECTION_STRING: ${{ inputs.connection-string }}
+      run: |
+        set -euo pipefail
+        cmd="${{ inputs.command }}"
+        case "$cmd" in
+          doc|scan|health) ;;
+          *) echo "::error::Unsupported command '$cmd'. Use doc, scan, or health."; exit 2;;
+        esac
+
+        args=("$cmd" --connection-string "$SQLDOC_CONNECTION_STRING" --output "${{ inputs.output-path }}")
+        if [ -n "${{ inputs.dialect }}" ]; then args+=(--dialect "${{ inputs.dialect }}"); fi
+        # `doc` emits JSON via --format (inferred from the .json extension);
+        # the analysis commands take a dedicated --json path.
+        if [ -n "${{ inputs.json-output }}" ]; then
+          if [ "$cmd" = "doc" ]; then
+            echo "::warning::doc emits JSON via the output extension; set output-path to a .json file or pass extra-args '--format json' instead of json-output."
+          else
+            args+=(--json "${{ inputs.json-output }}")
+          fi
+        fi
+
+        # scan-only: turn a HIGH-risk PII finding into a build failure.
+        if [ "$cmd" = "scan" ] && [ "${{ inputs.fail-on-high-pii }}" = "true" ]; then
+          args+=(--fail-on high)
+        fi
+
+        # Pass through any extra flags (word-split intentionally).
+        if [ -n "${{ inputs.extra-args }}" ]; then
+          # shellcheck disable=SC2206
+          extra_args=(${{ inputs.extra-args }})
+          args+=("${extra_args[@]}")
+        fi
+
+        echo "Running: sqldoc $cmd (report -> ${{ inputs.output-path }})"
+        sqldoc "${args[@]}"

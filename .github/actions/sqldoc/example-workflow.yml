@@ -1,0 +1,42 @@
+# EXAMPLE workflow — copy this into your own repo's .github/workflows/ directory.
+# It is kept here (not under .github/workflows/) so it is documentation, not an
+# active workflow in the sqldoc repo. Manually triggered; needs a real database
+# reachable from the runner via the DB_CONNECTION_STRING secret.
+name: sqldoc (example)
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'sqldoc command'
+        type: choice
+        options: [doc, scan, health]
+        default: doc
+      dialect:
+        description: 'Database dialect'
+        default: postgres
+
+jobs:
+  run-sqldoc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # In your own repo, replace the local path with the published action:
+      #   uses: htamber1/sqldoc-action@v1
+      - name: Run sqldoc
+        id: sqldoc
+        uses: ./.github/actions/sqldoc
+        with:
+          command: ${{ inputs.command }}
+          connection-string: ${{ secrets.DB_CONNECTION_STRING }}
+          dialect: ${{ inputs.dialect }}
+          output-path: sqldoc-report.html
+          fail-on-high-pii: 'true'
+          extra-args: --no-ai
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqldoc-report
+          path: ${{ steps.sqldoc.outputs.report-path }}
