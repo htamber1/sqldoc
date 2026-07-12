@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS table_sizes (
     size_mb  REAL,
     rows     INTEGER
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE INDEX IF NOT EXISTS ix_events_db_at ON events(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_metrics_db_at ON metrics(db_name, at);
 CREATE INDEX IF NOT EXISTS ix_runs_db ON runs(db_name, id);
@@ -217,6 +221,41 @@ class AgentStore:
                 rows = c.execute(
                     "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def events_since(self, since_iso: str, db_name: str = None) -> list:
+        """Events at/after an ISO-8601 timestamp (oldest first). ISO strings from
+        _now() sort lexicographically, so a string comparison is a time filter."""
+        with self._conn() as c:
+            if db_name:
+                rows = c.execute(
+                    "SELECT * FROM events WHERE at >= ? AND db_name=? ORDER BY id ASC",
+                    (since_iso, db_name)).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM events WHERE at >= ? ORDER BY id ASC",
+                    (since_iso,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def metrics_since(self, since_iso: str, db_name: str) -> list:
+        """Metric rows at/after an ISO timestamp for one database (oldest first)."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM metrics WHERE db_name=? AND at >= ? ORDER BY id ASC",
+                (db_name, since_iso)).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- key/value meta (agent bookkeeping) --------------------------------
+
+    def get_meta(self, key: str):
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str):
+        with self._conn() as c:
+            c.execute("INSERT INTO kv(key, value) VALUES (?,?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, value))
 
     # --- metrics (trends) --------------------------------------------------
 

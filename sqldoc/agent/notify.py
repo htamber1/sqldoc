@@ -16,20 +16,7 @@ def send_slack(webhook: str, text: str, timeout: float = 10.0):
     resp.raise_for_status()
 
 
-def send_email(smtp: dict, subject: str, body: str):
-    """Send a plaintext email via SMTP. `smtp` keys: smtp_host, smtp_port,
-    username, password, from, to (str or list), use_tls (default True)."""
-    recipients = smtp.get("to")
-    if isinstance(recipients, str):
-        recipients = [recipients]
-    if not recipients:
-        raise ValueError("email notification config needs at least one 'to' address.")
-    sender = smtp.get("from") or smtp.get("username")
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = ", ".join(recipients)
-
+def _send(smtp: dict, msg, recipients, sender):
     host = smtp.get("smtp_host")
     port = int(smtp.get("smtp_port", 587))
     server = smtplib.SMTP(host, port, timeout=20)
@@ -41,6 +28,47 @@ def send_email(smtp: dict, subject: str, body: str):
         server.sendmail(sender, recipients, msg.as_string())
     finally:
         server.quit()
+
+
+def _prepare(smtp: dict, subject: str):
+    recipients = smtp.get("to")
+    if isinstance(recipients, str):
+        recipients = [recipients]
+    if not recipients:
+        raise ValueError("email notification config needs at least one 'to' address.")
+    sender = smtp.get("from") or smtp.get("username")
+    return recipients, sender
+
+
+def send_email(smtp: dict, subject: str, body: str):
+    """Send a plaintext email via SMTP. `smtp` keys: smtp_host, smtp_port,
+    username, password, from, to (str or list), use_tls (default True)."""
+    recipients, sender = _prepare(smtp, subject)
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    _send(smtp, msg, recipients, sender)
+
+
+def send_html_email(smtp: dict, subject: str, html_body: str, text_body: str = None):
+    """Send an HTML email (with an optional plaintext alternative) via SMTP.
+    Used for the scheduled weekly digest."""
+    from email.mime.multipart import MIMEMultipart
+    recipients, sender = _prepare(smtp, subject)
+    if text_body:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = sender
+        msg["To"] = ", ".join(recipients)
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+    else:
+        msg = MIMEText(html_body, "html", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = sender
+        msg["To"] = ", ".join(recipients)
+    _send(smtp, msg, recipients, sender)
 
 
 class Notifier:

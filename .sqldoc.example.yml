@@ -120,6 +120,13 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   # HA / replication monitoring (SQL Server AGs, PostgreSQL streaming, MySQL).
 #   ha_monitoring: true           # alert when a replica is unhealthy or lagging
 #   replica_lag_threshold_seconds: 30
+#   # Scheduled weekly email digest — emailed on the configured weekday/hour
+#   # (default Monday 08:00 local) covering the week's schema changes, new PII,
+#   # health trends, job failures, and infra/security alerts. Needs the email
+#   # notification block below. `weekly_report: true` uses the defaults.
+#   weekly_report:
+#     day: monday                 # monday .. sunday (or 0-6)
+#     hour: 8                     # local hour, 0-23
 #   databases:                    # monitor as many as you like, simultaneously
 #     - name: prod-sqlserver
 #       server: localhost

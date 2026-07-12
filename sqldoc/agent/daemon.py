@@ -11,6 +11,11 @@ import time
 
 from sqldoc.agent.dashboard import make_server
 from sqldoc.agent.poller import poll_database
+from sqldoc.agent.weekly import maybe_send_weekly_report
+
+
+_WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                  "Saturday", "Sunday"]
 
 
 def _interval_seconds(agent_config) -> float:
@@ -46,6 +51,21 @@ def poller_loop(store, db_config, agent_config, notifier, stop_event, log, poll_
             break
 
 
+def weekly_report_loop(store, agent_config, stop_event, log, check_seconds=900):
+    """Every check_seconds, send the weekly digest if it's due (idempotent per
+    calendar week). Runs only when weekly_report is enabled."""
+    wr = getattr(agent_config, "weekly_report", None)
+    if not wr or not wr.enabled:
+        return
+    while not stop_event.is_set():
+        try:
+            maybe_send_weekly_report(store, agent_config, log=log)
+        except Exception as e:
+            log(f"weekly scheduler crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(check_seconds):
+            break
+
+
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
                host="127.0.0.1", poll_fn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
@@ -67,11 +87,23 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         t.start()
         poll_threads.append(t)
 
+    wr = getattr(agent_config, "weekly_report", None)
+    weekly_thread = None
+    if wr and wr.enabled:
+        weekly_thread = threading.Thread(
+            target=weekly_report_loop, args=(store, agent_config, stop_event, log),
+            name="weekly-report", daemon=True)
+        weekly_thread.start()
+        log(f"weekly digest scheduled for {_WEEKDAY_NAMES[wr.weekday]} "
+            f"{wr.hour:02d}:00 (emailed to the notifications address)")
+
     stop_event.wait()
     log("stopping agent...")
     server.shutdown()
     for t in poll_threads:
         t.join(timeout=15)
+    if weekly_thread is not None:
+        weekly_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port

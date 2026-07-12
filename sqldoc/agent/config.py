@@ -54,6 +54,41 @@ class NotifyConfig:
     on: list = field(default_factory=lambda: list(EVENT_TYPES))
 
 
+_WEEKDAYS = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+             "friday": 4, "saturday": 5, "sunday": 6}
+
+
+@dataclass
+class WeeklyReportConfig:
+    enabled: bool = False
+    weekday: int = 0     # 0 = Monday
+    hour: int = 8        # local hour (0-23) to send at or after
+
+
+def _parse_weekly(raw) -> WeeklyReportConfig:
+    """Accept `weekly_report: true` or a mapping {enabled, day, hour}."""
+    if raw is None or raw is False:
+        return WeeklyReportConfig(enabled=False)
+    if raw is True:
+        return WeeklyReportConfig(enabled=True)
+    if not isinstance(raw, dict):
+        raise ValueError("agent.weekly_report must be true/false or a mapping.")
+    enabled = bool(raw.get("enabled", True))
+    day = raw.get("day", "monday")
+    if isinstance(day, str):
+        wd = _WEEKDAYS.get(day.strip().lower())
+        if wd is None:
+            raise ValueError(f"agent.weekly_report.day '{day}' is not a weekday name.")
+    else:
+        wd = int(day)
+        if not 0 <= wd <= 6:
+            raise ValueError("agent.weekly_report.day as a number must be 0 (Mon) - 6 (Sun).")
+    hour = int(raw.get("hour", 8))
+    if not 0 <= hour <= 23:
+        raise ValueError("agent.weekly_report.hour must be 0-23.")
+    return WeeklyReportConfig(enabled=enabled, weekday=wd, hour=hour)
+
+
 @dataclass
 class AgentConfig:
     interval_minutes: int = 30
@@ -77,6 +112,8 @@ class AgentConfig:
     replica_lag_threshold_seconds: float = 30.0  # alert when a replica lags more than this
     # Natural-language alert rules (plain English; evaluated by the LLM each poll).
     nl_alerts: list = field(default_factory=list)
+    # Scheduled weekly email digest (emailed on the configured weekday/hour).
+    weekly_report: WeeklyReportConfig = field(default_factory=WeeklyReportConfig)
 
 
 def _resolve_connection(entry: dict) -> tuple:
@@ -134,6 +171,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     if not isinstance(raw_alerts, list) or any(not isinstance(a, str) for a in raw_alerts):
         raise ValueError("agent.alerts must be a list of plain-English rule strings.")
     nl_alerts = [a.strip() for a in raw_alerts if a.strip()]
+    weekly_report = _parse_weekly(agent.get("weekly_report"))
 
     raw_dbs = agent.get("databases") or []
     if not isinstance(raw_dbs, list) or not raw_dbs:
@@ -174,5 +212,5 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         errorlog_severity=errorlog_severity, tempdb_version_store_mb=tempdb_vstore_mb,
         backup_monitoring=backup_monitoring, backup_max_age_hours=backup_max_age_hours,
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
-        nl_alerts=nl_alerts,
+        nl_alerts=nl_alerts, weekly_report=weekly_report,
     )
