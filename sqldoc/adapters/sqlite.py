@@ -82,7 +82,7 @@ class SqliteAdapter(DatabaseAdapter):
         for name in table_names:
             columns = self._columns(cursor, name)
             indexes, uniques = self._indexes(cursor, name)
-            cursor.execute(f"SELECT COUNT(*) AS n FROM {self._quote(name)}")
+            cursor.execute(f"SELECT COUNT(*) AS n FROM {self._quote(name)}")  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
             row_count = int(cursor.fetchone()["n"] or 0)
             tables.append(Table(
                 schema=_SCHEMA,

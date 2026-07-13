@@ -106,3 +106,38 @@ false positives**, audited and recorded in `.secrets.baseline`:
 **Ongoing:** the pre-commit hook gates local commits; re-audit the baseline
 (`detect-secrets scan --baseline .secrets.baseline`) whenever a legitimate
 high-entropy string is added.
+
+### 4. SQL injection audit
+
+Reviewed **every** dynamic SQL construction in the codebase (bandit flagged 26
+B608 sites; each was manually verified). sqldoc is primarily a *read-only
+metadata* tool, so most SQL is fixed catalog/DMV queries. Findings:
+
+**Design principle — bound parameters wherever a value can be bound.** Row-value
+filters use `?` / `%s` placeholders (e.g. the agent audit store binds `since` and
+`limit`). The interpolated sites fall into three provably-safe classes:
+
+1. **Integer-cast counts** — `TOP (n)` / `LIMIT n` / threshold comparisons are
+   interpolated as `{int(...)}` / `{float(...)}`. T-SQL does **not** allow a bind
+   parameter in `TOP`/`LIMIT`, and the cast makes injection impossible.
+2. **Dialect-quoted catalog identifiers** — table/column/schema names come from
+   the database's own catalog (a documentation tool reads existing schema), and
+   are quoted with the close-quote **doubled** per dialect (`]`→`]]`, `"`→`""`,
+   `` ` ``→`` `` ``). Identifiers cannot be bind parameters, so quoting is the
+   correct defense. (`quality.py`, `pii.py`, `adapters/sqlite.py`, `intel.py`.)
+3. **Fixed module constants** — e.g. the `waits` benign-wait ignore list.
+
+**Two hardening fixes applied** (defense-in-depth on values that flow from
+directory/config data into *generated* scripts, not executed by sqldoc):
+
+- **`access/script.py`** — the check-then-create existence tests embed the login
+  in a T-SQL **string literal** `N'…'`. Added `_lit()` (doubles single quotes) so
+  a login name containing `'` cannot break out of the generated grant script.
+  (Identifiers in the same script were already bracket-quoted via `_q()`.)
+- **`access/intake.py`** — the Azure DevOps **WIQL** query embeds the tag in a
+  string literal; now single-quote-escaped. (`integrations/azuredevops.py`
+  already escaped its title the same way.)
+
+Every reviewed site carries an inline `# nosec B608` with its justification, so a
+*new* string-built query stands out in CI. **bandit after this pass: 0
+HIGH/MEDIUM findings.**

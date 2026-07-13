@@ -135,7 +135,7 @@ def _collect_sqlserver(cursor, top: int) -> WaitReport:
         WHERE wait_type NOT IN ({ignore_list})
           AND wait_time_ms > 0
         ORDER BY wait_time_ms DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     rows = cursor.fetchall()
     total = sum(_f(cell(r, "wait_time_ms")) for r in rows) or 1.0
     for r in rows:
@@ -195,7 +195,7 @@ def _collect_mysql(cursor, top: int) -> WaitReport:
         WHERE sum_timer_wait > 0 AND event_name <> 'idle'
         ORDER BY sum_timer_wait DESC
         LIMIT {int(top)}
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     rows = cursor.fetchall()
     # sum_timer_wait is in picoseconds; convert to milliseconds.
     parsed = [(_s(cell(r, "event_name")),

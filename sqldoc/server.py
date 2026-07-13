@@ -421,7 +421,7 @@ def collect_active_requests(cursor, top: int) -> list:
         OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
         WHERE s.is_user_process = 1 AND r.session_id <> @@SPID
         ORDER BY r.cpu_time DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(ActiveRequest(

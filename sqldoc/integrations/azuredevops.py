@@ -81,7 +81,7 @@ class Client:
     # --- work items --------------------------------------------------------
 
     def _find_open_item(self, title):
-        wiql = {"query": "SELECT [System.Id] FROM workitems WHERE "
+        wiql = {"query": "SELECT [System.Id] FROM workitems WHERE "  # nosec B608 - WIQL (Azure DevOps, not DB SQL); title single-quote-escaped
                          f"[System.Title] = '{title.replace(chr(39), chr(39) * 2)}' "
                          "AND [System.State] <> 'Closed' "
                          "AND [System.State] <> 'Done'"}

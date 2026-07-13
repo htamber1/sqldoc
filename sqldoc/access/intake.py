@@ -155,8 +155,11 @@ def from_azuredevops(cfg, tag=None, limit=50) -> list:
     from sqldoc.integrations import section
     ado_cfg = section(cfg, "azuredevops")
     tag = tag or _intake_cfg(cfg).get("azuredevops", {}).get("tag", "access-request")
-    wiql = {"query": "SELECT [System.Id] FROM workitems WHERE "
-                     f"[System.Tags] CONTAINS '{tag}' AND [System.State] <> 'Closed' "
+    # Escape single quotes for the WIQL string literal (defense-in-depth; the tag
+    # comes from config or --tag, not an untrusted caller, but never trust input).
+    tag_lit = str(tag).replace("'", "''")
+    wiql = {"query": "SELECT [System.Id] FROM workitems WHERE "  # nosec B608 - WIQL (Azure DevOps, not DB SQL); tag single-quote-escaped
+                     f"[System.Tags] CONTAINS '{tag_lit}' AND [System.State] <> 'Closed' "
                      "AND [System.State] <> 'Done'"}
     data = ado_request("POST", f"{_proj(ado_cfg)}/_apis/wit/wiql?{_API}", ado_cfg,
                        headers={"Content-Type": "application/json"}, json=wiql)

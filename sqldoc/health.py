@@ -165,7 +165,7 @@ def collect_slow_queries(cursor, top: int) -> list:
         FROM sys.dm_exec_query_stats qs
         CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
         ORDER BY avg_elapsed_ms DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(SlowQuery(
@@ -230,7 +230,7 @@ def collect_missing_indexes(cursor, top: int) -> list:
         INNER JOIN sys.dm_db_missing_index_group_stats migs ON mig.index_group_handle = migs.group_handle
         WHERE mid.database_id = DB_ID()
         ORDER BY improvement_measure DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(MissingIndex(
@@ -261,7 +261,7 @@ def collect_fragmented_indexes(cursor, min_fragmentation: float, min_pages: int)
           AND ips.page_count >= {int(min_pages)}
           AND i.name IS NOT NULL
         ORDER BY ips.avg_fragmentation_in_percent DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(FragmentedIndex(
@@ -317,7 +317,7 @@ def collect_pg_slow_queries(cursor, top: int) -> list:
         FROM pg_stat_statements
         ORDER BY mean_exec_time DESC
         LIMIT {int(top)}
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(SlowQuery(
@@ -375,7 +375,7 @@ def collect_mysql_slow_queries(cursor, top: int) -> list:
         WHERE DIGEST_TEXT IS NOT NULL
         ORDER BY AVG_TIMER_WAIT DESC
         LIMIT {int(top)}
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append(SlowQuery(

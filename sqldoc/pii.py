@@ -263,7 +263,7 @@ def _quote_ident(name: str) -> str:
 
 def _sample_values(cursor, schema, table, column, limit=5):
     cursor.execute(
-        f"SELECT TOP {int(limit)} {_quote_ident(column)} "
+        f"SELECT TOP {int(limit)} {_quote_ident(column)} "  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
         f"FROM {_quote_ident(schema)}.{_quote_ident(table)} "
         f"WHERE {_quote_ident(column)} IS NOT NULL"
     )

@@ -419,7 +419,7 @@ def probe_linked_server(cursor, name):
     safe = name.replace("]", "]]")
     try:
         cursor.execute(
-            "SELECT * FROM OPENQUERY([" + safe + "], "
+            "SELECT * FROM OPENQUERY([" + safe + "], "  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
             "'SELECT CAST(SERVERPROPERTY(''ProductVersion'') AS varchar(50)) AS product_version, "
             "CAST(SERVERPROPERTY(''Edition'') AS varchar(100)) AS edition')")
         rows = cursor.fetchall()

@@ -89,18 +89,18 @@ def _capture_queries(cursor, dialect, top) -> list:
             FROM sys.dm_exec_query_stats qs
             CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
             ORDER BY qs.total_elapsed_time DESC
-        """)
+        """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     elif dialect == "postgres":
         cursor.execute(f"""
             SELECT queryid AS qid, mean_exec_time AS avg_ms, query AS query_text  -- BASELINE_QUERIES
             FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT {int(top)}
-        """)
+        """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     else:
         cursor.execute(f"""
             SELECT DIGEST AS qid, AVG_TIMER_WAIT / 1e9 AS avg_ms, DIGEST_TEXT AS query_text  -- BASELINE_QUERIES
             FROM performance_schema.events_statements_summary_by_digest
             WHERE DIGEST_TEXT IS NOT NULL ORDER BY SUM_TIMER_WAIT DESC LIMIT {int(top)}
-        """)
+        """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     out = []
     for r in cursor.fetchall():
         out.append({"id": str(cell(r, "qid")), "avg_ms": _f(cell(r, "avg_ms")),

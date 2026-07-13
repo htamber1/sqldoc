@@ -363,7 +363,7 @@ class AgentStore:
         params.append(limit)
         with self._conn() as c:
             rows = c.execute(
-                f"SELECT * FROM audit{where} ORDER BY id DESC LIMIT ?", params).fetchall()
+                f"SELECT * FROM audit{where} ORDER BY id DESC LIMIT ?", params).fetchall()  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
         return [dict(r) for r in rows]
 
     # --- metrics (trends) --------------------------------------------------

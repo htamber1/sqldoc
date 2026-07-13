@@ -158,7 +158,7 @@ def _collect_sqlserver(cursor, top: int) -> PlansReport:
         CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
         CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
         ORDER BY qs.total_elapsed_time DESC
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     for r in cursor.fetchall():
         plan = QueryPlan(
             query_text=_collapse_ws(_s(cell(r, "query_text")))[:800],
@@ -184,7 +184,7 @@ def _collect_postgres(cursor, top: int) -> PlansReport:
         FROM pg_stat_statements
         ORDER BY total_exec_time DESC
         LIMIT {int(top)}
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     for r in cursor.fetchall():
         report.plans.append(QueryPlan(
             query_text=_collapse_ws(_s(cell(r, "query")))[:800],
@@ -210,7 +210,7 @@ def _collect_mysql(cursor, top: int) -> PlansReport:
         WHERE DIGEST_TEXT IS NOT NULL
         ORDER BY SUM_TIMER_WAIT DESC
         LIMIT {int(top)}
-    """)
+    """)  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
     for r in cursor.fetchall():
         plan = QueryPlan(
             query_text=_collapse_ws(_s(cell(r, "query")))[:800],

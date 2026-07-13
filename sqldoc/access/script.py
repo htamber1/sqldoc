@@ -19,6 +19,13 @@ def _q(name: str) -> str:
     return "[" + (name or "").replace("]", "]]") + "]"
 
 
+def _lit(value: str) -> str:
+    """Escape a value for use inside a T-SQL string literal (double single
+    quotes). Defense-in-depth so a login name containing a quote cannot break
+    out of the N'...' existence-check into the generated grant script."""
+    return (value or "").replace("'", "''")
+
+
 def pick_login(report, parsed, override=None):
     """Choose the login to grant to. Returns (login_name, uses_windows_group, note)."""
     user = report.user
@@ -94,7 +101,7 @@ def generate_script(report, parsed, server, database, tables=None, pii_findings=
         grant.append(f"-- {step}) Ensure the server login exists (created only if missing).")
         grant.append("USE [master];")
         grant.append("GO")
-        grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{login}')")
+        grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'{_lit(login)}')")  # nosec B608 - generated review script; login single-quote-escaped via _lit(), identifiers bracket-quoted via _q()
         grant.append("BEGIN")
         grant.append(f"    {lt.create_login_sql(login, ltype, dialect)}")
         grant.append("END")
@@ -108,7 +115,7 @@ def generate_script(report, parsed, server, database, tables=None, pii_findings=
     grant.append(f"-- {step}) Ensure the database user exists.")
     grant.append(f"USE {_q(database)};")
     grant.append("GO")
-    grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'{login}')")
+    grant.append(f"IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'{_lit(login)}')")  # nosec B608 - generated review script; login single-quote-escaped via _lit(), identifiers bracket-quoted via _q()
     grant.append("BEGIN")
     grant.append(f"    {lt.create_user_sql(login, ltype, dialect)}")
     grant.append("END")

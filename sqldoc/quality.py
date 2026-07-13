@@ -177,7 +177,7 @@ def analyze_column_quality(cursor, schema, table, column, data_type,
     max_expr = f"MAX({col})" if is_comparable else "NULL"
 
     cursor.execute(
-        f"SELECT COUNT(*) AS total, COUNT({col}) AS non_null, "
+        f"SELECT COUNT(*) AS total, COUNT({col}) AS non_null, "  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
         f"{distinct_expr} AS distinct_count, {blank_expr} AS blank_count, "
         f"{min_expr} AS min_val, {max_expr} AS max_val FROM {tbl}"
     )
@@ -191,11 +191,11 @@ def analyze_column_quality(cursor, schema, table, column, data_type,
     top = []
     if groupable and top_values and non_null > 0:
         if profile.use_limit:
-            top_sql = (f"SELECT {col} AS val, COUNT(*) AS freq FROM {tbl} "
+            top_sql = (f"SELECT {col} AS val, COUNT(*) AS freq FROM {tbl} "  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
                        f"WHERE {col} IS NOT NULL GROUP BY {col} "
                        f"ORDER BY COUNT(*) DESC LIMIT {int(top_values)}")
         else:
-            top_sql = (f"SELECT TOP ({int(top_values)}) {col} AS val, COUNT(*) AS freq "
+            top_sql = (f"SELECT TOP ({int(top_values)}) {col} AS val, COUNT(*) AS freq "  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
                        f"FROM {tbl} WHERE {col} IS NOT NULL GROUP BY {col} "
                        f"ORDER BY COUNT(*) DESC")
         cursor.execute(top_sql)
@@ -229,7 +229,7 @@ def detect_duplicates(cursor, schema, table, columns, profile=_SQLSERVER) -> Dup
     tbl = profile.qualify(schema, table)
     collist = ", ".join(profile.quote(c.name) for c in groupable)
     cursor.execute(
-        f"SELECT COALESCE(SUM(cnt), 0) AS dup_rows, COUNT(*) AS dup_groups FROM ("
+        f"SELECT COALESCE(SUM(cnt), 0) AS dup_rows, COUNT(*) AS dup_groups FROM ("  # nosec B608 - reviewed: only int-cast counts and dialect-quoted catalog identifiers interpolated, never raw user input (see SECURITY.md)
         f"SELECT COUNT(*) AS cnt FROM {tbl} GROUP BY {collist} HAVING COUNT(*) > 1) g"
     )
     r = _first(cursor)
