@@ -27,6 +27,14 @@ def agent_home() -> str:
 def path_in_home(name: str) -> str:
     home = agent_home()
     os.makedirs(home, exist_ok=True)
+    # The agent home holds the SQLite store (schema/PII snapshots, audit trail),
+    # the pid, and the log. Restrict it to the owner on POSIX so other local
+    # users can't read monitoring data. (Windows: NTFS ACLs govern; no-op.)
+    if os.name == "posix":
+        try:
+            os.chmod(home, 0o700)
+        except OSError:
+            pass
     return os.path.join(home, name)
 
 

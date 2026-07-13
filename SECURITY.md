@@ -218,3 +218,33 @@ only ever reach its own tenant's database.
 
 SSRF via outbound webhook/integration URLs is addressed in **§10 Network
 security** (the inbound API never fetches caller-supplied URLs).
+
+### 8. Agent (background daemon) hardening
+
+Reviewed `sqldoc/agent/` — the persistent poller daemon, its SQLite store, PID
+handling, dashboard, and shutdown.
+
+- **State-directory permissions** — `~/.sqldoc/` holds the SQLite store (schema
+  + PII snapshots, the audit trail), the PID, and the log. `path_in_home` now
+  `chmod 0700`s the directory on POSIX so other local users can't read
+  monitoring data. (Windows: NTFS ACLs govern.)
+- **Store concurrency (verified, not a leak)** — `AgentStore` opens a
+  short-lived connection **per call** and runs in **WAL** mode, so the per-DB
+  poller threads and the dashboard request threads never share a connection or
+  block each other. No cross-thread cursor state → no data race.
+- **Safe shutdown (verified)** — `run_daemon` blocks on `stop_event`, then
+  `server.shutdown()`, sets every poller's stop event, `join(timeout=…)`s all
+  threads, and `server_close()`s. `stop_event.wait(interval)` makes pollers wake
+  immediately on stop. The `agent stop` CLI uses a stop-flag file plus a
+  liveness-checked terminate fallback; `pid_alive` uses `OpenProcess` on Windows
+  (never `os.kill(pid, 0)`, which *terminates* on Windows).
+- **Memory-leak watchdog** — added an opt-in `memory_watch_loop`
+  (`SQLDOC_AGENT_TRACEMALLOC=1`) that samples **tracemalloc** periodically and
+  logs current/peak usage + the top growth since the last sample, so a slow leak
+  in a long-running daemon surfaces in the log instead of an eventual OOM. Off by
+  default (tracemalloc has per-allocation overhead).
+- **Dashboard headers** — the localhost dashboard now sends `X-Content-Type-
+  Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Cache-Control: no-store`
+  and a CSP scoped to `'self' 'unsafe-inline'` (the pages embed inline CSS/SVG)
+  that blocks framing, external script/connect, and object embeds. SSO gating on
+  the dashboard is unchanged.

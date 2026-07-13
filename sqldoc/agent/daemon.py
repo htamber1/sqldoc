@@ -19,6 +19,45 @@ _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
                   "Saturday", "Sunday"]
 
 
+def memory_watch_loop(stop_event, log, check_seconds=900):
+    """Opt-in memory-leak watchdog (set env SQLDOC_AGENT_TRACEMALLOC=1).
+
+    A long-running daemon that leaked memory would eventually be OOM-killed. When
+    enabled, this samples tracemalloc every ``check_seconds`` and logs current /
+    peak usage plus the top growth since the previous sample, so a slow leak
+    shows up in the agent log instead of as a mystery crash. Off by default —
+    tracemalloc adds per-allocation overhead.
+    """
+    import os
+    if not os.environ.get("SQLDOC_AGENT_TRACEMALLOC"):
+        return
+    import tracemalloc
+    tracemalloc.start(25)
+    prev = tracemalloc.take_snapshot()
+    log("memory watch active (tracemalloc); sampling every "
+        f"{check_seconds}s")
+    while not stop_event.is_set():
+        if stop_event.wait(check_seconds):
+            break
+        try:
+            cur = tracemalloc.take_snapshot()
+            current, peak = tracemalloc.get_traced_memory()
+            top = cur.compare_to(prev, "lineno")[:5]
+            growth = "; ".join(
+                f"{s.traceback[0].filename.split(os.sep)[-1]}:"
+                f"{s.traceback[0].lineno} +{s.size_diff // 1024}KB"
+                for s in top if s.size_diff > 0) or "no growth"
+            log(f"memory: current={current // 1024}KB peak={peak // 1024}KB "
+                f"top-growth: {growth}")
+            prev = cur
+        except Exception as e:   # diagnostics must never crash the daemon
+            log(f"memory watch error: {type(e).__name__}: {e}")
+    try:
+        tracemalloc.stop()
+    except Exception:
+        pass
+
+
 def _interval_seconds(agent_config) -> float:
     return max(1, int(agent_config.interval_minutes)) * 60.0
 
@@ -245,6 +284,11 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
             f"alerts escalate after {a.escalation_after_minutes}m to "
             f"{', '.join(a.escalation_channels) or 'no channels'}")
 
+    mem_thread = threading.Thread(
+        target=memory_watch_loop, args=(stop_event, log),
+        name="memory-watch", daemon=True)
+    mem_thread.start()   # returns immediately unless SQLDOC_AGENT_TRACEMALLOC is set
+
     stop_event.wait()
     log("stopping agent...")
     server.shutdown()
@@ -264,6 +308,7 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         cms_thread.join(timeout=5)
     if digest_thread is not None:
         digest_thread.join(timeout=5)
+    mem_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port

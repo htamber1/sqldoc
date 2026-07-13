@@ -221,13 +221,34 @@ def overview_json(store) -> dict:
     return out
 
 
+# Security headers for the dashboard. The pages embed inline CSS + SVG, so the
+# CSP allows 'self' + 'unsafe-inline' for styles/images but blocks framing,
+# external script/connect, and object embeds. Responses hold monitoring data,
+# so they are marked no-store and non-sniffable.
+_DASH_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; script-src 'self' 'unsafe-inline'; "
+        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
+
 def _make_handler(store, authn=None):
     class Handler(BaseHTTPRequestHandler):
+        def _security_headers(self):
+            for name, value in _DASH_SECURITY_HEADERS.items():
+                self.send_header(name, value)
+
         def _send(self, body, content_type="text/html; charset=utf-8", code=200):
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -242,6 +263,7 @@ def _make_handler(store, authn=None):
             self.send_response(401)
             self.send_header("WWW-Authenticate", "Bearer")
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self._security_headers()
             self.end_headers()
             msg = html.escape(str(result))
             self.wfile.write(_page("Sign in required",
