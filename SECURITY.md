@@ -419,3 +419,29 @@ across minors).
   flag it.
 - **Air-gapped / on-prem** — fully supported with Ollama or `--no-ai`; verify
   any report with `--verify-offline`.
+
+---
+
+## Security test suite
+
+`tests/security/` (37 tests) locks in the guarantees above so a regression fails
+CI:
+
+- **`test_sql_and_paths.py`** — connection parts reject ODBC separators; the
+  password is brace-quoted; an injected server is refused; identifier quoting
+  doubles the close-quote (SQL Server/PG/MySQL); PII/`_lit`/`_q` escaping;
+  `_safe_filename` and `validate_output_path` neutralize path traversal + NUL.
+- **`test_credentials.py`** — the audit log redacts named secrets
+  (password/api_key/bind_password/client_secret/access_token/webhook_url/
+  private_key) *and* secret-looking values under benign keys; the permission
+  warner never raises.
+- **`test_api_auth.py`** — the API 401s without a valid key; key compare is
+  constant-time; multi-tenant keys select-and-isolate and hide agent status;
+  unexpected errors return a generic 500 (no internals); security headers are
+  defined and CORS is not wildcarded; the rate limiter blocks over-limit.
+- **`test_network_ssrf.py`** — URL scheme allowlist + port range; metadata /
+  internal-host detection; `safe_request` applies a default timeout, disables
+  auto-redirects, rejects `verify=False`, and refuses metadata pre-flight and
+  redirects that pivot to internal/metadata addresses.
+
+Full suite after the hardening pass: **1226 passing** (was 1189; +37 security).
