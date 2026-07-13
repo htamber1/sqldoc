@@ -88,6 +88,8 @@ CONFIG_KEYS = {
     # Access request workflow suite.
     'access', 'user', 'ticket', 'request', 'level', 'inactive_days', 'approver',
     'frameworks',
+    # Central Management Server (CMS).
+    'cms', 'cms_servers', 'group', 'windows_auth', 'max_workers',
 }
 
 
@@ -2951,6 +2953,83 @@ webhook = make_integration_command(
     push_mode='reports')
 
 
+# --- Central Management Server (CMS) ---------------------------------------
+
+@click.group()
+def cms():
+    """Central Management Server: discover + document the registered-server estate.
+
+    Reads the shared registered-server inventory (server groups + servers) from a
+    SQL Server CMS instance so every command can fan out across the whole estate
+    with --cms. Read-only (catalog tables only).
+    """
+
+
+def _cms_section(cfg):
+    raw = (cfg or {}).get("cms") or {}
+    if not isinstance(raw, dict):
+        raise click.UsageError("The 'cms:' config section must be a mapping.")
+    return raw
+
+
+@cms.command('discover')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--server', 'cms_server', default=None, help='CMS server name (or set cms.server)')
+@click.option('--windows-auth/--sql-auth', 'windows_auth', default=None,
+              help='Connect to the CMS with Windows auth (default) or SQL auth')
+@click.option('--username', default=None, help='SQL auth username for the CMS connection')
+@click.option('--password', default=None, help='SQL auth password for the CMS connection')
+@click.option('--output', default='cms-inventory.html', help='Output HTML tree report')
+@click.option('--json', 'json_out', default=None, help='Also write the inventory as JSON here')
+@click.option('--no-save', is_flag=True, default=False,
+              help='Do not save the discovered inventory to .sqldoc.yml')
+def cms_discover(config, cms_server, windows_auth, username, password, output, json_out, no_save):
+    """Discover the CMS registered-server inventory and save it to .sqldoc.yml.
+
+    Connects to the CMS instance, reads all server groups and registered servers,
+    prints the tree, renders an HTML report, and (unless --no-save) writes the
+    inventory to the 'cms_servers:' section so other commands can use --cms.
+    """
+    from sqldoc import cms as cms_mod
+    from sqldoc.cms_renderer import render_tree_text, render_tree_html, build_inventory_json
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    section = _cms_section(cfg)
+    cms_server = cms_server or section.get('server')
+    if not cms_server:
+        raise click.UsageError("Provide --server or set cms.server in .sqldoc.yml.")
+    if windows_auth is None:
+        windows_auth = bool(section.get('windows_auth', True))
+    username = username or section.get('username')
+    password = password or section.get('password')
+
+    click.echo(f"\nsqldoc v{__version__}  -  cms discover")
+    click.echo(f"{'='*44}")
+    click.echo(f"Connecting to CMS: {cms_server} ({'Windows auth' if windows_auth else 'SQL auth'})...")
+    try:
+        inv = cms_mod.discover_live(cms_server, windows_auth=windows_auth,
+                                    username=username, password=password)
+    except Exception as e:
+        click.echo(click.style(f"CMS discovery failed: {e}", fg='red'), err=True)
+        raise click.Abort()
+
+    ngroups = len([g for g in inv.groups if not g.is_system])
+    click.echo(click.style(f"\nDiscovered {len(inv.servers)} server(s) in {ngroups} group(s):",
+                           bold=True))
+    click.echo(render_tree_text(inv) or "  (no registered servers)")
+
+    render_tree_html(inv, output)
+    click.echo(f"\nInventory report written to {output}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_inventory_json(inv), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+    if not no_save:
+        cms_mod.save_cms_servers(config, inv)
+        click.echo(f"Saved inventory to {config} under 'cms_servers:'.")
+
+
 # --- access request workflow suite -----------------------------------------
 
 @click.group()
@@ -3775,6 +3854,7 @@ cli.add_command(onedrive, name='onedrive')
 cli.add_command(dropbox_cmd, name='dropbox')
 cli.add_command(nuclino, name='nuclino')
 cli.add_command(access, name='access')
+cli.add_command(cms, name='cms')
 
 
 # --- audit trail hook ------------------------------------------------------
