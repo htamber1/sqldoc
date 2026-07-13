@@ -4,6 +4,53 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.0] — 2026-07-12
+
+**Central Management Server (CMS) support — manage the whole SQL Server estate
+from one place.** sqldoc reads a CMS's shared registered-server inventory and
+fans every command out across it. Windows auth by default (CMS registrations
+don't store credentials). No breaking changes.
+
+### Added — CMS
+- **`sqldoc cms discover`** — read the CMS shared inventory (server groups +
+  registered servers from msdb), print/render the tree, and save it to
+  `.sqldoc.yml` under `cms_servers:` so other commands run against it offline.
+  (`sqldoc/cms.py`, `cms_renderer.py`.)
+- **`--cms` bulk operations** on `doc`, `scan`, `health`, `quality`, `intel`,
+  `comply`, `server`, `secure`, and a new `backup` command — run in parallel
+  across every registered server (ThreadPoolExecutor) into one aggregated estate
+  report; a failing server is marked with its error, never fatal.
+  (`sqldoc/cms_bulk.py`.)
+- **`sqldoc executive --cms`** — a board-level estate dashboard: rolled-up
+  scores, total PII, backup compliance, per-server scorecard, and the top 10
+  risks across every server. (`sqldoc/cms_executive.py`.)
+- **CMS agent mode** — when `agent.cms` is set the agent monitors every
+  registered server, reconciles the CMS registration on a cadence (auto start/
+  stop monitoring on add/remove), and alerts on unreachable servers.
+  (`sqldoc/agent/cms_monitor.py`; dynamic per-database pollers.)
+- **`--group`** — limit any `--cms` run to a CMS server group, traversing nested
+  subgroups (`sqldoc health --cms --group "Production Servers"`).
+- **`sqldoc cms report`** — a professional inventory report (version, edition,
+  uptime, database count, last successful sqldoc run per server) for
+  infrastructure audits + capacity planning. (`sqldoc/cms_report.py`.)
+- **`sqldoc access review --cms`** — estate-wide access audit: principals
+  elevated on multiple servers, principals present on some servers but not
+  others, and orphaned logins across the estate. (`sqldoc/access/cms_review.py`.)
+- **Daily estate change digest** — one email covering what changed across every
+  monitored server overnight (new/dropped tables + columns + procedures, new
+  PII). (`sqldoc/agent/estate_digest.py`, `agent.estate_digest`.)
+
+### Config
+- `cms: {server, windows_auth, database, username, password}` +
+  `cms_servers:` (discovered inventory). `agent.cms` + `agent.cms_reconcile_minutes`
+  + `agent.estate_digest`.
+
+### Notes
+- Read-only: only catalog/system views are queried across the estate; never row
+  data. The full CMS bulk + group + executive + inventory + estate-access
+  pipelines are validated live against the Docker SQL Server. 1128 mock tests +
+  live integration.
+
 ## [2.8.0] — 2026-07-12
 
 **Comprehensive testing suite.** A 10-phase testing effort: coverage tooling,

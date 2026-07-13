@@ -16,10 +16,15 @@ venv/Scripts/python.exe -m pytest -m regression              # only the pinned-c
 
 | Layer | Count | Needs live DB? | Location |
 |---|---|---|---|
-| Unit / mock | ~1047 | No | `tests/test_*.py` |
+| Unit / mock | ~1118 | No | `tests/test_*.py` |
 | Regression (pinned contracts) | 10 | No | `tests/regression/` |
-| Integration (live e2e) | 54 | Yes (skip-gated) | `tests/integration/` |
-| **Total** | **1111** | | |
+| Integration (live e2e) | 60+ | Yes (skip-gated) | `tests/integration/` |
+| **Total** | **1190+** | | |
+
+> Counts grow with each release; run `pytest --collect-only -q | tail -1` for the
+> exact current number. The CMS suite (discovery, bulk, executive, agent mode,
+> inventory report, estate access audit, change digest) and its live pipeline
+> tests are included.
 
 All 1111 pass. The unit + regression layers (1057 tests) run on any machine with
 no database, Docker, or network. The 54 integration tests **skip automatically**

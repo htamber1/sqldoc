@@ -201,3 +201,20 @@ concurrency: 8                # parallel AI calls during enrichment (1-64)
 #   allowed_domains: [yourcompany.com]    # optional email-domain allowlist
 #   # allowed_emails: [dba@yourcompany.com]
 #   # allowed_groups: [SQLDoc-Admins]     # requires groups/roles in the token
+
+# --- Central Management Server (CMS) ----------------------------------------
+# Discover once (`sqldoc cms discover`) to populate cms_servers:, then run any
+# command estate-wide with --cms (optionally scoped to a group with --group).
+# cms:
+#   server: CMS-SERVER-NAME       # the SQL Server hosting the CMS registration
+#   windows_auth: true            # CMS registrations don't store credentials
+#   database: master              # per-server target for database-scoped commands
+#   # username: sa                # or SQL auth (windows_auth: false)
+#   # password: "***"
+# Agent CMS monitoring: monitor every registered server + daily estate digest.
+# agent:
+#   cms:
+#     server: CMS-SERVER-NAME
+#     windows_auth: true
+#   cms_reconcile_minutes: 15     # detect servers added/removed from the CMS
+#   estate_digest: { enabled: true, hour: 7 }   # one daily change email
