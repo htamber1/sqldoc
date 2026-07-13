@@ -154,6 +154,65 @@ def render_bulk_html(command, results, output_path, group=None):
         f.write(doc)
 
 
+def _uptime(hours):
+    if hours is None:
+        return "-"
+    d, h = divmod(int(hours), 24)
+    return f"{d}d {h}h" if d else f"{h}h"
+
+
+def render_inventory_report_html(inventory, results, output_path):
+    """Professional inventory report: per-group tables of version / edition /
+    uptime / database count / last sqldoc run."""
+    by_group = {}
+    for r in results:
+        by_group.setdefault(r.group or "(ungrouped)", []).append(r)
+
+    sections = []
+    for group in sorted(by_group):
+        rows = []
+        for r in sorted(by_group[group], key=lambda x: x.server):
+            if r.ok:
+                s = r.summary
+                rows.append(
+                    f"<tr><td class='srv'>{_e(r.server)}</td><td class='host'>{_e(r.host)}</td>"
+                    f"<td>{_e(s.get('version'))}</td><td>{_e(s.get('edition'))}</td>"
+                    f"<td>{_e(s.get('product_level'))}</td><td>{_e(s.get('db_count'))}</td>"
+                    f"<td>{_e(_uptime(s.get('uptime_hours')))}</td>"
+                    f"<td>{_e(s.get('last_run') or 'never')}</td>"
+                    f"<td><span class='pill' style='background:#12261a;color:#3fb950'>ok</span></td></tr>")
+            else:
+                rows.append(
+                    f"<tr><td class='srv'>{_e(r.server)}</td><td class='host'>{_e(r.host)}</td>"
+                    f"<td colspan='6' class='err'>{_e(r.error)}</td>"
+                    f"<td><span class='pill' style='background:#3d1a1d;color:#f85149'>unreachable</span></td></tr>")
+        sections.append(
+            f"<h2>&#128193; {_e(group)}</h2><div class='card'><table>"
+            "<tr><th>Server</th><th>Host</th><th>Version</th><th>Edition</th><th>Level</th>"
+            "<th>Databases</th><th>Uptime</th><th>Last sqldoc run</th><th>Status</th></tr>"
+            + "".join(rows) + "</table></div>")
+
+    reachable = sum(1 for r in results if r.ok)
+    total_dbs = sum(r.summary.get("db_count", 0) for r in results if r.ok)
+    head = (f"<div class='card'><span class='pill'>{len(results)} servers</span> "
+            f"<span class='pill' style='background:#12261a;color:#3fb950'>{reachable} reachable</span> "
+            f"<span class='pill'>{total_dbs} user databases</span> "
+            f"<span class='muted'>CMS: {_e(inventory.cms_server)}</span></div>")
+
+    doc = (f"<!doctype html><html><head><meta charset='utf-8'>"
+           f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+           f"<title>CMS inventory report - {_e(inventory.cms_server)}</title><style>{_CSS}"
+           "table{border-collapse:collapse;width:100%;font-size:13px}"
+           "th,td{border:1px solid #21262d;padding:6px 9px;text-align:left}"
+           "th{background:#0d1117;color:#8b949e}.err{color:#f85149}"
+           "</style></head>"
+           f"<body><header><h1>&#127970; CMS inventory report</h1>"
+           f"<span class='sub'>sqldoc cms report &middot; infrastructure audit + capacity planning</span></header>"
+           f"<div class='wrap'>{head}{''.join(sections)}</div></body></html>")
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(doc)
+
+
 def render_tree_html(inv, output_path):
     by_parent, servers_by_group = _tree(inv)
 

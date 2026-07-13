@@ -84,6 +84,19 @@ def test_estate_executive():
 
 # --- failure isolation (live + bad server) ---------------------------------
 
+def test_inventory_report_live():
+    from sqldoc.cms_report import collect_report, build_report_json
+    results = collect_report(_inventory(), _opts(database="master"), max_workers=3)
+    assert len(results) == 3 and all(r.ok for r in results), \
+        [r.error for r in results if not r.ok]
+    # real SQL Server metadata came back
+    r0 = results[0].summary
+    assert r0["version"] and "SQL" in r0["edition"] or r0["edition"]
+    assert r0["db_count"] >= 1 and r0["uptime_hours"] >= 0
+    j = build_report_json(_inventory(), results)
+    assert j["reachable"] == 3
+
+
 def test_failure_isolated_with_one_bad_server():
     from sqldoc.cms import CmsInventory, CmsServer
     from sqldoc.cms_bulk import run_bulk

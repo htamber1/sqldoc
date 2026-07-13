@@ -3243,6 +3243,60 @@ def cms_discover(config, cms_server, windows_auth, username, password, output, j
         click.echo(f"Saved inventory to {config} under 'cms_servers:'.")
 
 
+@cms.command('report')
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--group', default=None, help='Limit the report to this server group (nested included)')
+@click.option('--output', default='cms-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write the report as JSON here')
+@click.option('--max-workers', default=8, type=click.IntRange(1, 64), help='Parallel probes (default: 8)')
+def cms_report(config, group, output, json_out, max_workers):
+    """Document the registered-server estate (infrastructure audit + capacity).
+
+    Probes each registered server for SQL Server version, edition, uptime, and
+    user-database count, and shows the last successful sqldoc run per server
+    (from the agent store), grouped by CMS server group.
+    """
+    from sqldoc.cms_report import collect_report, build_report_json
+    from sqldoc.cms_renderer import render_inventory_report_html
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    inv = _load_cms_inventory(cfg)
+
+    store = None
+    try:
+        from sqldoc.agent.store import AgentStore
+        from sqldoc.agent import db_path
+        import os as _os
+        if _os.path.exists(db_path()):
+            store = AgentStore(db_path())
+    except Exception:
+        store = None
+
+    click.echo(f"\nsqldoc v{__version__}  -  cms report")
+    click.echo(f"{'='*44}")
+    click.echo(f"Probing {len(inv.servers)} registered server(s)...")
+    results = collect_report(inv, _cms_opts(cfg), store=store, group=group, max_workers=max_workers)
+    reachable = sum(1 for r in results if r.ok)
+    click.echo(click.style(f"  {reachable} reachable", fg='green')
+               + (", " + click.style(f"{len(results) - reachable} unreachable", fg='red')
+                  if reachable < len(results) else ""))
+    for r in results:
+        if r.ok:
+            s = r.summary
+            click.echo(f"  {r.server} ({r.host}): {s.get('edition')} {s.get('version')}, "
+                       f"{s.get('db_count')} db(s)")
+        else:
+            click.echo(click.style(f"  ! {r.server} ({r.host}): {r.error}", fg='yellow'), err=True)
+
+    render_inventory_report_html(inv, results, output)
+    click.echo(f"\nInventory report written to {output}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_report_json(inv, results), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 # --- access request workflow suite -----------------------------------------
 
 @click.group()
