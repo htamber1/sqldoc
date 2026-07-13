@@ -33,10 +33,18 @@ class _SafeDict(dict):
 
 
 def post(url, method, headers, payload, timeout: float = 30.0):
-    """Module-level transport (mockable). Raises IntegrationError on non-2xx."""
-    import requests
-    resp = requests.request(method or "POST", url, headers=headers or {},
+    """Module-level transport (mockable). Raises IntegrationError on non-2xx.
+
+    Routed through the SSRF-aware transport: TLS is verified and redirects to
+    internal / cloud-metadata addresses are refused (a webhook URL is among the
+    least-trusted config values)."""
+    from sqldoc.nethttp import safe_request
+    from sqldoc.validation import ValidationError
+    try:
+        resp = safe_request(method or "POST", url, headers=headers or {},
                             json=payload, timeout=timeout)
+    except ValidationError as e:
+        raise IntegrationError(f"Webhook {method} {url} refused: {e}")
     if not (200 <= resp.status_code < 300):
         raise IntegrationError(f"Webhook {method} {url} -> {resp.status_code}: {resp.text[:300]}")
     return resp

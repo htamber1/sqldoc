@@ -12,6 +12,7 @@ from sqldoc.agent.config import NotifyConfig
 class FakeResp:
     def __init__(self, status=200):
         self.status_code = status
+        self.headers = {}          # safe_request inspects .headers for redirects
 
     def raise_for_status(self):
         if not (200 <= self.status_code < 300):
@@ -21,8 +22,12 @@ class FakeResp:
 @pytest.fixture
 def posts(monkeypatch):
     captured = []
+    # send_webex / SMS use requests.post directly; send_slack/send_teams now go
+    # through nethttp.safe_request, which calls requests.request(method, url, ...).
     monkeypatch.setattr(requests, "post",
                         lambda url, **kw: captured.append((url, kw)) or FakeResp(200))
+    monkeypatch.setattr(requests, "request",
+                        lambda method, url, **kw: captured.append((url, kw)) or FakeResp(200))
     return captured
 
 

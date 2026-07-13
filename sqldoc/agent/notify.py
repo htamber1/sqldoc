@@ -12,7 +12,8 @@ import requests
 
 def send_slack(webhook: str, text: str, timeout: float = 10.0):
     """POST a Slack incoming-webhook message."""
-    resp = requests.post(webhook, json={"text": text}, timeout=timeout)
+    from sqldoc.nethttp import safe_request
+    resp = safe_request("POST", webhook, json={"text": text}, timeout=timeout)
     resp.raise_for_status()
 
 
@@ -28,7 +29,8 @@ def send_teams(webhook: str, title: str, text: str, timeout: float = 10.0,
         "title": title,
         "text": (text or "").replace("\n", "\n\n"),
     }
-    resp = requests.post(webhook, json=card, timeout=timeout)
+    from sqldoc.nethttp import safe_request
+    resp = safe_request("POST", webhook, json=card, timeout=timeout)
     resp.raise_for_status()
 
 

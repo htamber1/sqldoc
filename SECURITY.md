@@ -270,3 +270,25 @@ fails with a clean error instead of an uncaught traceback: the main
 `load_config`, the agent config loader, and `dbt_project.yml` catch `YAMLError`
 and raise a usage error; per-file dbt `schema.yml` parsing already skipped bad
 files with a warning.
+
+### 10. Network security
+
+Audited every outbound HTTP/network call (all `requests` usage, plus SMTP for
+email alerts, plus the Ollama/Anthropic/OpenAI/Gemini AI backends).
+
+- **TLS always verified** — there is **no `verify=False`** (or `CERT_NONE`,
+  `check_hostname=False`) anywhere; `requests` verifies certificates by default
+  and the SSRF helper explicitly refuses `verify=False`.
+- **Timeouts everywhere** — every `requests` call passes an explicit `timeout`;
+  the shared helper applies a 15 s default if a caller omits one, so no call can
+  hang forever.
+- **SSRF-safe redirects** — new `sqldoc/nethttp.py` `safe_request` follows
+  redirects **manually** (`allow_redirects=False`) and vets every hop:
+  a **cloud-metadata** host (`169.254.169.254`, `metadata.google.internal`, …)
+  is refused on any hop, and a redirect that pivots from an **external** origin
+  to an **internal** address is refused (the classic SSRF exfil path). Direct
+  connections to a configured internal host stay allowed (self-hosted GitLab /
+  Jira / Mattermost, or a localhost Ollama), so legitimate deployments aren't
+  broken. The **least-trusted URL sinks — the generic webhook connector and the
+  Slack/Teams webhooks — are routed through it.** (The inbound REST API never
+  fetches caller URLs, closing the §7 SSRF item.)
