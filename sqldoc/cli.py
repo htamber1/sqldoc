@@ -4236,7 +4236,15 @@ def _wrap_command_for_audit(command_obj, name):
             raise
         except Exception as e:
             result = f"error: {type(e).__name__}: {e}"
-            raise
+            # Never dump a raw traceback to the user. Under SQLDOC_DEBUG=1,
+            # re-raise so developers get the full stack; otherwise convert to a
+            # clean single-line Click error (still recorded in full to the audit
+            # log via `result`).
+            if os.environ.get("SQLDOC_DEBUG"):
+                raise
+            raise click.ClickException(
+                f"unexpected error: {type(e).__name__}: {e}. "
+                f"Re-run with SQLDOC_DEBUG=1 for the full traceback.") from e
         finally:
             try:
                 audit_mod.record_command(name, kwargs, result=result)

@@ -292,3 +292,24 @@ email alerts, plus the Ollama/Anthropic/OpenAI/Gemini AI backends).
   broken. The **least-trusted URL sinks — the generic webhook connector and the
   Slack/Teams webhooks — are routed through it.** (The inbound REST API never
   fetches caller URLs, closing the §7 SSRF item.)
+
+### 11. Error handling
+
+- **No tracebacks to end users** — the audit wrapper around every CLI command
+  already caught unexpected exceptions (to record them); it now also **converts
+  them to a clean, single-line error** instead of re-raising into a Python
+  traceback. Set `SQLDOC_DEBUG=1` to get the full stack for debugging. The full
+  error detail is still written to the audit log regardless. Verified there is no
+  `traceback.print_exc` / `print_exc` anywhere in the package.
+- **Errors caught at the right level** — connection failures surface as
+  `Connection failed: …` + `Abort` (clean, actionable); per-check collectors in
+  `health` / `server` / `secure` / `waits` / etc. isolate each check in its own
+  `try/except` so one failing DMV degrades a single section, never the whole
+  report; the REST API maps `ValueError` → `400` and everything else →
+  `500 "internal server error"` (detail logged server-side only, §7).
+- **Fail-safe + resource cleanup** — best-effort side-effects (notifications,
+  audit writes, optional probes) are isolated so they can't crash the primary
+  path; the adapters `close()` their DB connection after each extract, and the
+  short-lived CLI process plus driver GC-on-drop bound any mid-error connection.
+  The agent daemon shuts down by joining all threads and closing the server/store
+  (§8).
