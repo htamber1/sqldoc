@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldoc"
-version = "3.0.0"
+version = "3.0.1"
 description = "Multi-database documentation generator + PII/compliance scanner for SQL Server, PostgreSQL, MySQL and Azure SQL, with optional AI-written descriptions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,10 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.109",
-    "click>=8.1",
+    # click >= 8.3.3 fixes the click.edit() command-injection (CVE-2026-7246 /
+    # PYSEC-2026-2132). sqldoc doesn't call click.edit(), but the floor is raised
+    # so a fresh install never resolves the vulnerable version.
+    "click>=8.3.3",
     # Jinja2 >= 3.1.5 fixes the autoescape/XSS CVEs (CVE-2024-56201 / -56326).
     "Jinja2>=3.1.5",
     "pyodbc>=5.0",

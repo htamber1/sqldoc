@@ -4,6 +4,18 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.1] — 2026-07-13
+
+**Dependency security patch.** A `pip-audit` re-run flagged a newly-published
+advisory in a runtime dependency; fixed per the CVE response process.
+
+- **`click>=8.3.3`** — raises the floor past **CVE-2026-7246 / PYSEC-2026-2132**
+  (a command-injection in `click.edit()`, fixed in click 8.3.3). sqldoc does not
+  call `click.edit()`, so the flaw was **not reachable** in the product, but the
+  lower bound is raised so a fresh install can never resolve the vulnerable
+  version. Verified on click 8.4.2 — **1226 tests still passing**; `pip-audit`
+  now reports **no known vulnerabilities**.
+
 ## [3.0.0] — 2026-07-13
 
 **Enterprise-grade security hardening.** A full audit + hardening pass across the

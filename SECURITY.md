@@ -63,6 +63,13 @@ vulnerable version:
 
 **Re-audit after upgrading the build tooling:** `No known vulnerabilities found`.
 
+**v3.0.1 follow-up:** a later `pip-audit` re-run surfaced a newly-published
+advisory — **CVE-2026-7246 / PYSEC-2026-2132**, a command-injection in
+`click.edit()` (fixed in click 8.3.3). sqldoc never calls `click.edit()`, so it
+was not reachable, but the floor was raised to **`click>=8.3.3`** and shipped in
+v3.0.1. `pip-audit` is clean again. This is exactly the CVE-response path below in
+action.
+
 **Ongoing:** run `pip-audit` in CI on each change; treat any HIGH/CRITICAL in a
 runtime dependency as a release blocker (see "CVE response process").
 
