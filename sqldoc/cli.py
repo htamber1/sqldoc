@@ -496,6 +496,43 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
     return True
 
 
+def _cms_opts(cfg, database=None):
+    section = _cms_section(cfg)
+    return {"windows_auth": section.get('windows_auth', True),
+            "username": section.get('username'), "password": section.get('password'),
+            "database": database}
+
+
+def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
+    from sqldoc.cms_executive import collect_estate, build_estate_json
+    from sqldoc.cms_executive_renderer import render_estate_html
+    inv = _load_cms_inventory(cfg)
+    click.echo(f"\nsqldoc v{__version__}  -  executive --cms")
+    click.echo(f"{'='*44}")
+    click.echo(f"Scoring {len(inv.servers)} server(s) across the estate...")
+    estate = collect_estate(inv, _cms_opts(cfg, database), group=group, max_workers=max_workers)
+    click.echo(click.style(
+        f"\nEstate overall: {estate.overall if estate.overall is not None else 'N/A'}/100"
+        f"   data-protection {estate.pii_safety}   backups {estate.backup}%"
+        f"   security {estate.security}   performance {estate.health}", bold=True))
+    click.echo(f"  {estate.server_count} server(s), {estate.database_count} user database(s), "
+               f"{estate.pii_total} sensitive column(s)")
+    if estate.failed:
+        click.echo(click.style(f"  {len(estate.failed)} unreachable server(s)", fg='yellow'))
+    if estate.top_risks:
+        click.echo("\nTop estate risks:")
+        for i, r in enumerate(estate.top_risks[:5], 1):
+            click.echo(f"  {i}. [{r.get('severity')}] {r.get('title')}  ({r.get('server')})")
+    out = output or "cms-executive.html"
+    render_estate_html(estate, out, cms_server=inv.cms_server)
+    click.echo(f"\nEstate report written to {out}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_estate_json(estate), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
@@ -2563,8 +2600,10 @@ def baseline(config, server, database, username, password, connection_string, di
 @click.option('--baseline', default=None, help='Trend-snapshot path (default: .sqldoc-exec-snapshots/<database>.json)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+@cms_bulk_option
 def executive(config, server, database, username, password, connection_string, dialect,
-              schemas, output, json_out, industry, no_baseline, baseline, verify_offline):
+              schemas, output, json_out, industry, no_baseline, baseline, verify_offline,
+              use_cms, group, max_workers):
     """Single-page, plain-English health + risk summary for a CTO / CISO.
 
     Aggregates the deep technical commands into four scores — data protection
@@ -2572,10 +2611,19 @@ def executive(config, server, database, username, password, connection_string, d
     things to fix, and trend arrows vs the last run. No jargon. Sections that
     aren't available on the database's dialect are simply omitted. Reads schema +
     catalog metadata only (the PII scan reads no row data).
+
+    With --cms, produces one board-level report covering the entire SQL Server
+    estate: rolled-up scores, total PII, backup compliance, per-server scores, and
+    the top 10 risks across every server.
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if use_cms:
+        _run_cms_executive(cfg, group, resolve('database', database),
+                           resolve('output', output), resolve('json', json_out, param='json_out'),
+                           max_workers)
+        return
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
