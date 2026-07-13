@@ -72,6 +72,25 @@ class WeeklyReportConfig:
     hour: int = 8        # local hour (0-23) to send at or after
 
 
+@dataclass
+class EstateDigestConfig:
+    enabled: bool = False
+    hour: int = 7        # local hour (0-23) to send the daily estate digest at or after
+
+
+def _parse_estate_digest(raw) -> EstateDigestConfig:
+    if raw is None or raw is False:
+        return EstateDigestConfig(enabled=False)
+    if raw is True:
+        return EstateDigestConfig(enabled=True)
+    if not isinstance(raw, dict):
+        raise ValueError("agent.estate_digest must be true/false or a mapping.")
+    hour = int(raw.get("hour", 7))
+    if not 0 <= hour <= 23:
+        raise ValueError("agent.estate_digest.hour must be 0-23.")
+    return EstateDigestConfig(enabled=bool(raw.get("enabled", True)), hour=hour)
+
+
 def _parse_weekly(raw) -> WeeklyReportConfig:
     """Accept `weekly_report: true` or a mapping {enabled, day, hour}."""
     if raw is None or raw is False:
@@ -133,6 +152,8 @@ class AgentConfig:
     # database, reconcile_minutes, ...}.
     cms: dict = None
     cms_reconcile_minutes: float = 15.0
+    # Daily estate-wide change digest (one email covering every monitored server).
+    estate_digest: EstateDigestConfig = field(default_factory=EstateDigestConfig)
     # The full .sqldoc.yml mapping, so the push loop can read the top-level
     # integration config sections (they live outside the `agent:` block).
     raw_config: dict = None
@@ -217,6 +238,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     if cms_cfg and not cms_cfg.get("server"):
         raise ValueError("agent.cms needs a 'server' (the CMS instance name).")
     cms_reconcile_minutes = float(agent.get("cms_reconcile_minutes", 15.0))
+    estate_digest = _parse_estate_digest(agent.get("estate_digest"))
 
     raw_dbs = agent.get("databases") or []
     # With CMS monitoring the database list is populated from the CMS at startup,
@@ -268,5 +290,5 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         nl_alerts=nl_alerts, weekly_report=weekly_report,
         integrations=list(raw_integrations), push_interval_hours=push_interval_hours,
         alerting=alerting, cms=cms_cfg, cms_reconcile_minutes=cms_reconcile_minutes,
-        raw_config=cfg,
+        estate_digest=estate_digest, raw_config=cfg,
     )

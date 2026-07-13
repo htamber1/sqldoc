@@ -134,6 +134,22 @@ def _expand_cms_databases(agent_config, log):
             f"monitoring explicit databases only")
 
 
+def estate_digest_loop(store, agent_config, stop_event, log, check_seconds=900):
+    """Every check_seconds, send the daily estate change digest if due (idempotent
+    per calendar day). Runs only when estate_digest is enabled."""
+    ed = getattr(agent_config, "estate_digest", None)
+    if not ed or not ed.enabled:
+        return
+    from sqldoc.agent.estate_digest import maybe_send_estate_digest
+    while not stop_event.is_set():
+        try:
+            maybe_send_estate_digest(store, agent_config, log=log)
+        except Exception as e:
+            log(f"estate digest scheduler crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(check_seconds):
+            break
+
+
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
                host="127.0.0.1", poll_fn=None, authn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
@@ -189,6 +205,15 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         cms_thread.start()
         log(f"cms reconcile scheduled every {agent_config.cms_reconcile_minutes}m")
 
+    digest_thread = None
+    ed = getattr(agent_config, "estate_digest", None)
+    if ed is not None and getattr(ed, "enabled", False):
+        digest_thread = threading.Thread(
+            target=estate_digest_loop, args=(store, agent_config, stop_event, log),
+            name="estate-digest", daemon=True)
+        digest_thread.start()
+        log(f"estate change digest scheduled daily at {ed.hour:02d}:00")
+
     wr = getattr(agent_config, "weekly_report", None)
     weekly_thread = None
     if wr and wr.enabled:
@@ -237,6 +262,8 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         escalation_thread.join(timeout=5)
     if cms_thread is not None:
         cms_thread.join(timeout=5)
+    if digest_thread is not None:
+        digest_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port
