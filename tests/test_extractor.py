@@ -8,7 +8,7 @@ def test_build_connection_string_has_driver_and_parts():
     cs = build_connection_string("host", "DB", "user", "pw")
     assert "ODBC Driver 18 for SQL Server" in cs
     assert "SERVER=host" in cs and "DATABASE=DB" in cs
-    assert "UID=user" in cs and "PWD=pw" in cs
+    assert "UID=user" in cs and "PWD={pw}" in cs  # password is brace-quoted
     assert "TrustServerCertificate=yes" in cs
 
 

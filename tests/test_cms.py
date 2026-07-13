@@ -82,7 +82,7 @@ def test_connection_string_windows():
 
 def test_connection_string_sql():
     cs = connection_string_for("host1", windows_auth=False, username="u", password="p")
-    assert "UID=u" in cs and "PWD=p" in cs and "Trusted_Connection" not in cs
+    assert "UID=u" in cs and "PWD={p}" in cs and "Trusted_Connection" not in cs
 
 
 def test_connection_string_falls_back_to_windows_without_user():

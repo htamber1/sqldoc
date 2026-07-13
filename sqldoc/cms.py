@@ -137,11 +137,20 @@ def discover_live(cms_server, windows_auth=True, username=None, password=None) -
 def connection_string_for(server_name: str, database: str = "master",
                           windows_auth: bool = True, username: str = None,
                           password: str = None) -> str:
+    # Validate the CMS-supplied server/database so a registered-server name
+    # cannot inject extra ODBC attributes (connection-string injection).
+    from sqldoc.validation import (validate_server, validate_database,
+                                   validate_username)
+    server_name = validate_server(server_name)
+    database = validate_database(database)
     base = (f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={server_name};"
             f"DATABASE={database};TrustServerCertificate=yes;")
     if windows_auth or not username:
         return base + "Trusted_Connection=yes;"
-    return base + f"UID={username};PWD={password};"
+    username = validate_username(username)
+    pwd = "" if password is None else str(password)
+    pwd_quoted = "{" + pwd.replace("}", "}}") + "}"
+    return base + f"UID={username};PWD={pwd_quoted};"
 
 
 # --- group filtering (nested) ----------------------------------------------

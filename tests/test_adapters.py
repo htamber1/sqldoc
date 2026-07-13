@@ -137,7 +137,7 @@ def test_build_connection_string_is_sqlserver_odbc():
     cs = SqlServerAdapter.build_connection_string("host", "DB", "user", "pw")
     assert "ODBC Driver 18 for SQL Server" in cs
     assert "SERVER=host" in cs and "DATABASE=DB" in cs
-    assert "UID=user" in cs and "PWD=pw" in cs
+    assert "UID=user" in cs and "PWD={pw}" in cs  # password is brace-quoted
 
 
 def test_adapter_abc_cannot_instantiate():

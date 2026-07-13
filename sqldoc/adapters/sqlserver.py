@@ -35,12 +35,24 @@ class SqlServerAdapter(DatabaseAdapter):
     @staticmethod
     def build_connection_string(server: str, database: str,
                                 username: str, password: str) -> str:
+        # Validate the interpolated parts so a value containing an ODBC
+        # separator (;{}= or a newline) cannot inject extra connection
+        # attributes. The password is not validated for content (it may legally
+        # contain any character) but is brace-quoted below so it stays a single
+        # attribute value; a literal closing brace is doubled per the ODBC spec.
+        from sqldoc.validation import (validate_server, validate_database,
+                                       validate_username)
+        server = validate_server(server)
+        database = validate_database(database)
+        username = validate_username(username)
+        pwd = "" if password is None else str(password)
+        pwd_quoted = "{" + pwd.replace("}", "}}") + "}"
         return (
             f"DRIVER={{ODBC Driver 18 for SQL Server}};"
             f"SERVER={server};"
             f"DATABASE={database};"
             f"UID={username};"
-            f"PWD={password};"
+            f"PWD={pwd_quoted};"
             f"TrustServerCertificate=yes;"
         )
 

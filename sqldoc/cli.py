@@ -2786,7 +2786,12 @@ def serve(config, api, host, port, server, database, username, password, connect
     resolve = _make_resolver(ctx, cfg)
 
     host = resolve('host', host)
-    port = int(resolve('port', port))
+    from sqldoc.validation import validate_port, validate_server, ValidationError
+    try:
+        host = validate_server(host, field="host")
+        port = validate_port(resolve('port', port))
+    except ValidationError as e:
+        raise click.UsageError(str(e))
 
     if multi_tenant:
         tenants = load_tenants(cfg)

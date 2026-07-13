@@ -141,3 +141,29 @@ directory/config data into *generated* scripts, not executed by sqldoc):
 Every reviewed site carries an inline `# nosec B608` with its justification, so a
 *new* string-built query stands out in CI. **bandit after this pass: 0
 HIGH/MEDIUM findings.**
+
+### 5. Input validation
+
+Added a **central validation layer** (`sqldoc/validation.py`) rather than ad-hoc
+per-call-site checks. Every validator returns a normalized value or raises
+`ValidationError` (a message safe to show the user, naming the offending field):
+
+| Validator | Guards against |
+|---|---|
+| `validate_server` / `validate_database` / `validate_username` | **ODBC connection-string injection** — rejects `;{}=`, CR/LF, NUL and over-length values, while still accepting named instances (`host\instance`), `host,port`, Azure FQDNs, and `DOMAIN\user` / `user@domain`. |
+| `validate_port` | non-integer / out-of-range ports. |
+| `validate_output_path` | NUL bytes; optional `base_dir` **path-traversal** containment. |
+| `validate_url` | non-allowlisted URL schemes / missing host. |
+| `is_internal_host` / `assert_safe_outbound_url` | **SSRF** — loopback / link-local / private / reserved IP literals and cloud-metadata hosts (`169.254.169.254`, `metadata.google.internal`, …). |
+
+**Wired in at the injection-prone sinks:**
+- **`adapters/sqlserver.py` `build_connection_string`** now validates
+  server/database/username and **brace-quotes the password** (`{…}`, closing
+  brace doubled) so a value containing `;` can't inject extra ODBC attributes.
+- **`cms.py connection_string_for`** (registered-server names come from config)
+  gets the same validation + password brace-quoting.
+- **`serve`** validates `--host` and `--port`.
+
+The URL / SSRF validators back the API and network-hardening phases below.
+Adding a new external input means calling a validator here, not writing a fresh
+regex at the call site.
