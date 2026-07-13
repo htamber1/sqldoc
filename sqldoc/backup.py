@@ -267,6 +267,41 @@ def summarize(report: BackupReport) -> dict:
     }
 
 
+def build_backup_json(database: str, report: BackupReport) -> dict:
+    from dataclasses import asdict
+    return {
+        "report_type": "backup", "database": database, "summary": summarize(report),
+        "pitr_enabled": report.pitr_enabled, "pitr_mechanism": report.pitr_mechanism,
+        "databases": [asdict(d) for d in report.databases],
+        "notes": report.notes, "errors": report.errors,
+    }
+
+
+def render_backup_html(database: str, report: BackupReport, output_path: str):
+    import html as _h
+    s = summarize(report)
+    rows = "".join(
+        f"<tr><td>{_h.escape(d.database)}</td><td>{_h.escape(d.recovery_model or '-')}</td>"
+        f"<td>{_h.escape(str(d.last_full_backup or 'never'))}</td>"
+        f"<td>{_h.escape(str(d.last_log_backup or '-'))}</td>"
+        f"<td>{'yes' if d.never_backed_up else 'no'}</td>"
+        f"<td>{_h.escape('; '.join(d.issues) or '-')}</td></tr>"
+        for d in report.databases)
+    css = ("body{background:#0d1117;color:#c9d1d9;font:14px -apple-system,Segoe UI,sans-serif;"
+           "margin:0;padding:24px}table{border-collapse:collapse;width:100%}"
+           "th,td{border:1px solid #21262d;padding:6px 9px;text-align:left}"
+           "th{background:#161b22;color:#8b949e}h1{font-size:19px}")
+    doc = (f"<!doctype html><html><head><meta charset='utf-8'><title>Backups - {_h.escape(database)}</title>"
+           f"<style>{css}</style></head><body><h1>Backup status: {_h.escape(database)}</h1>"
+           f"<p>PITR: {'enabled' if report.pitr_enabled else 'disabled'} "
+           f"({_h.escape(report.pitr_mechanism or 'n/a')}) &middot; {s['databases']} database(s), "
+           f"{s['never_backed_up']} never backed up, {s['with_issues']} with issues.</p>"
+           f"<table><tr><th>Database</th><th>Recovery</th><th>Last full</th><th>Last log</th>"
+           f"<th>Never</th><th>Issues</th></tr>{rows}</table></body></html>")
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(doc)
+
+
 def stale_databases(report: BackupReport, max_age_hours: float) -> list:
     """Databases whose most recent backup is older than `max_age_hours`, or that
     have never been backed up (used by the agent alert)."""

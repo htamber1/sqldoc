@@ -72,6 +72,88 @@ def render_tree_text(inv) -> str:
     return "\n".join(lines)
 
 
+def _cell(v):
+    if isinstance(v, (dict, list)):
+        return _e(", ".join(f"{k}={x}" for k, x in v.items()) if isinstance(v, dict)
+                  else ", ".join(map(str, v)))
+    return _e(v)
+
+
+def build_bulk_json(command, results) -> dict:
+    return {
+        "report_type": f"cms-bulk-{command}",
+        "command": command,
+        "server_count": len(results),
+        "ok": sum(1 for r in results if r.ok),
+        "failed": sum(1 for r in results if not r.ok),
+        "results": [{"server": r.server, "host": r.host, "group": r.group,
+                     "ok": r.ok, "error": r.error, "summary": r.summary} for r in results],
+    }
+
+
+def render_bulk_html(command, results, output_path, group=None):
+    """Unified aggregated report: a server-by-server summary table (failed servers
+    marked) with per-server metrics, plus totals for numeric columns."""
+    ok_results = [r for r in results if r.ok]
+    failed = [r for r in results if not r.ok]
+    # union of summary keys, preserving first-seen order
+    cols = []
+    for r in ok_results:
+        for k in r.summary:
+            if k not in cols:
+                cols.append(k)
+
+    head = (f"<div class='card'><h2 style='margin-top:0'>sqldoc {_e(command)} &mdash; estate run</h2>"
+            f"<span class='pill'>{len(results)} servers</span> "
+            f"<span class='pill' style='background:#12261a;color:#3fb950'>{len(ok_results)} ok</span> "
+            + (f"<span class='pill' style='background:#3d1a1d;color:#f85149'>{len(failed)} failed</span> "
+               if failed else "")
+            + (f"<span class='muted'>group: {_e(group)}</span>" if group else "")
+            + "</div>")
+
+    header_cells = "".join(f"<th>{_e(c)}</th>" for c in cols)
+    rows = []
+    for r in results:
+        loc = f"{_e(r.server)}<div class='host'>{_e(r.host)}</div>"
+        grp = f"<span class='muted'>{_e(r.group)}</span>"
+        if r.ok:
+            vals = "".join(f"<td>{_cell(r.summary.get(c, ''))}</td>" for c in cols)
+            status = "<span class='pill' style='background:#12261a;color:#3fb950'>ok</span>"
+            rows.append(f"<tr><td>{loc}</td><td>{grp}</td><td>{status}</td>{vals}</tr>")
+        else:
+            span = len(cols)
+            rows.append(f"<tr><td>{loc}</td><td>{grp}</td>"
+                        f"<td><span class='pill' style='background:#3d1a1d;color:#f85149'>failed</span></td>"
+                        f"<td colspan='{span}' class='err'>{_e(r.error)}</td></tr>")
+
+    # totals for numeric columns
+    totals = {}
+    for c in cols:
+        nums = [r.summary.get(c) for r in ok_results if isinstance(r.summary.get(c), (int, float))]
+        if nums:
+            totals[c] = sum(nums)
+    total_row = ""
+    if totals:
+        cells = "".join(f"<td><strong>{_e(totals.get(c, ''))}</strong></td>" for c in cols)
+        total_row = f"<tr><td colspan='3'><strong>Estate total</strong></td>{cells}</tr>"
+
+    table = (f"<div class='card'><table><tr><th>Server</th><th>Group</th><th>Status</th>"
+             f"{header_cells}</tr>{''.join(rows)}{total_row}</table></div>")
+
+    doc = (f"<!doctype html><html><head><meta charset='utf-8'>"
+           f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+           f"<title>CMS {_e(command)} - estate</title><style>{_CSS}"
+           "table{border-collapse:collapse;width:100%;font-size:13px}"
+           "th,td{border:1px solid #21262d;padding:6px 9px;text-align:left;vertical-align:top}"
+           "th{background:#0d1117;color:#8b949e}.err{color:#f85149}"
+           "</style></head>"
+           f"<body><header><h1>&#127970; CMS estate: {_e(command)}</h1>"
+           f"<span class='sub'>sqldoc --cms</span></header>"
+           f"<div class='wrap'>{head}{table}</div></body></html>")
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(doc)
+
+
 def render_tree_html(inv, output_path):
     by_parent, servers_by_group = _tree(inv)
 

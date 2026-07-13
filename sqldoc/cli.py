@@ -419,6 +419,83 @@ def load_config(path: str, explicit: bool) -> dict:
     return config
 
 
+# --- CMS bulk helpers (defined early so bulk-capable commands can use them) --
+
+def _cms_section(cfg):
+    raw = (cfg or {}).get("cms") or {}
+    if not isinstance(raw, dict):
+        raise click.UsageError("The 'cms:' config section must be a mapping.")
+    return raw
+
+
+def cms_bulk_option(fn):
+    """Shared --cms / --group / --max-workers options for bulk-capable commands."""
+    fn = click.option('--max-workers', default=8, type=click.IntRange(1, 64),
+                      help='Parallel servers for a --cms run (default: 8)')(fn)
+    fn = click.option('--group', default=None,
+                      help='Limit a --cms run to this CMS server group (nested groups included)')(fn)
+    fn = click.option('--cms', 'use_cms', is_flag=True, default=False,
+                      help='Run against every CMS-registered server (see: sqldoc cms discover)')(fn)
+    return fn
+
+
+def _load_cms_inventory(cfg):
+    """The CMS inventory from the saved cms_servers: section, or discovered live
+    from cms.server."""
+    from sqldoc import cms as cms_mod
+    if cms_mod.has_inventory(cfg):
+        return cms_mod.from_config(cfg)
+    section = _cms_section(cfg)
+    server = section.get('server')
+    if not server:
+        raise click.UsageError(
+            "--cms needs a discovered inventory (run 'sqldoc cms discover') or a "
+            "'cms:' section with a server in .sqldoc.yml.")
+    return cms_mod.discover_live(server, windows_auth=section.get('windows_auth', True),
+                                 username=section.get('username'), password=section.get('password'))
+
+
+def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, json_out, max_workers):
+    """Shared --cms dispatch: run one command across the estate, aggregate, render.
+    Returns True when it handled the run (so the caller returns early)."""
+    if not use_cms:
+        return False
+    from sqldoc.cms_bulk import run_bulk
+    from sqldoc.cms_renderer import render_bulk_html, build_bulk_json
+    from sqldoc.cms import select_servers
+    section = _cms_section(cfg)
+    inv = _load_cms_inventory(cfg)
+    targets = select_servers(inv, group)
+    opts = {"windows_auth": section.get('windows_auth', True),
+            "username": section.get('username'), "password": section.get('password'),
+            "database": database, "schemas": schemas}
+
+    click.echo(f"\nsqldoc v{__version__}  -  {command_name} --cms")
+    click.echo(f"{'='*44}")
+    click.echo(f"Estate: {len(targets)} server(s)"
+               + (f" in group '{group}'" if group else "") + "...")
+    if not targets:
+        click.echo(click.style("  No matching servers.", fg='yellow'))
+    results = run_bulk(inv, command_name, opts, group=group, max_workers=max_workers)
+    ok = sum(1 for r in results if r.ok)
+    failed = len(results) - ok
+    click.echo(click.style(f"  {ok} ok", fg='green')
+               + (", " + click.style(f"{failed} failed", fg='red') if failed else ""))
+    for r in results:
+        if not r.ok:
+            click.echo(click.style(f"  ! {r.server} ({r.host}): {r.error}", fg='yellow'), err=True)
+
+    out = output or f"cms-{command_name}.html"
+    render_bulk_html(command_name, results, out, group=group)
+    click.echo(f"\nEstate report written to {out}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_bulk_json(command_name, results), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+    return True
+
+
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
@@ -446,7 +523,8 @@ def load_config(path: str, explicit: bool) -> dict:
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
-def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline):
+@cms_bulk_option
+def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline, use_cms, group, max_workers):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -460,6 +538,10 @@ def main(config, server, database, username, password, connection_string, dialec
         if ctx.get_parameter_source(param or name).name == 'COMMANDLINE':
             return value
         return cfg.get(name, value)
+
+    if run_cms_bulk('doc', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), None, max_workers):
+        return
 
     server = resolve('server', server)
     database = resolve('database', database)
@@ -669,16 +751,21 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip confirmation prompts (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline):
+@cms_bulk_option
+def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline, use_cms, group, max_workers):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
     writes a compliance HTML report. With --sample, reads up to 5 values per
     flagged column and uses AI to confirm findings (values are never stored).
+    With --cms, scans across every registered server (estate-wide summary).
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('scan', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -953,17 +1040,24 @@ def install_hooks(repo, force):
               help='Ignore indexes smaller than this many pages for fragmentation (default: 100)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline):
+@cms_bulk_option
+def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline, use_cms, group, max_workers):
     """Analyze database health from SQL Server DMVs.
 
     Surfaces the slowest cached queries, tables with writes but no reads,
     optimizer-suggested missing indexes, and fragmented indexes — reading only
     server/DB statistics, never table row data. Needs VIEW SERVER STATE; any
     check that lacks permission is skipped and noted in the report.
+
+    With --cms, runs across every registered server in the CMS inventory and
+    produces one aggregated estate report.
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('health', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -1045,16 +1139,20 @@ def health(config, server, database, username, password, connection_string, dial
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the data-read confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline):
+@cms_bulk_option
+def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline, use_cms, group, max_workers):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
     GROUP BY); each column's most-frequent values are shown for context. Nothing
-    is sent to any AI or off this machine.
+    is sent to any AI or off this machine. With --cms, runs across the estate.
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('quality', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -1143,7 +1241,8 @@ def quality(config, server, database, username, password, connection_string, dia
               help='Also probe each reachable linked server for a version/health check (implies --linked-servers)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline):
+@cms_bulk_option
+def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline, use_cms, group, max_workers):
     """Schema intelligence: naming, orphaned FKs, impact analysis, migrations, linked servers.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
@@ -1156,6 +1255,9 @@ def intel(config, server, database, username, password, connection_string, diale
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('intel', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -1447,7 +1549,8 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
 @click.option('--frameworks', default=None,
               help='Also assess these compliance frameworks (comma-separated, or "all"): '
                    'sox, fedramp, iso27001, cmmc, ccpa, pipeda, soc2 — each mapped to control numbers')
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks):
+@cms_bulk_option
+def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks, use_cms, group, max_workers):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1462,6 +1565,9 @@ def comply(config, server, database, username, password, connection_string, dial
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('comply', cfg, use_cms, group, database, resolve('schemas', schemas),
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
@@ -1690,8 +1796,9 @@ def dbt(config, project_dir, server, database, username, password, connection_st
               help='Skip SQL Server Agent job monitoring (msdb)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+@cms_bulk_option
 def server(config, server, database, username, password, connection_string, dialect,
-           output, json_out, top, no_jobs, verify_offline):
+           output, json_out, top, no_jobs, verify_offline, use_cms, group, max_workers):
     """Instance-level SQL Server health + SQL Agent jobs.
 
     Connects at the SQL Server *instance* level (not just one database) and
@@ -1705,6 +1812,9 @@ def server(config, server, database, username, password, connection_string, dial
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('server', cfg, use_cms, group, None, None,
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server_name = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -1868,17 +1978,22 @@ def logs(config, server, database, username, password, connection_string, dialec
               help='Exit non-zero if the security score is below this threshold (for CI gating)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
+@cms_bulk_option
 def secure(config, server, database, username, password, connection_string, dialect,
-           output, json_out, fail_under, verify_offline):
+           output, json_out, fail_under, verify_offline, use_cms, group, max_workers):
     """Scan for security misconfigurations and score them 0-100.
 
     Runs dialect-aware hardening checks (SQL Server / PostgreSQL / MySQL) and
     reports HIGH/MEDIUM/LOW findings with a unified 0-100 security score. Reads
-    only server configuration + catalog metadata — never table row data.
+    only server configuration + catalog metadata — never table row data. With
+    --cms, scores every registered server (estate-wide summary).
     """
     ctx = click.get_current_context()
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('secure', cfg, use_cms, group, None, None,
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
 
     conn_str, database, server_name = _resolve_connection(
         resolve, server, database, username, password, connection_string, dialect)
@@ -2953,6 +3068,61 @@ webhook = make_integration_command(
     push_mode='reports')
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to config file')
+@click.option('--server', default=None, help='SQL Server hostname or IP')
+@click.option('--database', default=None, help='Database name (defaults to master)')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full connection string')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES), help='Database dialect')
+@click.option('--output', default='backup-report.html', help='Output HTML report path')
+@click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
+@cms_bulk_option
+def backup(config, server, database, username, password, connection_string, dialect,
+           output, json_out, use_cms, group, max_workers):
+    """Backup + point-in-time-recovery status for every database on the instance.
+
+    Reports recovery model, last full/diff/log backup, never-backed-up databases,
+    and the instance PITR mechanism (SQL Server log backups / PG WAL archiving /
+    MySQL binary logging). With --cms, checks the whole estate.
+    """
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+    if run_cms_bulk('backup', cfg, use_cms, group, None, None,
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+        return
+
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect)
+    adapter = open_adapter(resolve, conn_str, dialect)
+    _require_capability(adapter, 'infra_monitoring', 'backup')
+    output = resolve('output', output)
+    json_out = resolve('json', json_out, param='json_out')
+
+    from sqldoc.backup import summarize as backup_summarize, build_backup_json, render_backup_html
+    click.echo(f"\nsqldoc v{__version__}  -  Backup status")
+    click.echo(f"{'='*44}")
+    click.echo(f"Connecting to {adapter.display_name}...")
+    try:
+        report = collect_backups(adapter)
+    except Exception as e:
+        click.echo(f"Connection failed: {e}", err=True)
+        raise click.Abort()
+    s = backup_summarize(report)
+    click.echo(f"PITR: {'enabled' if report.pitr_enabled else 'disabled'} "
+               f"({report.pitr_mechanism or 'n/a'})   {s['databases']} db(s), "
+               + click.style(f"{s['never_backed_up']} never backed up", fg='red') + f", {s['with_issues']} with issues")
+    render_backup_html(database or "instance", report, output)
+    click.echo(f"Report written to {output}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_backup_json(database or "instance", report), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 # --- Central Management Server (CMS) ---------------------------------------
 
 @click.group()
@@ -2965,11 +3135,6 @@ def cms():
     """
 
 
-def _cms_section(cfg):
-    raw = (cfg or {}).get("cms") or {}
-    if not isinstance(raw, dict):
-        raise click.UsageError("The 'cms:' config section must be a mapping.")
-    return raw
 
 
 @cms.command('discover')
@@ -3793,6 +3958,7 @@ cli.add_command(dbt, name='dbt')
 cli.add_command(server, name='server')
 cli.add_command(logs, name='logs')
 cli.add_command(secure, name='secure')
+cli.add_command(backup, name='backup')
 cli.add_command(waits, name='waits')
 cli.add_command(ha, name='ha')
 cli.add_command(deadlocks, name='deadlocks')
