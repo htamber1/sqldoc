@@ -1,0 +1,154 @@
+# tests/live/sqldoc.live.example.yml
+# ---------------------------------------------------------------------------
+# Template for the tests/live/ validation scripts. Copy to sqldoc.live.yml
+# (git-ignored — see below) and fill in ONLY the services you have credentials
+# for. Every tests/live check skips cleanly when its section/env var is absent,
+# so a partial file is fine.
+#
+#   cp tests/live/sqldoc.live.example.yml tests/live/sqldoc.live.yml
+#   # edit sqldoc.live.yml, then:
+#   pytest tests/live -v
+#
+# Point elsewhere with:  SQLDOC_LIVE_CONFIG=/path/to/config.yml pytest tests/live
+#
+# IMPORTANT: sqldoc.live.yml holds real secrets — keep it out of git. Add
+# `tests/live/sqldoc.live.yml` to .gitignore (this repo already does).
+# ---------------------------------------------------------------------------
+
+# --- Publishing / ticketing integrations (test_integrations_live.py) --------
+# Each connector's `--test` verifies auth + connectivity (no DB needed).
+
+sharepoint:
+  tenant_id: "..."
+  client_id: "..."
+  client_secret: "..."
+  site_id: "contoso.sharepoint.com,<siteId>,<webId>"
+  folder: "sqldoc"
+  list_name: "sqldoc metrics"
+
+onedrive:
+  tenant_id: "..."
+  client_id: "..."
+  client_secret: "..."
+  drive_id: "..."
+  folder: "sqldoc"
+
+confluence:
+  base_url: "https://your-org.atlassian.net/wiki"
+  email: "you@org.com"
+  api_token: "..."
+  space_key: "SQLDOC"
+  # parent_page_id: "123456"
+
+notion:
+  token: "secret_..."
+  parent_page_id: "..."
+  # database_id: "..."   # optional metrics tracker
+
+gdrive:
+  service_account_file: "/path/to/service-account.json"
+  folder_id: "..."
+  share_with: ["you@org.com"]
+
+box:
+  jwt_config_file: "/path/to/box-jwt.json"
+  folder_id: "0"
+  shared_link_access: "company"
+
+jira:
+  base_url: "https://your-org.atlassian.net"
+  email: "you@org.com"
+  api_token: "..."
+  project_key: "OPS"
+
+servicenow:
+  instance: "your-instance"          # your-instance.service-now.com
+  username: "..."
+  password: "..."
+
+azuredevops:
+  organization: "your-org"
+  project: "your-project"
+  pat: "..."
+
+azuredevops_wiki:
+  organization: "your-org"
+  project: "your-project"
+  wiki: "your-project.wiki"
+  pat: "..."
+
+powerbi:
+  # Either a streaming push_url, or AAD app creds + dataset/table.
+  push_url: "https://api.powerbi.com/beta/<workspace>/datasets/<id>/rows?key=..."
+
+webhook:
+  url: "https://example.com/hooks/sqldoc"   # must be https + reachable
+  method: "POST"
+
+github_wiki:
+  repo_url: "https://github.com/your-org/your-repo.wiki.git"
+  token: "ghp_..."
+  author_name: "sqldoc"
+  author_email: "sqldoc@org.com"
+
+gitlab_wiki:
+  base_url: "https://gitlab.com"
+  project_id: "12345"
+  token: "glpat-..."
+
+dropbox:
+  access_token: "sl...."
+  folder: "/sqldoc"
+
+nuclino:
+  api_key: "..."
+  workspace_id: "..."
+
+# --- Notification channels (test_notifications_live.py) ---------------------
+# These SEND REAL messages. Fill in only what you want to test.
+
+live_notify:
+  slack_webhook: "https://hooks.slack.com/services/T.../B.../..."
+  teams_webhook: "https://<org>.webhook.office.com/webhookb2/..."
+  webex:
+    token: "..."
+    room_id: "..."
+  email:
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    use_tls: true
+    username: "you@org.com"
+    password: "..."
+    from: "sqldoc@org.com"
+    to: "you@org.com"
+  twilio:
+    account_sid: "AC..."
+    auth_token: "..."
+    from_number: "+15550000000"
+    to: "+15551111111"
+  whatsapp:
+    token: "..."
+    phone_number_id: "..."
+    to: "+15551111111"
+  pagerduty:
+    routing_key: "..."
+  opsgenie:
+    api_key: "..."
+    region: "us"          # or "eu"
+
+# --- Identity providers for `sqldoc access` (test_identity_live.py) ---------
+# type selects the provider: ldap | generic-ldap | graph | hybrid | okta |
+# google | jumpcloud. Set SQLDOC_TEST_AD_USER to a real user to resolve.
+
+access:
+  ad:
+    type: "graph"          # e.g. Microsoft Entra ID via Graph
+    tenant_id: "..."
+    client_id: "..."
+    client_secret: "..."
+  # Optional: add servers to run the full `access check` end-to-end.
+  # servers:
+  #   - name: "prod-sql"
+  #     server: "sqlprod.corp.local"
+  #     windows_auth: true
+  #     databases: ["Sales", "HR"]

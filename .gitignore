@@ -25,3 +25,7 @@ coverage.json
 bandit*.json
 semgrep*.json
 .secrets.baseline.tmp
+
+# live-validation config (real secrets — never commit)
+tests/live/sqldoc.live.yml
+sqldoc.live.yml
