@@ -29,7 +29,10 @@ def _load_yaml(path: str) -> dict:
         raise click.UsageError(
             f"Config file not found: {path}. Create a .sqldoc.yml with an 'agent:' section.")
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        try:
+            return yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise click.UsageError(f"Config file {path} is not valid YAML: {e}")
 
 
 def _parse(config: str):

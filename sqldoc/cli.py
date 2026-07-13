@@ -133,7 +133,13 @@ def print_pii_diff(diff, path):
 
 
 def _safe_filename(name: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+    """Sanitize a data-derived value (usually a database name) into a single
+    path-safe filename component. Path separators are already replaced, so no
+    traversal is possible; we also drop leading dots and collapse any ``..`` run
+    (defense-in-depth) and never return an empty component."""
+    cleaned = "".join(c if c.isalnum() or c in "-_." else "_" for c in (name or ""))
+    cleaned = cleaned.lstrip(".").replace("..", "_")
+    return cleaned or "db"
 
 
 def print_diff(diff, path):
@@ -408,7 +414,13 @@ def load_config(path: str, explicit: bool) -> dict:
     except Exception:
         pass
     with open(path, encoding='utf-8') as f:
-        data = yaml.safe_load(f) or {}
+        # safe_load never constructs arbitrary Python objects (no code
+        # execution). A malformed file raises YAMLError — turn it into a clean
+        # usage error instead of an uncaught traceback.
+        try:
+            data = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise click.UsageError(f"Config file {path} is not valid YAML: {e}")
     if not isinstance(data, dict):
         raise click.UsageError(f"Config file {path} must contain a YAML mapping (key: value pairs).")
     config = {}

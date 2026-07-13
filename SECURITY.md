@@ -248,3 +248,25 @@ handling, dashboard, and shutdown.
   and a CSP scoped to `'self' 'unsafe-inline'` (the pages embed inline CSS/SVG)
   that blocks framing, external script/connect, and object embeds. SSO gating on
   the dashboard is unchanged.
+
+### 9. File handling
+
+**Path traversal** — the only filenames built from *data* (rather than a
+user-typed `--output`) are the cache / snapshot / baseline / executive-snapshot
+files named after the **database**. These already route through `_safe_filename`,
+which replaces every non-`[A-Za-z0-9-_.]` character (so `/` and `\` become `_`)
+— traversal is impossible. Hardened further as defense-in-depth: it now strips
+leading dots, collapses any `..` run, and never returns an empty component
+(`..` → `db`, `../../etc/passwd` → `___etc_passwd`). A user-supplied `--output`
+is intentionally free to write where the user chooses (it's their machine); the
+`validate_output_path` helper (with a `base_dir`) is available for any future
+path that comes from untrusted config/API input.
+
+**Safe config parsing** — all YAML is parsed with **`yaml.safe_load`** (never
+`yaml.load` / `unsafe_load` / `full_load`), so a malicious config **cannot
+construct arbitrary Python objects or execute code**. Verified there is **no
+`pickle.load`, `eval`, or `exec`** anywhere in the package. Malformed YAML now
+fails with a clean error instead of an uncaught traceback: the main
+`load_config`, the agent config loader, and `dbt_project.yml` catch `YAMLError`
+and raise a usage error; per-file dbt `schema.yml` parsing already skipped bad
+files with a warning.

@@ -139,7 +139,10 @@ def _find_sql_path(project_dir: str, model_paths: list, model_name: str) -> str:
 def parse_dbt_project(project_dir: str) -> DbtProject:
     """Parse dbt_project.yml + all schema.yml files into a DbtProject."""
     with open(os.path.join(project_dir, "dbt_project.yml"), encoding="utf-8") as f:
-        proj = yaml.safe_load(f) or {}
+        try:
+            proj = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise ValueError(f"dbt_project.yml is not valid YAML: {e}")
 
     name = proj.get("name", os.path.basename(os.path.abspath(project_dir)))
     # dbt v1 uses model-paths; older projects used source-paths.
