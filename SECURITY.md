@@ -167,3 +167,31 @@ per-call-site checks. Every validator returns a normalized value or raises
 The URL / SSRF validators back the API and network-hardening phases below.
 Adding a new external input means calling a validator here, not writing a fresh
 regex at the call site.
+
+### 6. Credential handling
+
+**Where credentials live and how they're protected:**
+- The password / API key are supplied per run (CLI flag, `.sqldoc.yml`, or
+  `ANTHROPIC_API_KEY` from `.env`) and held only in memory for the connection.
+  `.env` and `.sqldoc.yml` are git-ignored.
+- **No credential is ever logged or printed.** The `serve`/analysis paths never
+  echo the connection string; error messages parse out the *database name* only,
+  never the password. The `secure` scanner reports *that* a login has a blank/no
+  password — it never prints password values.
+
+**Audit-log redaction hardened** (`audit.py`):
+- Redaction switched from three exact key names to **substring matching** over
+  `password / passwd / pwd / secret / token / api_key / credential / webhook /
+  private_key / connection_string`, so `bind_password`, `client_secret`,
+  `smtp_password`, `access_token`, `webhook_url`, … are all redacted.
+- Added **value-level** redaction: any string value that embeds a credential
+  (`PWD=…`, or a `scheme://user:pass@host` URL) is replaced with
+  `***redacted***` even under a benign key name.
+- The audit still records *that* a secret was supplied (so the trail is complete)
+  without storing its value.
+
+**File-permission warning** — `load_config` now calls
+`validation.warn_if_insecure_permissions`: on POSIX, if `.sqldoc.yml` is
+group/other-readable it prints a `chmod 600` warning (best-effort, never fatal).
+On Windows, NTFS ACLs govern access, so the check is a no-op. The same applies to
+`~/.pypirc` used for publishing — keep it `chmod 600`; sqldoc never reads it.

@@ -161,6 +161,32 @@ def validate_url(url: str, field: str = "url",
     return url
 
 
+def warn_if_insecure_permissions(path: str, emit=None) -> bool:
+    """Warn (best-effort) if a credential-bearing file is group/other-readable.
+
+    POSIX only — the permission bits are meaningful there. On Windows, file
+    access is governed by NTFS ACLs (not the mode bits), so this is a no-op and
+    users should rely on ACL inheritance / EFS. Returns True if a warning was
+    emitted. ``emit`` defaults to printing to stderr.
+    """
+    if os.name != "posix":
+        return False
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return False
+    group_other = mode & 0o077
+    if not group_other:
+        return False
+    if emit is None:
+        import sys
+        def emit(msg):
+            print(msg, file=sys.stderr)
+    emit(f"Warning: {path} is readable by group/other (mode {oct(mode & 0o777)}); "
+         f"it may contain credentials. Run: chmod 600 {path}")
+    return True
+
+
 def is_internal_host(host: str) -> bool:
     """Best-effort: True if ``host`` is loopback / link-local / private / a
     reserved literal, i.e. an SSRF target that outbound integrations should not

@@ -17,10 +17,24 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
 
-# Options never written to the audit log (they may hold secrets).
-_REDACT_KEYS = {"password", "connection_string", "api_key"}
+# Substrings that mark an option key as secret-bearing — matched anywhere in the
+# key name so bind_password / client_secret / smtp_password / webhook_url /
+# access_token are all caught, not just the three exact names we started with.
+_REDACT_KEY_MARKERS = ("password", "passwd", "pwd", "secret", "token",
+                       "api_key", "apikey", "connection_string", "conn_str",
+                       "credential", "webhook", "private_key")
 # Options that are noise / not decision-relevant.
 _SKIP_KEYS = {"config", "yes", "verify_offline"}
+
+# A value that looks like it embeds a credential (ODBC PWD=, or a
+# scheme://user:pass@host URL) is redacted regardless of its key name.
+import re as _re
+_SECRET_VALUE = _re.compile(r"(?i)(\bpwd\s*=|\bpassword\s*=|://[^/\s:@]+:[^/\s@]+@)")
+
+
+def _is_secret_key(key: str) -> bool:
+    k = (key or "").lower()
+    return any(marker in k for marker in _REDACT_KEY_MARKERS)
 
 
 def audit_log_path() -> str:
@@ -52,11 +66,16 @@ def redact_options(kwargs: dict) -> dict:
     for k, v in (kwargs or {}).items():
         if k in _SKIP_KEYS:
             continue
-        if k in _REDACT_KEYS:
+        if _is_secret_key(k):
             if v:
                 out[k] = "***redacted***"
             continue
         if v is None or v is False:
+            continue
+        # Redact by value too: a string that embeds a credential (PWD=, or a
+        # user:pass@host URL) never reaches the log even under a benign key.
+        if isinstance(v, str) and _SECRET_VALUE.search(v):
+            out[k] = "***redacted***"
             continue
         out[k] = v
     return out

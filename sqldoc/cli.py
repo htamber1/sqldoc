@@ -400,6 +400,13 @@ def load_config(path: str, explicit: bool) -> dict:
         if explicit:
             raise click.UsageError(f"Config file not found: {path}")
         return {}
+    # A .sqldoc.yml may embed a DB password / API key; warn if it is world- or
+    # group-readable (POSIX). Best-effort, never fatal.
+    try:
+        from sqldoc.validation import warn_if_insecure_permissions
+        warn_if_insecure_permissions(path, emit=lambda m: click.echo(m, err=True))
+    except Exception:
+        pass
     with open(path, encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
