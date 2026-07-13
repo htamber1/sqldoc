@@ -46,6 +46,30 @@ vulnerable version:
 **Ongoing:** run `pip-audit` in CI on each change; treat any HIGH/CRITICAL in a
 runtime dependency as a release blocker (see "CVE response process").
 
-<!-- Subsequent audit sections (static analysis, secrets, SQL injection, input
-     validation, credentials, API, agent, files, network, errors) are appended by
-     the corresponding hardening commits. -->
+### 2. Static analysis (`bandit` + `semgrep`)
+
+`bandit -r sqldoc` and `semgrep --config p/python --config p/security-audit`
+(200 rules) over the whole codebase.
+
+**Fixed — HIGH / MEDIUM:**
+
+| Finding | Where | Fix |
+|---|---|---|
+| B324 insecure hash (SHA-1) | `ai.py` (2×) — AI description **cache keys** | Switched to `hashlib.sha256(..., usedforsecurity=False)`. Non-security content fingerprint; semgrep `insecure-hash-algorithm` also cleared. |
+| B314 / B405 unsafe XML parse | `deadlocks.py`, `plans.py` (deadlock + query-plan XML) | Switched to **`defusedxml`** (now a core dependency) — hardened against XXE / billion-laughs even though the XML originates from the DB. |
+| semgrep insecure-file-permissions | `hooks.py` — pre-commit hook chmod | Tightened to **owner-execute only** (`S_IXUSR`); dropped group/other execute bits. |
+
+**semgrep after fixes: 0 findings.**
+
+**Accepted — LOW severity (with justification):**
+
+| Finding | Count | Justification |
+|---|---|---|
+| B110 try/except/pass, B112 try/except/continue | 37 | **Deliberate best-effort isolation** — a failing notification, optional AD probe, or cleanup must never crash the tool or a poll cycle. These are intentional; the primary path always propagates errors. |
+| B404 / B603 subprocess | 3 | The agent daemon spawn, the git pre-commit hook, and the GitHub-Wiki push invoke subprocess with a **list of args and never `shell=True`** — no shell-injection surface; arguments are fixed subcommands + validated paths. |
+| B607 partial executable path (`git`) | 1 | `git` is resolved from `PATH` by design (portability); pinning an absolute path would break normal installs. |
+| B311 `random` | 1 | Used only for retry **backoff jitter**, never for tokens/secrets. Security-sensitive randomness uses `secrets` (e.g. approval tokens). |
+| B105 "hardcoded password" | 1 | False positive — `"pass"` is a compliance-control **status**, not a credential (marked `# nosec B105`). |
+| B608 hardcoded SQL expression | 26 | See **§4 SQL injection audit** — every site verified to interpolate only quoted identifiers or integer-cast values, never raw user input; identifiers can't be parameter-bound in T-SQL. |
+
+**Ongoing:** run `bandit -ll` (MEDIUM+) and `semgrep p/python` in CI; new HIGH/MEDIUM findings block the build.

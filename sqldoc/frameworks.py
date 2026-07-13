@@ -80,7 +80,7 @@ class FrameworkResult:
 
     @property
     def summary(self) -> dict:
-        out = {"attention": 0, "review": 0, "pass": 0}
+        out = {"attention": 0, "review": 0, "pass": 0}  # nosec B105 - "pass" is a control status, not a password
         for c in self.controls:
             out[c.status] = out.get(c.status, 0) + 1
         return out

@@ -16,7 +16,9 @@ exactly what index or rewrite would fix it.
 The AI receives the query text + detected patterns — necessary to give a useful
 fix — but never table row data.
 """
-import xml.etree.ElementTree as ET
+# defusedxml hardens XML parsing against entity-expansion / external-entity
+# attacks. Query-plan XML comes from the DB, but we parse it defensively.
+from defusedxml import ElementTree as ET
 from dataclasses import dataclass, field
 
 import sqldoc.ai as ai

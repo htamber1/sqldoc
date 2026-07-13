@@ -84,10 +84,12 @@ def install_hooks(repo_root: str = ".", force: bool = False) -> dict:
 
     with open(hook_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(HOOK_SCRIPT)
-    # chmod +x (no-op semantics on Windows, but harmless).
+    # Make the hook executable by its OWNER only (git runs hooks as the current
+    # user). Least-privilege: no group/other execute bits (semgrep
+    # insecure-file-permissions). No-op semantics on Windows, harmless.
     try:
         st = os.stat(hook_path)
-        os.chmod(hook_path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        os.chmod(hook_path, st.st_mode | stat.S_IXUSR)
     except OSError:
         pass
     return {"status": "installed", "path": hook_path,

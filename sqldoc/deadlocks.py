@@ -15,7 +15,10 @@ graph, with an optional AI explanation of the cause and fix:
 The SQL Server path parses the deadlock graph (which includes the offending SQL);
 the AI explanation receives that graph. PG/MySQL are count/blocking-based.
 """
-import xml.etree.ElementTree as ET
+# defusedxml hardens XML parsing against entity-expansion / external-entity
+# attacks (billion laughs, XXE). The XML comes from SQL Server's system_health
+# XE, but we parse it defensively regardless.
+from defusedxml import ElementTree as ET
 from dataclasses import dataclass, field
 
 import sqldoc.ai as ai

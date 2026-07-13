@@ -40,7 +40,9 @@ def _def_sig(*definitions) -> str:
     joined = "\x1e".join(d for d in definitions if d)
     if not joined:
         return ""
-    return "|def:" + hashlib.sha1(joined.encode("utf-8")).hexdigest()[:12]
+    # Non-security cache key (structural signature). SHA-256 (usedforsecurity=False
+    # documents that this is a content fingerprint, not a signature).
+    return "|def:" + hashlib.sha256(joined.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 def _sig_table(t, include_definitions=False) -> str:
     cols = "|".join(f"{c.name}:{c.data_type}:{int(c.is_primary_key)}{int(c.is_foreign_key)}" for c in t.columns)
@@ -67,7 +69,9 @@ def _sig_col(container: str, col) -> str:
     return f"{container}.{col.name}:{col.data_type}"
 
 def _key(model: str, kind: str, sig: str) -> str:
-    return hashlib.sha1(f"{model}\x1f{kind}\x1f{sig}".encode("utf-8")).hexdigest()
+    # Non-security cache key (content fingerprint, not a signature).
+    return hashlib.sha256(f"{model}\x1f{kind}\x1f{sig}".encode("utf-8"),
+                          usedforsecurity=False).hexdigest()
 
 def load_cache(path: str) -> dict:
     if not path or not os.path.exists(path):

@@ -20,3 +20,8 @@ htmlcov/
 .coverage
 coverage.xml
 coverage.json
+
+# security scan artifacts
+bandit*.json
+semgrep*.json
+.secrets.baseline.tmp

@@ -31,6 +31,9 @@ dependencies = [
     # requests >= 2.32.2 fixes the .netrc credential-leak CVE-2024-35195 and
     # certificate-handling issues; pulls a patched urllib3/certifi transitively.
     "requests>=2.32.2",
+    # defusedxml hardens the deadlock/query-plan XML parsers against XXE /
+    # entity-expansion attacks (pure Python, no native deps).
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
