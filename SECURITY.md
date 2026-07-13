@@ -17,6 +17,26 @@ fix or mitigation for confirmed issues promptly. See "CVE response process" belo
 
 ---
 
+## Audit summary (v3.0.0)
+
+| # | Area | Result | Highest severity fixed |
+|---|---|---|---|
+| 1 | Dependency scan (`pip-audit`) | runtime tree CVE-clean; lower bounds raised to patched minimums | — (preventive) |
+| 2 | Static analysis (`bandit`/`semgrep`) | **0 HIGH/MEDIUM**, **0 semgrep**; LOW documented | HIGH (SHA-1 → SHA-256) |
+| 3 | Secret scanning (`detect-secrets`) | history + tree clean; baseline + pre-commit hook added | — (none found) |
+| 4 | SQL injection | all sites verified; 2 defense-in-depth fixes | MEDIUM (generated-script literal escaping) |
+| 5 | Input validation | central `validation.py`; wired to conn-string/serve | HIGH (ODBC injection) |
+| 6 | Credential handling | redaction widened; password brace-quoting; perm warning | HIGH (secret leakage vectors) |
+| 7 | REST API | headers, rate limit, constant-time auth, generic errors | HIGH (verbose errors / no headers) |
+| 8 | Agent daemon | `0700` state dir, dashboard headers, tracemalloc | MEDIUM (state-dir perms) |
+| 9 | File handling | traversal-hardened; safe YAML | MEDIUM (path traversal) |
+| 10 | Network | TLS verified, timeouts, SSRF-safe redirects | HIGH (redirect SSRF) |
+| 11 | Error handling | no tracebacks to users; fail-safe | MEDIUM (internal-detail leakage) |
+
+Full detail, severity, and fix for each finding follow.
+
+---
+
 ## Audit findings & responses (v3.0.0 hardening pass)
 
 ### 1. Dependency vulnerabilities (`pip-audit`)

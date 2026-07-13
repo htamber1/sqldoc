@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldoc"
-version = "2.9.0"
+version = "3.0.0"
 description = "Multi-database documentation generator + PII/compliance scanner for SQL Server, PostgreSQL, MySQL and Azure SQL, with optional AI-written descriptions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -89,6 +89,9 @@ all = ["psycopg2-binary>=2.9", "mysql-connector-python>=8.0",
        "databricks-sql-connector>=3.0", "google-cloud-bigquery>=3.0",
        "ibm-db>=3.2", "pymongo>=4.0", "openai>=1.0", "google-generativeai>=0.5"]
 test = ["pytest>=8", "pypdf>=4", "coverage>=7", "pytest-cov>=5", "psutil>=5.9"]
+# Static-analysis / supply-chain tooling used by the security CI gates and the
+# v3.0.0 audit (pip install sqldoc[security]).
+security = ["bandit>=1.7", "pip-audit>=2.7", "detect-secrets>=1.5"]
 
 [project.urls]
 Homepage = "https://github.com/htamber1/sqldoc"

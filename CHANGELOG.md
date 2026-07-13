@@ -4,6 +4,60 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] — 2026-07-13
+
+**Enterprise-grade security hardening.** A full audit + hardening pass across the
+codebase — dependencies, static analysis, secrets, SQL injection, input
+validation, credentials, the REST API, the agent, file handling, network, and
+error handling — plus a documented security model and a dedicated security test
+suite. Major version because it materially strengthens the security posture; no
+functional/CLI breaking changes. Every finding, its severity, and its fix are
+documented in **`SECURITY.md`**.
+
+### Added — security
+- **`SECURITY.md`** — vulnerability-reporting policy, the full audit findings
+  (11 areas), the security model + data boundary, the CVE response process, and
+  enterprise deployment best practices.
+- **`sqldoc/validation.py`** — central input-validation layer (server/database/
+  username ODBC-injection guards, port, output-path traversal/NUL, URL scheme
+  allowlist, SSRF internal/metadata-host detection).
+- **`sqldoc/nethttp.py`** — SSRF-aware outbound HTTP (`safe_request`): manual
+  redirect vetting (blocks metadata hosts and external→internal pivots), default
+  timeout, rejects `verify=False`. The webhook + Slack/Teams sinks route through it.
+- **`tests/security/`** — 37 tests pinning the guarantees (SQL/ODBC injection,
+  credential redaction, API auth/headers/rate-limit, SSRF/timeouts, path traversal).
+- **`.secrets.baseline` + `.pre-commit-config.yaml`** — `detect-secrets` +
+  `detect-private-key` + large-file pre-commit hooks. `sqldoc[security]` extra
+  (bandit / pip-audit / detect-secrets). `defusedxml` is now a core dependency.
+
+### Security fixes
+- **Dependencies** — runtime tree is CVE-clean; lower bounds raised to patched
+  minimums (`Jinja2>=3.1.5`, `requests>=2.32.2`, `PyYAML>=6.0.1`) so a fresh
+  install can't resolve a known-vulnerable version.
+- **Static analysis** — bandit **0 HIGH/MEDIUM** (SHA-1 cache keys → SHA-256;
+  deadlock/query-plan XML → `defusedxml`; hook chmod owner-only); semgrep **0
+  findings**; LOW findings documented.
+- **SQL injection** — every dynamic SQL site reviewed; two defense-in-depth
+  fixes in the generated access-grant script (`_lit` single-quote escaping) and
+  the Azure DevOps WIQL tag; row-value filters stay parameter-bound.
+- **Credentials** — audit-log redaction widened to substring + value matching;
+  connection-string password brace-quoting; `.sqldoc.yml` permission warning; no
+  credential is ever logged.
+- **REST API** — constant-time key compare, generic `500`, security headers
+  (`X-Content-Type-Options`/`X-Frame-Options`/CSP/`Referrer-Policy`/
+  `Cache-Control`), no wildcard CORS, per-client rate limiting, 1 MiB body cap,
+  loud warning when serving unauthenticated off-loopback.
+- **Agent** — `~/.sqldoc` `0700` on POSIX; dashboard security headers; opt-in
+  tracemalloc leak watchdog.
+- **Files / errors** — `_safe_filename` traversal-hardened; malformed YAML fails
+  cleanly (still `safe_load` only; no `eval`/`exec`/`pickle`); CLI suppresses
+  tracebacks by default (`SQLDOC_DEBUG=1` to restore).
+
+### Tests
+- **1226 passing** (was 1189; +37 security). No behavior changes to existing
+  commands (one internal connection-string format detail — the password is now
+  brace-quoted — updated in three tests).
+
 ## [2.9.0] — 2026-07-12
 
 **Central Management Server (CMS) support — manage the whole SQL Server estate

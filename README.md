@@ -111,6 +111,26 @@ network egress** — a good fit for regulated, classified, or on-prem-only
 environments. The self-containment of all seven report templates is enforced by
 the test suite.
 
+## 🔐 Security
+
+sqldoc ships with an enterprise-grade security posture, documented in full in
+**[SECURITY.md](SECURITY.md)** — the security model + data boundary, the v3.0.0
+audit findings (dependencies, static analysis, secrets, SQL injection, input
+validation, credentials, REST API, agent, files, network, errors), the CVE
+response process, and deployment best practices. Highlights:
+
+- **Local-first data boundary** — reads only catalog metadata + aggregate stats,
+  **never row data**; nothing leaves your network unless you opt into a cloud AI
+  backend (metadata only) or an integration you configure. No telemetry.
+- **Hardened supply chain** — `bandit`/`semgrep` clean, `pip-audit` CVE-free
+  runtime tree, `detect-secrets` pre-commit hook, `defusedxml` XML parsing.
+- **Safe by construction** — parameterized/quoted SQL, central input validation
+  (ODBC-injection + SSRF guards), constant-time API auth with security headers +
+  rate limiting, credential redaction in the audit log, TLS-verified + SSRF-safe
+  outbound HTTP, and no tracebacks leaked to users.
+- **Verify it** — a dedicated `tests/security/` suite (37 tests) pins these
+  guarantees; **report a vulnerability** via a private GitHub Security Advisory.
+
 ## Installation
 
 From PyPI:
