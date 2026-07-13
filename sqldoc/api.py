@@ -21,12 +21,67 @@ matching the ``api_key`` configured in ``.sqldoc.yml`` (when one is set). The
 target database comes from the same config / CLI connection settings the server
 was started with. Reads only metadata/statistics — never table row data.
 """
+import hmac
 import json
+import logging
+import threading
+import time
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqldoc import __version__
 from sqldoc.adapters import get_adapter
+
+_log = logging.getLogger("sqldoc.api")
+
+# Cap request bodies so a large/absent Content-Length can't exhaust memory.
+_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+# Security response headers applied to every response. Responses can carry
+# schema/PII data, so they must not be sniffed, framed, cached, or embedded.
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+# NOTE: no `Access-Control-Allow-Origin` is ever sent — CORS is intentionally
+# disabled so a browser on another origin cannot read these authenticated
+# JSON responses. Do not add a wildcard ACAO here.
+
+
+def _key_matches(provided, expected) -> bool:
+    """Constant-time API-key comparison (avoids a timing side-channel on the
+    key). False if either side is missing."""
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(str(provided), str(expected))
+
+
+class RateLimiter:
+    """Tiny thread-safe fixed-window per-client rate limiter. Not distributed —
+    one process, in-memory — which matches the single-process stdlib server."""
+
+    def __init__(self, max_requests: int = 120, window_seconds: int = 60):
+        self.max = max_requests
+        self.window = window_seconds
+        self._hits = {}
+        self._lock = threading.Lock()
+
+    def allow(self, client: str, now: float = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            start, count = self._hits.get(client, (now, 0))
+            if now - start >= self.window:
+                start, count = now, 0
+            count += 1
+            self._hits[client] = (start, count)
+            # Opportunistic cleanup so the map can't grow unbounded.
+            if len(self._hits) > 4096:
+                self._hits = {k: v for k, v in self._hits.items()
+                              if now - v[0] < self.window}
+            return count <= self.max
 
 
 # --- endpoint handlers (adapter, ctx, params, body) -> dict -----------------
@@ -210,7 +265,7 @@ def dispatch(method, path, headers, body, ctx) -> tuple:
         authn = ctx.get("authn")
         sso_on = authn is not None and getattr(authn, "enabled", False)
         if api_key or sso_on:
-            authed = bool(api_key) and _provided_key(headers) == api_key
+            authed = _key_matches(_provided_key(headers), api_key)
             err = "invalid or missing X-API-Key header"
             if not authed and sso_on:
                 ok, result = authn.authenticate(headers)
@@ -241,27 +296,55 @@ def dispatch(method, path, headers, body, ctx) -> tuple:
             adapter = get_adapter(req_ctx["conn_str"], req_ctx.get("dialect"))
         return 200, handler(adapter, req_ctx, {}, body)
     except ValueError as e:
+        # ValueError is used for caller/input problems — safe to echo.
         return 400, {"error": str(e)}
-    except Exception as e:
-        return 500, {"error": f"{type(e).__name__}: {e}"}
+    except Exception:
+        # Never leak exception type/message (may contain paths, SQL, or
+        # connection details). Log server-side; return a generic message.
+        _log.exception("Unhandled error serving %s %s", method, path)
+        return 500, {"error": "internal server error"}
 
 
 # --- HTTP server -----------------------------------------------------------
 
-def make_handler(ctx):
+def make_handler(ctx, rate_limiter=None):
+    limiter = rate_limiter
+
     class Handler(BaseHTTPRequestHandler):
         def _respond(self, status, payload):
             data = json.dumps(payload, indent=2, default=str).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
+            for name, value in _SECURITY_HEADERS.items():
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(data)
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def _client(self):
+            try:
+                return self.client_address[0]
+            except Exception:
+                return "?"
+
+        def _rate_ok(self):
+            if limiter is None:
+                return True
+            if limiter.allow(self._client()):
+                return True
+            self._respond(429, {"error": "rate limit exceeded; slow down"})
+            return False
 
         def _read_body(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            if not length:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                return None  # malformed length
+            if length <= 0:
                 return {}
+            if length > _MAX_BODY_BYTES:
+                return None  # too large — signalled to caller
             raw = self.rfile.read(length)
             try:
                 return json.loads(raw.decode("utf-8"))
@@ -269,13 +352,22 @@ def make_handler(ctx):
                 return {}
 
         def do_GET(self):
+            if not self._rate_ok():
+                return
             path = self.path.split("?")[0]
             status, payload = dispatch("GET", path, self.headers, {}, ctx)
             self._respond(status, payload)
 
         def do_POST(self):
+            if not self._rate_ok():
+                return
             path = self.path.split("?")[0]
             body = self._read_body()
+            if body is None:
+                self._respond(413, {"error":
+                                    f"request body missing, malformed, or larger "
+                                    f"than {_MAX_BODY_BYTES} bytes"})
+                return
             status, payload = dispatch("POST", path, self.headers, body, ctx)
             self._respond(status, payload)
 
@@ -285,5 +377,9 @@ def make_handler(ctx):
     return Handler
 
 
-def make_server(host, port, ctx):
-    return ThreadingHTTPServer((host, port), make_handler(ctx))
+def make_server(host, port, ctx, rate_limit=120, rate_window=60):
+    """Build the threaded API server. A per-client fixed-window rate limiter is
+    on by default (``rate_limit`` requests per ``rate_window`` seconds); pass
+    ``rate_limit=0`` to disable it."""
+    limiter = RateLimiter(rate_limit, rate_window) if rate_limit else None
+    return ThreadingHTTPServer((host, port), make_handler(ctx, limiter))

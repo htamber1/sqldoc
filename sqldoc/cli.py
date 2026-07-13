@@ -2854,8 +2854,16 @@ def serve(config, api, host, port, server, database, username, password, connect
     click.echo(f"Endpoints: " + ", ".join(sorted(p for _m, p in API_ENDPOINTS)))
     click.echo(f"{'='*44}\n")
     if not api_key and not authn:
-        click.echo(click.style("  ! No api_key or SSO set — the API is unauthenticated. Bind to "
-                               "localhost and/or set api_key or auth in .sqldoc.yml.", fg='yellow'), err=True)
+        from sqldoc.validation import is_internal_host
+        loopback = is_internal_host(host)
+        msg = ("  ! No api_key or SSO set — the API is unauthenticated. Bind to "
+               "localhost and/or set api_key or auth in .sqldoc.yml.")
+        if not loopback:
+            msg = (f"  !! DANGER: serving an UNAUTHENTICATED API on a non-loopback "
+                   f"address ({host}). Anyone who can reach this host can read your "
+                   f"schema/PII/health data. Set api_key or SSO, or bind to 127.0.0.1.")
+        click.echo(click.style(msg, fg=('red' if not loopback else 'yellow'),
+                               bold=not loopback), err=True)
 
     httpd = make_api_server(host, port, api_ctx)
     click.echo("Server running. Press Ctrl+C to stop.")

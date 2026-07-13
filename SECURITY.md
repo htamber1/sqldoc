@@ -195,3 +195,26 @@ regex at the call site.
 group/other-readable it prints a `chmod 600` warning (best-effort, never fatal).
 On Windows, NTFS ACLs govern access, so the check is a no-op. The same applies to
 `~/.pypirc` used for publishing — keep it `chmod 600`; sqldoc never reads it.
+
+### 7. REST API hardening (`sqldoc serve`)
+
+Audited the stdlib HTTP API (`api.py`). It binds `127.0.0.1` by default, reads
+only metadata, and authenticates with `X-API-Key` and/or SSO. Hardening applied:
+
+| Area | Before | After |
+|---|---|---|
+| **Auth timing** | `provided == api_key` (string `==`, timing side-channel) | `hmac.compare_digest` constant-time (`_key_matches`). |
+| **Auth bypass** | open when no key/SSO set (any bind) | still supported for localhost dev, but the CLI now prints a **red DANGER** warning when serving unauthenticated on a **non-loopback** address. |
+| **Verbose errors** | `500 {"error": "<ExcType>: <msg>"}` leaked internals (paths, SQL) | generic `500 {"error": "internal server error"}`; full detail is logged **server-side** only. |
+| **Security headers** | none | every response sends `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. |
+| **CORS** | none | **intentionally none** — no `Access-Control-Allow-Origin`, so a browser on another origin cannot read these authenticated JSON responses. Documented so nobody adds a wildcard. |
+| **Rate limiting** | none | per-client fixed-window `RateLimiter` (default 120 req/min), `429` when exceeded; `rate_limit=0` disables. |
+| **Body size** | read `Content-Length` bytes unbounded | capped at 1 MiB; malformed/oversize → `413`. |
+
+**Multi-tenant isolation** (already present, re-verified): the `X-API-Key`
+selects the tenant, the tenant registry is stripped from the per-request context,
+and `/api/agent/status` (operator data) is not exposed across tenants — a key can
+only ever reach its own tenant's database.
+
+SSRF via outbound webhook/integration URLs is addressed in **§10 Network
+security** (the inbound API never fetches caller-supplied URLs).
