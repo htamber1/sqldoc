@@ -313,3 +313,109 @@ email alerts, plus the Ollama/Anthropic/OpenAI/Gemini AI backends).
   short-lived CLI process plus driver GC-on-drop bound any mid-error connection.
   The agent daemon shuts down by joining all threads and closing the server/store
   (§8).
+
+---
+
+## Security model & data boundary
+
+sqldoc is **local-first**. It runs where you run it (your laptop, a jump box, a
+CI runner, or an on-prem server), connects directly to your database, and writes
+self-contained HTML/JSON to local disk. Understanding exactly what data it
+touches — and the one boundary where data can leave your network — is the core of
+its security model.
+
+### What sqldoc reads from the database
+
+- **Schema metadata** — table/column/view/procedure/trigger/index names, data
+  types, keys, constraints, row *counts*, and any existing `MS_Description`
+  (or equivalent) comments. Extracted from catalog views (`sys.*`,
+  `information_schema`, `pg_catalog`, …) only.
+- **Statistics / DMVs** — for `health`, `server`, `waits`, `plans`, `backup`,
+  `ha`, `secure` and the agent: performance counters, wait stats, index usage,
+  backup history, replication state. These are *aggregate* server metrics.
+- **Aggregate column profiles** — for `quality` only: per-column null rate,
+  distinct count, min/max, most-frequent values. Computed with `COUNT`/`MIN`/
+  `MAX`/`GROUP BY` **in the database**; only the aggregates come back.
+
+**sqldoc never issues `SELECT *` against your tables and never reads, stores, or
+transmits row data.** (The `scan --sample` opt-in reads ≤5 values per column
+*only* to AI-confirm a PII match, and those values are never persisted.)
+
+### What stays on-premise (the default)
+
+With the default **local AI backend (Ollama)** or `--no-ai`, **nothing leaves
+your network.** Extraction, AI description, PII scanning, compliance reporting,
+health/DMV analysis, rendering, the REST API, and the monitoring agent all run
+locally. All HTML reports are **air-gap safe** (self-contained, no CDN/remote
+assets — enforced by the test suite and checkable with `--verify-offline`).
+
+### What can leave your network, and when (opt-in only)
+
+| Egress | Trigger | What is sent |
+|---|---|---|
+| **Cloud AI backend** | `--ai-backend {anthropic,openai,gemini}` (or `--mode cloud`) | **Schema metadata only** — names, types, keys, counts. **Never** row data and **never** SQL definitions, unless you *additionally* pass `--include-definitions`. A cloud-egress warning naming the provider prints, and cloud mode blocks on a confirmation prompt (`--yes` for CI). |
+| **Integrations** | You configure a Slack/Teams/Jira/Confluence/webhook/etc. target | The report/finding content you chose to publish, to the endpoint you configured. Outbound calls verify TLS, time out, and are SSRF-checked (§10). |
+| **Notifications** | Agent alerting configured | Alert text (schema-change / PII / health summaries) to your Slack/email/PagerDuty. |
+
+No telemetry, analytics, or "phone-home" exists. The only network destinations
+are your database, an AI backend you choose, and integrations you configure.
+
+### Authentication & secrets
+
+- DB credentials come from a CLI flag, `.sqldoc.yml`, or a connection string;
+  the AI key from `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`GOOGLE_API_KEY` (via
+  `.env`). `.env` and `.sqldoc.yml` are git-ignored; credentials are never
+  logged (§6).
+- The REST API authenticates with `X-API-Key` and/or SSO (OIDC/SAML); the agent
+  dashboard can be SSO-gated. Multi-tenant mode isolates each tenant behind its
+  own key (§7).
+
+---
+
+## CVE / vulnerability response process
+
+1. **Report** privately via a
+   [GitHub Security Advisory](https://github.com/htamber1/sqldoc/security/advisories/new)
+   (preferred) or email — never a public issue for an unpatched flaw.
+2. **Acknowledge** within 3 business days; we reproduce and assign a severity
+   (CVSS-guided: Critical / High / Medium / Low).
+3. **Fix** on a private branch, add a regression test, and prepare a release.
+   Target windows: Critical ≤ 7 days, High ≤ 30 days, Medium/Low next release.
+4. **Disclose** — publish the advisory with the fixed version and credit the
+   reporter (if desired) once a patched release is on PyPI.
+5. **Dependencies** — `pip-audit`, `bandit`, `semgrep`, and `detect-secrets` run
+   in CI; a HIGH/CRITICAL in a *runtime* dependency is a release blocker. The
+   dependency lower bounds in `pyproject.toml` are held at patched minimums so a
+   fresh install cannot resolve a known-vulnerable version.
+
+Supported for security fixes: the **latest minor release**. Users on older lines
+should upgrade (sqldoc follows semver; the metadata-only data boundary is stable
+across minors).
+
+---
+
+## Enterprise deployment best practices
+
+- **Prefer local AI** (Ollama) or `--no-ai` for regulated data; if you use a
+  cloud backend, remember only *metadata* is sent (and gate `--include-definitions`).
+- **Least-privilege DB account** — sqldoc needs only catalog/DMV read
+  (`VIEW DEFINITION`, `VIEW SERVER STATE`/`VIEW DATABASE STATE` for health/server;
+  each check degrades cleanly without the grant). It never needs write, DDL, or
+  `db_owner`.
+- **Protect the config** — `chmod 600 .sqldoc.yml` (and `~/.pypirc` if you
+  publish); on Windows restrict via NTFS ACLs. sqldoc warns on a group/other-
+  readable config (§6). Prefer environment variables or a secrets manager over
+  a plaintext password in config.
+- **REST API** — keep the default `127.0.0.1` bind, or put it behind a reverse
+  proxy with TLS; **always** set `api_key` or SSO before exposing it beyond
+  localhost (the CLI warns loudly otherwise). Rate limiting and security headers
+  are on by default (§7).
+- **Agent** — runs as an unprivileged user; its state dir is `0700` on POSIX
+  (§8). Point `SQLDOC_AGENT_HOME` at a protected location. Front the dashboard
+  with SSO for anything beyond a single operator's localhost.
+- **CI** — use the `--fail-on high` (PII), `--fail-under` (secure score), and
+  `--fail-on-regression` (baseline) gates; run the pre-commit secret hook
+  (`.pre-commit-config.yaml`); pin `sqldoc` to a version and let `pip-audit`
+  flag it.
+- **Air-gapped / on-prem** — fully supported with Ollama or `--no-ai`; verify
+  any report with `--verify-offline`.
