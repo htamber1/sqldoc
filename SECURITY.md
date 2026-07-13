@@ -73,3 +73,36 @@ runtime dependency as a release blocker (see "CVE response process").
 | B608 hardcoded SQL expression | 26 | See **§4 SQL injection audit** — every site verified to interpolate only quoted identifiers or integer-cast values, never raw user input; identifiers can't be parameter-bound in T-SQL. |
 
 **Ongoing:** run `bandit -ll` (MEDIUM+) and `semgrep p/python` in CI; new HIGH/MEDIUM findings block the build.
+
+### 3. Secret scanning (`detect-secrets`)
+
+Scanned the **working tree and the entire git history** (all reachable blobs
+across every commit) for committed credentials, keys, tokens, and private keys.
+
+**History scan** — every blob in `git rev-list --all` was grepped for
+high-signal credential patterns (`sk-ant-…` Anthropic keys, `AKIA…` AWS keys,
+`pypi-AgE…` PyPI tokens, `ghp_…`/`github_pat_…`/`gho_…` GitHub tokens, `xox…`
+Slack tokens, `AIza…` Google API keys, and PEM private-key headers):
+**no real secret has ever been committed.** Nothing to rotate.
+
+**Working-tree scan** — `detect-secrets` flagged 20 tracked files; **all are
+false positives**, audited and recorded in `.secrets.baseline`:
+- Doc-string **connection-string examples** (`oracle://user:password@host`,
+  `snowflake://user:password@account`, `postgresql://user:pw@host/db`) in the
+  adapters / agent config docstrings and the VS Code extension placeholder.
+- The Azure Container App Bicep template references secrets via `secretRef`
+  (no literal secret values in source).
+- **Test fixtures** — deliberately fake credentials in `tests/` (mock adapters,
+  API-key auth tests, multi-tenant tests).
+
+`.env` (which may hold a real `ANTHROPIC_API_KEY`) is **git-ignored and untracked**.
+
+**Prevention added:**
+- **`.secrets.baseline`** — an audited baseline of the known-safe placeholders.
+- **`.pre-commit-config.yaml`** — a `detect-secrets` pre-commit hook (plus
+  `detect-private-key` and large-file guards) that blocks any *new* secret from
+  being committed. Enable with `pip install pre-commit && pre-commit install`.
+
+**Ongoing:** the pre-commit hook gates local commits; re-audit the baseline
+(`detect-secrets scan --baseline .secrets.baseline`) whenever a legitimate
+high-entropy string is added.

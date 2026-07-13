@@ -1,0 +1,27 @@
+# Pre-commit hooks for sqldoc. Install once with:
+#     pip install pre-commit && pre-commit install
+# Thereafter every `git commit` runs these checks locally.
+#
+# The detect-secrets hook blocks any commit that introduces a credential, key,
+# token, or high-entropy string that is NOT already audited in
+# `.secrets.baseline`. To (re)audit findings after a legitimate change:
+#     detect-secrets scan --baseline .secrets.baseline
+#     detect-secrets audit .secrets.baseline
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        # venv / caches never contain project secrets and would only add noise.
+        exclude: ^(venv/|\.pytest_cache/|node_modules/|\.git/)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: end-of-file-fixer
+        exclude: ^(venv/|.*\.(html|vsix)$)
