@@ -97,6 +97,16 @@ def test_inventory_report_live():
     assert j["reachable"] == 3
 
 
+def test_estate_access_review_live():
+    from sqldoc.access.cms_review import collect_estate_access, build_estate_access_json
+    rep = collect_estate_access(_inventory(), _opts(database="master"), max_workers=3)
+    assert len(rep.servers) == 3           # all three point at the live instance
+    # 'sa' is elevated on all three (same instance), but it's not a system principal
+    # -> the estate audit surfaces principals present on multiple servers.
+    j = build_estate_access_json(rep)
+    assert j["report_type"] == "cms-access-review" and j["servers_audited"] == 3
+
+
 def test_failure_isolated_with_one_bad_server():
     from sqldoc.cms import CmsInventory, CmsServer
     from sqldoc.cms_bulk import run_bulk

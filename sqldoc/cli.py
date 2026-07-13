@@ -533,6 +533,38 @@ def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
         click.echo(f"JSON written to {json_out}")
 
 
+def _run_cms_access_review(cfg, group, output, json_out, max_workers):
+    from sqldoc.access.cms_review import (collect_estate_access, render_estate_access_html,
+                                          build_estate_access_json)
+    from sqldoc.access import config as access_config, ad as ad_mod
+    inv = _load_cms_inventory(cfg)
+    source = None
+    if access_config.ad_config(cfg):
+        try:
+            source = ad_mod.get_source(access_config.ad_config(cfg))
+        except Exception:
+            source = None
+    click.echo(f"\nsqldoc v{__version__}  -  access review --cms")
+    click.echo(f"{'='*44}")
+    click.echo(f"Auditing {len(inv.servers)} registered server(s)...")
+    rep = collect_estate_access(inv, _cms_opts(cfg), source=source, group=group,
+                                max_workers=max_workers)
+    click.echo(f"  {len(rep.servers)} audited"
+               + (f", {len(rep.failed)} unreachable" if rep.failed else ""))
+    click.echo(click.style(f"  {len(rep.elevated_multi)} principal(s) elevated on multiple servers", fg='red'))
+    click.echo(click.style(f"  {len(rep.coverage_gaps)} coverage gap(s)", fg='yellow'))
+    if rep.orphaned:
+        click.echo(click.style(f"  {len(rep.orphaned)} orphaned login(s)", fg='red'))
+    out = output or "access-review.html"
+    render_estate_access_html(rep, out, cms_server=inv.cms_server)
+    click.echo(f"\nEstate access report written to {out}")
+    if json_out:
+        import json as _json
+        with open(json_out, 'w', encoding='utf-8') as f:
+            _json.dump(build_estate_access_json(rep), f, indent=2, default=str)
+        click.echo(f"JSON written to {json_out}")
+
+
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
@@ -3712,18 +3744,29 @@ def access_jira(config, ticket, user_override, transition_to, no_comment, mode, 
               help='Flag accounts inactive for more than this many days (default: 90 or config)')
 @click.option('--output', default='access-review.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
-def access_review(config, inactive_days, output, json_out):
+@click.option('--cms', 'use_cms', is_flag=True, default=False,
+              help='Estate-wide audit across every CMS-registered server')
+@click.option('--group', default=None, help='Limit the --cms audit to a CMS server group')
+@click.option('--max-workers', default=8, type=click.IntRange(1, 64), help='Parallel servers (--cms)')
+def access_review(config, inactive_days, output, json_out, use_cms, group, max_workers):
     """Review all logins + role memberships and flag access risks.
 
     Flags inactive accounts, over-privileged accounts (vs AD job title),
     separation-of-duties violations, orphaned Windows logins, and service
     accounts with excessive permissions — each with a generated fix script,
     prioritized most-severe first.
+
+    With --cms, runs an ESTATE-WIDE audit across every registered server: who has
+    elevated access on multiple servers, who exists on some servers but not
+    others, and orphaned logins across the estate.
     """
     from sqldoc.access.review import review_access
     from sqldoc.access import config as access_config
     from sqldoc.access.render import render_review_html, build_review_json
     cfg = _access_cfg(config)
+    if use_cms:
+        _run_cms_access_review(cfg, group, output, json_out, max_workers)
+        return
     days = inactive_days if inactive_days is not None else int(access_config.review_config(cfg).get("inactive_days", 90))
 
     click.echo(f"\nsqldoc v{__version__}  -  access review")
