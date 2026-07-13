@@ -35,7 +35,8 @@ from sqldoc.adapters import DIALECTS, detect_dialect
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
                "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert",
-               "doc_updated"]
+               "doc_updated",
+               "cms_server_added", "cms_server_removed", "cms_server_unreachable"]
 
 
 @dataclass
@@ -127,6 +128,11 @@ class AgentConfig:
     # Enterprise alert management (parsed AlertingConfig, or None). Read from the
     # top-level `alerting:` section, outside the `agent:` block.
     alerting: object = None
+    # CMS monitoring: when set, the agent monitors every registered server and
+    # reconciles the CMS registration on a cadence. Config: {server, windows_auth,
+    # database, reconcile_minutes, ...}.
+    cms: dict = None
+    cms_reconcile_minutes: float = 15.0
     # The full .sqldoc.yml mapping, so the push loop can read the top-level
     # integration config sections (they live outside the `agent:` block).
     raw_config: dict = None
@@ -205,9 +211,19 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
     from sqldoc.agent.alerting import parse_alerting
     alerting = parse_alerting(cfg)
 
+    cms_cfg = agent.get("cms")
+    if cms_cfg is not None and not isinstance(cms_cfg, dict):
+        raise ValueError("agent.cms must be a mapping (with at least a 'server').")
+    if cms_cfg and not cms_cfg.get("server"):
+        raise ValueError("agent.cms needs a 'server' (the CMS instance name).")
+    cms_reconcile_minutes = float(agent.get("cms_reconcile_minutes", 15.0))
+
     raw_dbs = agent.get("databases") or []
-    if not isinstance(raw_dbs, list) or not raw_dbs:
-        raise ValueError("agent.databases must be a non-empty list of database entries.")
+    # With CMS monitoring the database list is populated from the CMS at startup,
+    # so an explicit databases list is optional.
+    if not isinstance(raw_dbs, list) or (not raw_dbs and not cms_cfg):
+        raise ValueError("agent.databases must be a non-empty list of database entries "
+                         "(or configure agent.cms to monitor a Central Management Server).")
 
     databases = []
     seen = set()
@@ -251,5 +267,6 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         ha_monitoring=ha_monitoring, replica_lag_threshold_seconds=replica_lag_threshold,
         nl_alerts=nl_alerts, weekly_report=weekly_report,
         integrations=list(raw_integrations), push_interval_hours=push_interval_hours,
-        alerting=alerting, raw_config=cfg,
+        alerting=alerting, cms=cms_cfg, cms_reconcile_minutes=cms_reconcile_minutes,
+        raw_config=cfg,
     )

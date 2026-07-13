@@ -99,11 +99,47 @@ def escalation_loop(store, notifier, stop_event, log, check_seconds=60):
             break
 
 
+def cms_reconcile_loop(store, agent_config, notifier, stop_event, log, start_fn, stop_fn,
+                       monitored_provider, check_seconds=900):
+    """Every check_seconds, reconcile the CMS registration: start monitoring newly
+    added servers, stop removed ones, and alert on unreachable servers."""
+    if not getattr(agent_config, "cms", None):
+        return
+    from sqldoc.agent.cms_monitor import reconcile_once
+    while not stop_event.is_set():
+        try:
+            reconcile_once(store, agent_config.cms, notifier, monitored_provider(),
+                           start_fn, stop_fn, log=log)
+        except Exception as e:
+            log(f"cms reconcile crashed: {type(e).__name__}: {e}")
+        if stop_event.wait(check_seconds):
+            break
+
+
+def _expand_cms_databases(agent_config, log):
+    """When agent.cms is set, add a DatabaseConfig per registered server at startup."""
+    if not getattr(agent_config, "cms", None):
+        return
+    try:
+        from sqldoc.agent.cms_monitor import discover, build_databases
+        inv = discover(agent_config.cms)
+        existing = {d.name for d in agent_config.databases}
+        for db in build_databases(inv, agent_config.cms):
+            if db.name not in existing:
+                agent_config.databases.append(db)
+        log(f"cms: monitoring {len(inv.servers)} registered server(s) from "
+            f"{agent_config.cms.get('server')}")
+    except Exception as e:
+        log(f"cms: initial discovery failed ({type(e).__name__}: {e}); "
+            f"monitoring explicit databases only")
+
+
 def run_daemon(agent_config, store, notifier, stop_event, log=print,
                host="127.0.0.1", poll_fn=None, authn=None) -> int:
     """Start the dashboard + pollers and block until `stop_event`. Returns the
     dashboard port actually bound (useful when port 0 is requested in tests)."""
     poll_fn = poll_fn or poll_database
+    _expand_cms_databases(agent_config, log)
     server = make_server(store, agent_config.dashboard_port, host, authn=authn)
     bound_port = server.server_address[1]
 
@@ -112,13 +148,46 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
     log(f"agent started: monitoring {len(agent_config.databases)} database(s) every "
         f"{agent_config.interval_minutes}m; dashboard http://{host}:{bound_port}")
 
+    # Poller registry with a per-database stop event, so the CMS reconcile loop can
+    # start/stop monitoring individual servers at runtime.
     poll_threads = []
-    for db in agent_config.databases:
+    poll_stops = {}
+    poll_lock = threading.Lock()
+
+    def start_poller(db):
+        with poll_lock:
+            if db.name in poll_stops:
+                return
+            ev = threading.Event()
+            poll_stops[db.name] = ev
         t = threading.Thread(target=poller_loop,
-                             args=(store, db, agent_config, notifier, stop_event, log, poll_fn),
+                             args=(store, db, agent_config, notifier, ev, log, poll_fn),
                              name=f"poll-{db.name}", daemon=True)
         t.start()
         poll_threads.append(t)
+
+    def stop_poller(name):
+        with poll_lock:
+            ev = poll_stops.pop(name, None)
+        if ev is not None:
+            ev.set()
+
+    def monitored_names():
+        with poll_lock:
+            return set(poll_stops)
+
+    for db in agent_config.databases:
+        start_poller(db)
+
+    cms_thread = None
+    if getattr(agent_config, "cms", None):
+        cms_thread = threading.Thread(
+            target=cms_reconcile_loop,
+            args=(store, agent_config, notifier, stop_event, log, start_poller, stop_poller,
+                  monitored_names, max(60, int(agent_config.cms_reconcile_minutes * 60))),
+            name="cms-reconcile", daemon=True)
+        cms_thread.start()
+        log(f"cms reconcile scheduled every {agent_config.cms_reconcile_minutes}m")
 
     wr = getattr(agent_config, "weekly_report", None)
     weekly_thread = None
@@ -154,6 +223,10 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
     stop_event.wait()
     log("stopping agent...")
     server.shutdown()
+    # Signal every per-database poller to stop.
+    with poll_lock:
+        for ev in poll_stops.values():
+            ev.set()
     for t in poll_threads:
         t.join(timeout=15)
     if weekly_thread is not None:
@@ -162,6 +235,8 @@ def run_daemon(agent_config, store, notifier, stop_event, log=print,
         push_thread.join(timeout=5)
     if escalation_thread is not None:
         escalation_thread.join(timeout=5)
+    if cms_thread is not None:
+        cms_thread.join(timeout=5)
     server.server_close()
     log("agent stopped")
     return bound_port
