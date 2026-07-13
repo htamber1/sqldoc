@@ -21,12 +21,16 @@ classifiers = [
 dependencies = [
     "anthropic>=0.109",
     "click>=8.1",
-    "Jinja2>=3.1",
+    # Jinja2 >= 3.1.5 fixes the autoescape/XSS CVEs (CVE-2024-56201 / -56326).
+    "Jinja2>=3.1.5",
     "pyodbc>=5.0",
     "python-dotenv>=1.0",
-    "PyYAML>=6.0",
+    # PyYAML >= 6.0.1 (safe_load only; never yaml.load) — see SECURITY.md.
+    "PyYAML>=6.0.1",
     "fpdf2>=2.8",
-    "requests>=2.31",
+    # requests >= 2.32.2 fixes the .netrc credential-leak CVE-2024-35195 and
+    # certificate-handling issues; pulls a patched urllib3/certifi transitively.
+    "requests>=2.32.2",
 ]
 
 [project.optional-dependencies]
@@ -51,20 +55,20 @@ saml = ["signxml>=3.2", "defusedxml>=0.7"]
 # reuse the core `requests` dependency; the rest pull their vendor SDK. Install
 # just the one you use, e.g. `pip install sqldoc[confluence]`.
 sharepoint = ["msal>=1.24"]
-confluence = ["requests>=2.31"]
-notion = ["requests>=2.31"]
+confluence = ["requests>=2.32.2"]
+notion = ["requests>=2.32.2"]
 gdrive = ["google-api-python-client>=2.100", "google-auth>=2.20"]
 box = ["boxsdk[jwt]>=3.9"]
-jira = ["requests>=2.31"]
-servicenow = ["requests>=2.31"]
-azuredevops = ["requests>=2.31"]
+jira = ["requests>=2.32.2"]
+servicenow = ["requests>=2.32.2"]
+azuredevops = ["requests>=2.32.2"]
 powerbi = ["msal>=1.24"]
 # Additional documentation destinations. Wikis / Dropbox / Nuclino speak REST via
 # core `requests`; OneDrive reuses the SharePoint MSAL auth; GitHub Wiki uses git.
-gitlab-wiki = ["requests>=2.31"]
-azuredevops-wiki = ["requests>=2.31"]
-dropbox = ["requests>=2.31"]
-nuclino = ["requests>=2.31"]
+gitlab-wiki = ["requests>=2.32.2"]
+azuredevops-wiki = ["requests>=2.32.2"]
+dropbox = ["requests>=2.32.2"]
+nuclino = ["requests>=2.32.2"]
 onedrive = ["msal>=1.24"]
 integrations = ["msal>=1.24", "google-api-python-client>=2.100",
                 "google-auth>=2.20", "boxsdk[jwt]>=3.9"]
@@ -72,8 +76,8 @@ integrations = ["msal>=1.24", "google-api-python-client>=2.100",
 # generic LDAP); msal covers Entra ID / hybrid; Okta / JumpCloud speak REST via
 # the core `requests`; Google Workspace uses the Admin SDK.
 activedirectory = ["ldap3>=2.9", "msal>=1.24"]
-okta = ["requests>=2.31"]
-jumpcloud = ["requests>=2.31"]
+okta = ["requests>=2.32.2"]
+jumpcloud = ["requests>=2.32.2"]
 google-workspace = ["google-api-python-client>=2.100", "google-auth>=2.20"]
 # Redshift + CockroachDB + Aurora reuse the postgres/mysql drivers; Azure SQL MI
 # and Synapse reuse pyodbc (a core dependency).
