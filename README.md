@@ -42,11 +42,15 @@ sqldoc agent status         # what's monitored + last run times
 sqldoc agent logs -f        # follow the log;  sqldoc agent stop  to shut down
 ```
 
-Extraction needs the **Microsoft ODBC Driver 18 for SQL Server** on the host
+Extraction needs a **Microsoft ODBC Driver for SQL Server** on the host
 ([download](https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server));
-it is a system package, not a pip dependency. AI descriptions are **opt-in** and, by
-default, run **locally** against [Ollama](https://ollama.com) — see the privacy
-section below.
+it is a system package, not a pip dependency. The default is **Driver 18**; if your
+host has **Driver 17** (or another driver), set `driver: "ODBC Driver 17 for SQL Server"`
+in `.sqldoc.yml`. Run **`sqldoc doctor`** to list installed drivers and check your
+environment. On domain-joined hosts, add **`--windows-auth`** (or `windows_auth: true`)
+to connect with your Windows identity instead of a SQL login. AI descriptions are
+**opt-in** and, by default, run **locally** against [Ollama](https://ollama.com) —
+see the privacy section below.
 
 ## The seven commands
 

@@ -4,6 +4,47 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.2] — 2026-07-22
+
+**Windows-auth everywhere + `sqldoc doctor` + `driver:` override.** A field-fix
+release closing three gaps found installing sqldoc on a fresh, domain-joined
+work laptop running the **ODBC Driver 17** (not 18). No breaking changes;
+**1251 tests passing** (+25).
+
+### Added
+- **`--windows-auth` on every connecting command** — `doc`, `scan`, `health`,
+  `quality`, `intel`, `insights`, `comply`, `dbt`, `server`, `logs`, `secure`,
+  `waits`, `ha`, `deadlocks`, `plans`, `baseline`, `executive`, `serve`,
+  `backup`, and the integration `--push` commands now accept `--windows-auth`
+  (Trusted_Connection). With it, `--username`/`--password` are not required.
+  Also settable as `windows_auth: true` in `.sqldoc.yml`. Previously Windows
+  auth existed only for the CMS estate path (`cms`); it is now available for the
+  individual commands too. Implemented centrally in `_resolve_connection` +
+  `SqlServerAdapter.build_connection_string(..., windows_auth=)`.
+- **`sqldoc doctor`** — an environment-diagnostic command (`sqldoc/doctor.py`).
+  Reports Python, pyodbc, **installed ODBC drivers (names the SQL Server ones)**,
+  optional adapter drivers, AI-backend readiness (API keys + Ollama reachability),
+  `.sqldoc.yml` validity, and — when connection settings are supplied — a live
+  connection test. It explicitly flags the "Driver 18 default but only Driver 17
+  installed" case and points the user at the `driver:` fix. `--json` output for
+  CI. Every check is a pure, injectable probe (fully unit-tested).
+
+### Fixed
+- **`driver:` config key now actually overrides the default ODBC driver.**
+  `SqlServerAdapter.build_connection_string` gained a `driver=` parameter and
+  `.sqldoc.yml`'s `driver:` key is wired through `_resolve_connection`, so hosts
+  with **`ODBC Driver 17 for SQL Server`** (or another provider) can set
+  `driver: "ODBC Driver 17 for SQL Server"` and connect without editing a full
+  connection string. The value is validated (`validation.validate_driver`) and
+  brace-quoted so it cannot inject connection-string attributes.
+
+### Internal
+- `_make_resolver` (and `doc`'s inline resolver) are now None-safe for
+  config-only keys with no matching CLI parameter (e.g. `driver`).
+- New tests: `tests/test_doctor.py`, connection-string driver/windows-auth cases
+  in `tests/test_extractor.py` + `tests/security/test_sql_and_paths.py`, and CLI
+  flag/config flow tests in `tests/test_cli.py`.
+
 ## [3.0.1] — 2026-07-13
 
 **Dependency security patch.** A `pip-audit` re-run flagged a newly-published

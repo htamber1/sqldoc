@@ -12,6 +12,36 @@ def test_build_connection_string_has_driver_and_parts():
     assert "TrustServerCertificate=yes" in cs
 
 
+def test_build_connection_string_windows_auth():
+    cs = build_connection_string("host", "DB", None, None, windows_auth=True)
+    assert "Trusted_Connection=yes" in cs
+    assert "UID=" not in cs and "PWD=" not in cs
+    assert "ODBC Driver 18 for SQL Server" in cs
+
+
+def test_build_connection_string_driver_override():
+    cs = build_connection_string("host", "DB", "user", "pw",
+                                 driver="ODBC Driver 17 for SQL Server")
+    assert "DRIVER={ODBC Driver 17 for SQL Server}" in cs
+    assert "ODBC Driver 18" not in cs
+    assert "UID=user" in cs
+
+
+def test_build_connection_string_driver_and_windows_auth():
+    cs = build_connection_string("host", "DB", None, None, windows_auth=True,
+                                 driver="SQL Server Native Client 11.0")
+    assert "DRIVER={SQL Server Native Client 11.0}" in cs
+    assert "Trusted_Connection=yes" in cs
+
+
+def test_build_connection_string_rejects_driver_injection():
+    import pytest
+    from sqldoc.validation import ValidationError
+    with pytest.raises(ValidationError):
+        build_connection_string("host", "DB", "user", "pw",
+                                driver="x};UID=evil;{y")
+
+
 def test_extract_metadata_parses_columns(monkeypatch, fake_table_rows):
     monkeypatch.setattr(extractor, "get_connection", lambda cs: FakeConnection(fake_table_rows))
     tables = extractor.extract_metadata("ignored-conn-str")

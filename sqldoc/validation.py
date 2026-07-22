@@ -99,6 +99,26 @@ def validate_username(username: str, field: str = "username") -> str:
     return username
 
 
+def validate_driver(driver: str, field: str = "driver") -> str:
+    """Validate an ODBC driver name (from ``.sqldoc.yml`` ``driver:`` or a CLI
+    flag). The value is brace-quoted into ``DRIVER={...}`` by the connection
+    builder, so a literal ``}`` (or a control char) could break out of the
+    braces; reject those. Real driver names are plain text like
+    ``ODBC Driver 17 for SQL Server`` / ``SQL Server Native Client 11.0``."""
+    if driver is None or str(driver).strip() == "":
+        raise ValidationError(f"{field} must not be empty.")
+    driver = str(driver).strip()
+    if len(driver) > 128:
+        raise ValidationError(f"{field} is too long (>128 chars).")
+    _no_control(driver, field)
+    bad = {"{", "}"}.intersection(driver)
+    if bad:
+        raise ValidationError(
+            f"{field} contains a forbidden character ({''.join(sorted(bad))!r}); "
+            "this could inject connection-string attributes.")
+    return driver
+
+
 def validate_port(port, field: str = "port") -> int:
     """Validate a TCP port number (1-65535)."""
     try:

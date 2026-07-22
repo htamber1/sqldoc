@@ -11,6 +11,14 @@ server: localhost
 database: AdventureWorks2022
 username: sa
 # password: SqlDoc123!        # better supplied on the CLI than committed to disk
+# windows_auth: false         # true = connect with Windows auth (Trusted_Connection)
+                              # instead of a SQL login; then username/password are
+                              # not needed. Equivalent to the --windows-auth flag.
+# driver: ODBC Driver 18 for SQL Server
+                              # override the default ODBC driver — set this to
+                              # "ODBC Driver 17 for SQL Server" (or another
+                              # installed driver) on hosts without Driver 18.
+                              # Run `sqldoc doctor` to list installed drivers.
 
 # --- Output & AI preferences (all optional) ---
 output: documentation.html

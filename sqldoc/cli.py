@@ -10,6 +10,7 @@ from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc import industry as industry_mod
 from sqldoc import audit as audit_mod
+from sqldoc import doctor as doctor_mod
 from sqldoc.renderer import render_html
 from sqldoc.markdown_renderer import render_markdown
 from sqldoc.json_renderer import render_json
@@ -90,6 +91,8 @@ CONFIG_KEYS = {
     'frameworks',
     # Central Management Server (CMS).
     'cms', 'cms_servers', 'group', 'windows_auth', 'max_workers',
+    # ODBC driver override (config-only; e.g. "ODBC Driver 17 for SQL Server").
+    'driver',
 }
 
 
@@ -174,7 +177,10 @@ def _make_resolver(ctx, cfg):
     """Return a resolve(name, value, param) that prefers an explicit CLI flag,
     then the config value, then the built-in default."""
     def resolve(name, value, param=None):
-        if ctx.get_parameter_source(param or name).name == 'COMMANDLINE':
+        # A config-only key (e.g. 'driver') has no matching Click parameter, so
+        # get_parameter_source returns None — fall through to the config value.
+        src = ctx.get_parameter_source(param or name)
+        if src is not None and src.name == 'COMMANDLINE':
             return value
         return cfg.get(name, value)
     return resolve
@@ -203,6 +209,19 @@ def ai_backend_option(fn):
         help='AI backend: ollama (local) / anthropic / openai / gemini '
              '(default: derived from --mode). Cloud backends need the matching '
              'API key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY.')(fn)
+
+
+def windows_auth_option(fn):
+    """Shared --windows-auth flag for commands that open a live DB connection.
+
+    When set, the SQL Server connection uses Trusted_Connection (the caller's
+    Windows identity) instead of a SQL login, so --username/--password become
+    optional. Settable from config as `windows_auth: true`."""
+    return click.option(
+        '--windows-auth', 'windows_auth', is_flag=True, default=False,
+        help='Connect using Windows authentication (Trusted_Connection) instead '
+             'of a SQL login; --username/--password not required. SQL Server only.'
+    )(fn)
 
 
 def industry_option(fn):
@@ -372,26 +391,42 @@ def _verify_offline(output, enabled):
 
 
 def _resolve_connection(resolve, server, database, username, password, connection_string,
-                        dialect=None):
+                        dialect=None, windows_auth=False):
     """Merge connection settings and return (conn_str, database, server).
-    A --connection-string takes precedence over the discrete parts."""
+    A --connection-string takes precedence over the discrete parts. With
+    --windows-auth (or `windows_auth: true` in config) the connection uses
+    Trusted_Connection, so --username/--password are not required. The optional
+    `driver:` config key overrides the default ODBC driver (SQL Server)."""
     server = resolve('server', server)
     database = resolve('database', database)
     username = resolve('username', username)
     password = resolve('password', password)
     connection_string = resolve('connection_string', connection_string)
+    windows_auth = resolve('windows_auth', windows_auth)
+    driver = resolve('driver', None)
     if connection_string:
         conn_str, database = connection_string, (database or _parse_database(connection_string) or 'database')
+    elif windows_auth:
+        missing = [n for n, v in (('server', server), ('database', database)) if not v]
+        if missing:
+            raise click.UsageError(
+                "Missing connection settings: " + ", ".join(missing) +
+                ". With --windows-auth provide --server/--database (a "
+                "--connection-string or a .sqldoc.yml config file also work)."
+            )
+        conn_str = build_connection_string(server, database, username, password,
+                                           windows_auth=True, driver=driver)
     else:
         missing = [n for n, v in (('server', server), ('database', database),
                                   ('username', username), ('password', password)) if not v]
         if missing:
             raise click.UsageError(
                 "Missing connection settings: " + ", ".join(missing) +
-                ". Provide --server/--database/--username/--password, a "
-                "--connection-string, or a .sqldoc.yml config file."
+                ". Provide --server/--database/--username/--password (or "
+                "--windows-auth), a --connection-string, or a .sqldoc.yml config file."
             )
-        conn_str = build_connection_string(server, database, username, password)
+        conn_str = build_connection_string(server, database, username, password,
+                                           driver=driver)
     return conn_str, database, server
 
 
@@ -612,7 +647,8 @@ def _run_cms_access_review(cfg, group, output, json_out, max_workers):
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
 @cms_bulk_option
-def main(config, server, database, username, password, connection_string, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline, use_cms, group, max_workers):
+@windows_auth_option
+def main(config, server, database, username, password, connection_string, windows_auth, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline, use_cms, group, max_workers):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -623,7 +659,9 @@ def main(config, server, database, username, password, connection_string, dialec
     def resolve(name, value, param=None):
         # `name` is the config key; `param` is the Click parameter name when it
         # differs (e.g. config key 'format' vs. option dest 'output_format').
-        if ctx.get_parameter_source(param or name).name == 'COMMANDLINE':
+        # A config-only key (e.g. 'driver') has no Click param -> source is None.
+        src = ctx.get_parameter_source(param or name)
+        if src is not None and src.name == 'COMMANDLINE':
             return value
         return cfg.get(name, value)
 
@@ -653,21 +691,11 @@ def main(config, server, database, username, password, connection_string, dialec
     yes = resolve('yes', yes)
 
     # Resolve how we connect: a full connection string takes precedence over the
-    # individual --server/--database/--username/--password parts.
-    if connection_string:
-        conn_str = connection_string
-        # database is only used for labeling + snapshot/cache filenames.
-        database = database or _parse_database(connection_string) or 'database'
-    else:
-        missing = [n for n, v in (('server', server), ('database', database),
-                                  ('username', username), ('password', password)) if not v]
-        if missing:
-            raise click.UsageError(
-                "Missing connection settings: " + ", ".join(missing) +
-                ". Provide --server/--database/--username/--password, a "
-                "--connection-string, or a .sqldoc.yml config file."
-            )
-        conn_str = build_connection_string(server, database, username, password)
+    # individual --server/--database/--username/--password parts. --windows-auth
+    # (Trusted_Connection) and the `driver:` config override are handled here too.
+    conn_str, database, server = _resolve_connection(
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
 
     # Resolve the dialect and open the matching adapter (rejects unsupported).
     adapter = open_adapter(resolve, conn_str, dialect)
@@ -840,7 +868,8 @@ def main(config, server, database, username, password, connection_string, dialec
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
-def scan(config, server, database, username, password, connection_string, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline, use_cms, group, max_workers):
+@windows_auth_option
+def scan(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline, use_cms, group, max_workers):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -856,7 +885,8 @@ def scan(config, server, database, username, password, connection_string, dialec
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     mode = resolve('mode', mode)
@@ -1129,7 +1159,8 @@ def install_hooks(repo, force):
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
-def health(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline, use_cms, group, max_workers):
+@windows_auth_option
+def health(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline, use_cms, group, max_workers):
     """Analyze database health from SQL Server DMVs.
 
     Surfaces the slowest cached queries, tables with writes but no reads,
@@ -1148,7 +1179,8 @@ def health(config, server, database, username, password, connection_string, dial
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'health', 'health')
     schemas = resolve('schemas', schemas)
@@ -1228,7 +1260,8 @@ def health(config, server, database, username, password, connection_string, dial
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
-def quality(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline, use_cms, group, max_workers):
+@windows_auth_option
+def quality(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline, use_cms, group, max_workers):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
@@ -1243,7 +1276,8 @@ def quality(config, server, database, username, password, connection_string, dia
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'quality', 'quality')
     schemas = resolve('schemas', schemas)
@@ -1330,7 +1364,8 @@ def quality(config, server, database, username, password, connection_string, dia
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
-def intel(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline, use_cms, group, max_workers):
+@windows_auth_option
+def intel(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline, use_cms, group, max_workers):
     """Schema intelligence: naming, orphaned FKs, impact analysis, migrations, linked servers.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
@@ -1348,7 +1383,8 @@ def intel(config, server, database, username, password, connection_string, diale
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
@@ -1450,7 +1486,8 @@ def intel(config, server, database, username, password, connection_string, diale
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
-def insights(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, industry, no_ai, concurrency, yes, verify_offline):
+@windows_auth_option
+def insights(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, industry, no_ai, concurrency, yes, verify_offline):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -1463,7 +1500,8 @@ def insights(config, server, database, username, password, connection_string, di
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
@@ -1638,7 +1676,8 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
               help='Also assess these compliance frameworks (comma-separated, or "all"): '
                    'sox, fedramp, iso27001, cmmc, ccpa, pipeda, soc2 — each mapped to control numbers')
 @cms_bulk_option
-def comply(config, server, database, username, password, connection_string, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks, use_cms, group, max_workers):
+@windows_auth_option
+def comply(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks, use_cms, group, max_workers):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1679,7 +1718,8 @@ def comply(config, server, database, username, password, connection_string, dial
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
 
     click.echo(f"\nsqldoc v{__version__}  -  Compliance report")
@@ -1791,7 +1831,8 @@ def comply(config, server, database, username, password, connection_string, dial
               help='Skip the database connection and produce dbt-only docs (no live schema merge)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def dbt(config, project_dir, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def dbt(config, project_dir, server, database, username, password, connection_string, windows_auth, dialect,
         schemas, output, json_out, no_db, verify_offline):
     """Unify dbt model metadata with the live database schema.
 
@@ -1832,7 +1873,8 @@ def dbt(config, project_dir, server, database, username, password, connection_st
                      or cfg.get('connection_string') or cfg.get('server'))
     if not no_db and have_conn:
         conn_str, database, server = _resolve_connection(
-            resolve, server, database, username, password, connection_string, dialect)
+            resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
         adapter = open_adapter(resolve, conn_str, dialect)
         click.echo(f"Connecting to {adapter.display_name} to merge the live schema...")
         try:
@@ -1885,7 +1927,8 @@ def dbt(config, project_dir, server, database, username, password, connection_st
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @cms_bulk_option
-def server(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def server(config, server, database, username, password, connection_string, windows_auth, dialect,
            output, json_out, top, no_jobs, verify_offline, use_cms, group, max_workers):
     """Instance-level SQL Server health + SQL Agent jobs.
 
@@ -1905,7 +1948,8 @@ def server(config, server, database, username, password, connection_string, dial
         return
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'server')
     output = resolve('output', output)
@@ -1993,7 +2037,8 @@ def server(config, server, database, username, password, connection_string, dial
 @click.option('--json', 'json_out', default=None, help='Also write the log report as machine-readable JSON to this path')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def logs(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def logs(config, server, database, username, password, connection_string, windows_auth, dialect,
          log_number, search, severity, last_hours, output, json_out, verify_offline):
     """Read the SQL Server ERRORLOG and highlight critical events.
 
@@ -2007,7 +2052,8 @@ def logs(config, server, database, username, password, connection_string, dialec
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'server_monitoring', 'logs')
     output = resolve('output', output)
@@ -2067,7 +2113,8 @@ def logs(config, server, database, username, password, connection_string, dialec
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @cms_bulk_option
-def secure(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def secure(config, server, database, username, password, connection_string, windows_auth, dialect,
            output, json_out, fail_under, verify_offline, use_cms, group, max_workers):
     """Scan for security misconfigurations and score them 0-100.
 
@@ -2084,7 +2131,8 @@ def secure(config, server, database, username, password, connection_string, dial
         return
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'secure')
     output = resolve('output', output)
@@ -2151,7 +2199,8 @@ def secure(config, server, database, username, password, connection_string, dial
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def waits(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def waits(config, server, database, username, password, connection_string, windows_auth, dialect,
           output, json_out, top, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Analyze what the server is waiting on and explain it with AI.
 
@@ -2166,7 +2215,8 @@ def waits(config, server, database, username, password, connection_string, diale
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'waits')
     output = resolve('output', output)
@@ -2236,7 +2286,8 @@ def waits(config, server, database, username, password, connection_string, diale
 @click.option('--json', 'json_out', default=None, help='Also write the HA report as machine-readable JSON to this path')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def ha(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def ha(config, server, database, username, password, connection_string, windows_auth, dialect,
        output, json_out, verify_offline):
     """Monitor high-availability / replication: roles, sync state, and lag.
 
@@ -2250,7 +2301,8 @@ def ha(config, server, database, username, password, connection_string, dialect,
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'ha')
     output = resolve('output', output)
@@ -2310,7 +2362,8 @@ def ha(config, server, database, username, password, connection_string, dialect,
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def deadlocks(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def deadlocks(config, server, database, username, password, connection_string, windows_auth, dialect,
               output, json_out, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Find and visualize deadlocks, with an AI explanation of the cause and fix.
 
@@ -2326,7 +2379,8 @@ def deadlocks(config, server, database, username, password, connection_string, d
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'deadlocks')
     output = resolve('output', output)
@@ -2404,7 +2458,8 @@ def deadlocks(config, server, database, username, password, connection_string, d
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the cloud-mode confirmation prompt')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def plans(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def plans(config, server, database, username, password, connection_string, windows_auth, dialect,
           output, json_out, top, explain_top, no_ai, mode, model, ai_backend, yes, verify_offline):
     """Analyze the worst cached query plans and recommend fixes with AI.
 
@@ -2420,7 +2475,8 @@ def plans(config, server, database, username, password, connection_string, diale
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'plans')
     output = resolve('output', output)
@@ -2561,7 +2617,8 @@ def capacity(store_path, database, output, json_out, verify_offline):
               help='Exit non-zero if any regression is found (for CI gating)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
-def baseline(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def baseline(config, server, database, username, password, connection_string, windows_auth, dialect,
              capture, baseline_file, threshold, output, json_out, fail_on_regression, verify_offline):
     """Capture a performance baseline and detect regressions against it.
 
@@ -2576,7 +2633,8 @@ def baseline(config, server, database, username, password, connection_string, di
     resolve = _make_resolver(ctx, cfg)
 
     conn_str, database, server_name = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'baseline')
     output = resolve('output', output)
@@ -2652,7 +2710,8 @@ def baseline(config, server, database, username, password, connection_string, di
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @cms_bulk_option
-def executive(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def executive(config, server, database, username, password, connection_string, windows_auth, dialect,
               schemas, output, json_out, industry, no_baseline, baseline, verify_offline,
               use_cms, group, max_workers):
     """Single-page, plain-English health + risk summary for a CTO / CISO.
@@ -2677,7 +2736,8 @@ def executive(config, server, database, username, password, connection_string, d
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     schemas = resolve('schemas', schemas)
     output = resolve('output', output)
@@ -2787,8 +2847,9 @@ def executive(config, server, database, username, password, connection_string, d
               help='Serve multiple isolated tenants from the .sqldoc.yml "tenants:" list; each tenant has its own api_key + database and cannot reach another tenant\'s data')
 @click.option('--mode', default='local', type=click.Choice(['local', 'cloud']), help='AI mode for POST /api/query')
 @click.option('--model', default=None, help='Model for POST /api/query')
+@windows_auth_option
 def serve(config, api, host, port, server, database, username, password, connection_string,
-          dialect, api_key, multi_tenant, mode, model):
+          windows_auth, dialect, api_key, multi_tenant, mode, model):
     """Start a local REST API exposing sqldoc commands as JSON endpoints.
 
     Other tools/dashboards can call GET /api/doc, /api/scan, /api/health,
@@ -2840,7 +2901,8 @@ def serve(config, api, host, port, server, database, username, password, connect
     resolved_db = None
     try:
         conn_str, resolved_db, server = _resolve_connection(
-            resolve, server, database, username, password, connection_string, dialect)
+            resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     except click.UsageError:
         conn_str = None
 
@@ -3014,7 +3076,8 @@ def _run_integration(name, push_mode, config, server, database, username, passwo
             return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     click.echo(f"Collecting {database} from {adapter.display_name}...")
     try:
@@ -3063,7 +3126,8 @@ def make_integration_command(name, summary, push_mode):
     @click.option('--kinds', default=None,
                   help='Comma-separated report kinds to publish (default: all) — '
                        'doc_html, doc_pdf, executive_html, pii_html, pii_json, health_json, metrics_json')
-    def _cmd(config, server, database, username, password, connection_string, dialect,
+    @windows_auth_option
+    def _cmd(config, server, database, username, password, connection_string, windows_auth, dialect,
              schemas, do_test, do_push, kinds):
         _run_integration(name, push_mode, config, server, database, username, password,
                          connection_string, dialect, schemas, do_test, do_push, kinds)
@@ -3191,7 +3255,8 @@ webhook = make_integration_command(
 @click.option('--output', default='backup-report.html', help='Output HTML report path')
 @click.option('--json', 'json_out', default=None, help='Also write machine-readable JSON here')
 @cms_bulk_option
-def backup(config, server, database, username, password, connection_string, dialect,
+@windows_auth_option
+def backup(config, server, database, username, password, connection_string, windows_auth, dialect,
            output, json_out, use_cms, group, max_workers):
     """Backup + point-in-time-recovery status for every database on the instance.
 
@@ -3207,7 +3272,8 @@ def backup(config, server, database, username, password, connection_string, dial
         return
 
     conn_str, database, server = _resolve_connection(
-        resolve, server, database, username, password, connection_string, dialect)
+        resolve, server, database, username, password, connection_string, dialect,
+        windows_auth=windows_auth)
     adapter = open_adapter(resolve, conn_str, dialect)
     _require_capability(adapter, 'infra_monitoring', 'backup')
     output = resolve('output', output)
@@ -4105,6 +4171,79 @@ def access_intake(config, source, limit, mode, model, ai_backend, no_ai, output_
         click.echo(f"Combined JSON written to {json_out}")
 
 
+@click.command()
+@click.option('--config', default='.sqldoc.yml', help='Path to .sqldoc.yml config file')
+@click.option('--server', default=None, help='SQL Server hostname or IP (optional: test a live connection)')
+@click.option('--database', default=None, help='Database name (optional: test a live connection)')
+@click.option('--username', default=None, help='SQL Server username')
+@click.option('--password', default=None, help='SQL Server password')
+@click.option('--connection-string', default=None, help='Full ODBC connection string (optional: test a live connection)')
+@click.option('--dialect', default=None, type=click.Choice(DIALECT_CHOICES),
+              help='Database dialect (default: auto-detected)')
+@windows_auth_option
+@click.option('--json', 'json_out', default=None, help='Write the diagnostic report to this JSON file')
+def doctor(config, server, database, username, password, connection_string, windows_auth,
+           dialect, json_out):
+    """Diagnose the environment: Python, ODBC drivers, optional adapters, AI
+    backends, config, and (if connection settings are given) a live connection.
+
+    Run this first on a new machine — it names exactly which ODBC drivers are
+    installed, so an "ODBC Driver 17 vs 18" mismatch is obvious and fixable via
+    the `driver:` config key."""
+    ctx = click.get_current_context()
+    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    resolve = _make_resolver(ctx, cfg)
+
+    # Only test a connection when the user actually supplied connection settings
+    # (flags, a connection string, or a config file with a database).
+    conn_str = None
+    have_conn = any(v is not None for v in (server, database, username, password,
+                                            connection_string)) or \
+        any(cfg.get(k) for k in ('server', 'database', 'connection_string'))
+    if have_conn:
+        try:
+            conn_str, _db, _srv = _resolve_connection(
+                resolve, server, database, username, password, connection_string,
+                dialect, windows_auth=windows_auth)
+        except click.UsageError as e:
+            # Missing pieces just means we skip the live test — report it, don't crash.
+            click.echo(click.style(f"  (connection test skipped: {e})", fg='yellow'), err=True)
+
+    report = doctor_mod.run_checks(config_path=config, conn_str=conn_str)
+
+    if json_out:
+        import json as _json
+        payload = {
+            "status": report.status,
+            "ok": report.ok,
+            "checks": [
+                {"name": c.name, "status": c.status, "detail": c.detail, "hint": c.hint}
+                for c in report.checks
+            ],
+        }
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, indent=2)
+        click.echo(f"Diagnostic report written to {json_out}")
+
+    _icons = {doctor_mod.OK: ('ok  ', 'green'),
+              doctor_mod.WARN: ('warn', 'yellow'),
+              doctor_mod.FAIL: ('FAIL', 'red')}
+    click.echo(click.style(f"\nsqldoc doctor  -  environment diagnostics", bold=True))
+    click.echo("=" * 60)
+    for c in report.checks:
+        label, color = _icons[c.status]
+        click.echo(click.style(f"  [{label}] ", fg=color) + f"{c.name}: {c.detail}")
+        if c.hint and c.status != doctor_mod.OK:
+            click.echo(click.style(f"         -> {c.hint}", fg=color))
+    click.echo("=" * 60)
+    if report.ok:
+        click.echo(click.style("All critical checks passed.", fg='green', bold=True))
+    else:
+        click.echo(click.style("One or more critical checks FAILED (see above).",
+                               fg='red', bold=True))
+        raise SystemExit(1)
+
+
 class DefaultGroup(click.Group):
     """A group that routes to the `doc` command when invoked with options but no
     subcommand — so `sqldoc --server ...` keeps working alongside `sqldoc scan`."""
@@ -4123,6 +4262,7 @@ def cli():
 
 
 cli.add_command(main, name='doc')
+cli.add_command(doctor, name='doctor')
 cli.add_command(scan, name='scan')
 cli.add_command(scan_files, name='scan-files')
 cli.add_command(install_hooks, name='install-hooks')

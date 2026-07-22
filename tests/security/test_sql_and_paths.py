@@ -2,7 +2,7 @@
 import pytest
 
 from sqldoc.validation import (validate_server, validate_database,
-                               validate_username, ValidationError)
+                               validate_username, validate_driver, ValidationError)
 from sqldoc.adapters.sqlserver import SqlServerAdapter
 
 
@@ -40,6 +40,29 @@ def test_build_connection_string_rejects_injected_server():
     with pytest.raises(ValidationError):
         SqlServerAdapter.build_connection_string(
             "h;UID=attacker", "d", "u", "p")
+
+
+@pytest.mark.parametrize("bad", ["drv}", "{drv", "drv}UID=evil"])
+def test_validate_driver_rejects_brace_breakout(bad):
+    with pytest.raises(ValidationError):
+        validate_driver(bad)
+
+
+def test_validate_driver_accepts_real_names():
+    assert validate_driver("ODBC Driver 17 for SQL Server")
+    assert validate_driver("SQL Server Native Client 11.0")
+
+
+def test_build_connection_string_driver_override_is_quoted():
+    cs = SqlServerAdapter.build_connection_string(
+        "h", "d", "u", "p", driver="ODBC Driver 17 for SQL Server")
+    assert cs.startswith("DRIVER={ODBC Driver 17 for SQL Server};")
+
+
+def test_build_connection_string_windows_auth_omits_credentials():
+    cs = SqlServerAdapter.build_connection_string("h", "d", None, None, windows_auth=True)
+    assert "Trusted_Connection=yes" in cs
+    assert "UID=" not in cs and "PWD=" not in cs
 
 
 # --- identifier quoting (doubles the close-quote) --------------------------

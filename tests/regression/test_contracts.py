@@ -28,7 +28,7 @@ def _person_table():
 EXPECTED_COMMANDS = {
     "access", "agent", "audit", "azuredevops", "azuredevops-wiki", "backup",
     "baseline", "box", "capacity", "cms", "comply", "confluence", "dbt", "deadlocks", "doc",
-    "dropbox", "executive", "gdrive", "github-wiki", "gitlab-wiki", "ha", "health",
+    "doctor", "dropbox", "executive", "gdrive", "github-wiki", "gitlab-wiki", "ha", "health",
     "insights", "install-hooks", "intel", "jira", "logs", "notion", "nuclino",
     "onedrive", "plans", "powerbi", "quality", "scan", "scan-files", "secure",
     "serve", "server", "servicenow", "sharepoint", "waits", "webhook",

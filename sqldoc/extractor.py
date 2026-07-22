@@ -30,8 +30,11 @@ __all__ = [
 ]
 
 
-def build_connection_string(server: str, database: str, username: str, password: str) -> str:
-    return SqlServerAdapter.build_connection_string(server, database, username, password)
+def build_connection_string(server: str, database: str, username: str, password: str,
+                            windows_auth: bool = False, driver: str = None) -> str:
+    return SqlServerAdapter.build_connection_string(
+        server, database, username, password,
+        windows_auth=windows_auth, driver=driver)
 
 
 def get_connection(connection_string: str):

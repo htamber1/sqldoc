@@ -32,25 +32,38 @@ class SqlServerAdapter(DatabaseAdapter):
     def _default_connect(connection_string: str):
         return pyodbc.connect(connection_string)
 
+    # Default ODBC driver when the caller / config does not name one.
+    DEFAULT_DRIVER = "ODBC Driver 18 for SQL Server"
+
     @staticmethod
     def build_connection_string(server: str, database: str,
-                                username: str, password: str) -> str:
+                                username: str, password: str,
+                                windows_auth: bool = False,
+                                driver: str = None) -> str:
         # Validate the interpolated parts so a value containing an ODBC
         # separator (;{}= or a newline) cannot inject extra connection
         # attributes. The password is not validated for content (it may legally
         # contain any character) but is brace-quoted below so it stays a single
         # attribute value; a literal closing brace is doubled per the ODBC spec.
         from sqldoc.validation import (validate_server, validate_database,
-                                       validate_username)
+                                       validate_username, validate_driver)
         server = validate_server(server)
         database = validate_database(database)
+        # The driver name is config/CLI supplied, so validate + brace-quote it:
+        # older hosts commonly run "ODBC Driver 17 for SQL Server" instead of 18.
+        driver_name = validate_driver(driver) if driver else SqlServerAdapter.DEFAULT_DRIVER
+        base = (
+            f"DRIVER={{{driver_name}}};"
+            f"SERVER={server};"
+            f"DATABASE={database};"
+        )
+        if windows_auth:
+            # Trusted_Connection uses the caller's Windows identity; no UID/PWD.
+            return base + "Trusted_Connection=yes;TrustServerCertificate=yes;"
         username = validate_username(username)
         pwd = "" if password is None else str(password)
         pwd_quoted = "{" + pwd.replace("}", "}}") + "}"
-        return (
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-            f"SERVER={server};"
-            f"DATABASE={database};"
+        return base + (
             f"UID={username};"
             f"PWD={pwd_quoted};"
             f"TrustServerCertificate=yes;"

@@ -113,6 +113,62 @@ def test_dialect_autodetected_from_connection_string(patched, tmp_path, monkeypa
     assert seen['dialect'] == "postgres"
 
 
+def test_windows_auth_builds_trusted_connection(patched, tmp_path, monkeypatch):
+    # --windows-auth: connect via Trusted_Connection, no --username/--password.
+    seen = {}
+    real_open = cli.open_adapter
+    def spy(resolve, conn_str, dialect):
+        seen['cs'] = conn_str
+        return real_open(resolve, conn_str, dialect)
+    monkeypatch.setattr(cli, "open_adapter", spy)
+    res = CliRunner().invoke(cli.main, [
+        "--server", "h", "--database", "DB", "--windows-auth",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "Trusted_Connection=yes" in seen['cs']
+    assert "UID=" not in seen['cs']
+
+
+def test_driver_config_overrides_default(patched, tmp_path, monkeypatch):
+    # A `driver:` key in .sqldoc.yml overrides the default ODBC Driver 18.
+    cfg = tmp_path / ".sqldoc.yml"
+    cfg.write_text("driver: ODBC Driver 17 for SQL Server\n", encoding="utf-8")
+    seen = {}
+    real_open = cli.open_adapter
+    def spy(resolve, conn_str, dialect):
+        seen['cs'] = conn_str
+        return real_open(resolve, conn_str, dialect)
+    monkeypatch.setattr(cli, "open_adapter", spy)
+    res = CliRunner().invoke(cli.main, [
+        "--config", str(cfg),
+        "--server", "h", "--database", "DB", "--username", "u", "--password", "p",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "DRIVER={ODBC Driver 17 for SQL Server}" in seen['cs']
+    assert "ODBC Driver 18" not in seen['cs']
+
+
+def test_windows_auth_config_key(patched, tmp_path, monkeypatch):
+    # windows_auth can also be set in config; health uses _resolve_connection.
+    cfg = tmp_path / ".sqldoc.yml"
+    cfg.write_text("windows_auth: true\n", encoding="utf-8")
+    seen = {}
+    real_open = cli.open_adapter
+    monkeypatch.setattr(cli, "open_adapter",
+                        lambda r, c, d: (seen.update(cs=c), real_open(r, c, d))[1])
+    # health needs a live-capable dialect; extraction is not reached because
+    # collect_health is where it would connect — but the connection string is
+    # built (and captured) before that. Point at sqlserver so open_adapter is happy.
+    res = CliRunner().invoke(cli.main, [
+        "--config", str(cfg), "--server", "h", "--database", "DB",
+        "--no-ai", "--no-snapshot", "--no-cache", "--output", str(tmp_path / "d.html"),
+    ])
+    assert res.exit_code == 0, res.output
+    assert "Trusted_Connection=yes" in seen['cs']
+
+
 def test_unknown_dialect_rejected_by_choice(patched, tmp_path):
     # Click.Choice rejects a dialect that isn't in the registry.
     res = CliRunner().invoke(cli.main, [
