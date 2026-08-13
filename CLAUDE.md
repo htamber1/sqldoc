@@ -297,6 +297,65 @@ _Chronological build log (v0.1 → v1.2) follows._
 
 > Historical roadmap (Phases 1–3) is fully delivered through v1.2.0. The current forward plan is in **Next session — planned features** at the top of this section; Markdown/PDF/schema-diff/HTML-UX/triggers/computed-columns/retry/cache all shipped in the v1.1–1.2 line.
 
+## Large table safety
+
+Enterprise SQL databases routinely contain tables with **50–150 million rows**
+(logging, metering, monitoring, event/outbox tables, etc.). On such tables an
+unbounded full-table scan or aggregate does not merely run slowly — it can run for
+**hours** or appear to hang. And because sqldoc wraps per-item work in
+`try/except`, the failure is *silent*: the run stalls, or the report looks
+"complete" while missing data. This was observed live during dev-server validation
+against a 671-table / 300M-row corporate SQL Server: `quality` stalled for ~30 min
+on schema tables of ~60–123M rows (fixed by the guards below).
+
+**Rule:** any query that performs a full-table scan, or a full-table / all-column
+aggregate over **actual row data**, MUST have a **row-count guard** with a
+**configurable threshold** (default `5_000_000`; `0` = no limit) and **graceful
+degradation**. This applies to — but is not limited to:
+
+- `COUNT(DISTINCT col)` — sort/hash of all distinct values.
+- `GROUP BY <all columns>` — full-row duplicate detection.
+- `GROUP BY col ORDER BY COUNT(*)` — top-N value distributions.
+- `MIN(col)` / `MAX(col)` on unindexed or large columns.
+- any new profiling, sampling, or data-analysis query that reads row data.
+
+**Degradation, in priority order:**
+1. **Approximate** when the engine supports it — e.g. SQL Server 2019+
+   `APPROX_COUNT_DISTINCT`, PostgreSQL `hll`. **Detect the capability at runtime**
+   (server version / extension presence); never assume it exists.
+2. Otherwise **skip** the heavy stat and record a clear, user-visible note
+   (`"n/a (table too large)"` / `"skipped — table too large …"`) in
+   `report.errors` — it renders in the report's "Skipped" section and in JSON.
+3. Always keep the cheap, bounded stats (row count, null count) running.
+
+**Threshold plumbing (established pattern — reuse it):**
+- A `--<name>-max-rows` CLI option: `click.IntRange(0, None)`, default
+  `5_000_000`, `0` = unlimited; resolved through the config resolver like the rest,
+  and registered in `CONFIG_KEYS` so it is also settable from `.sqldoc.yml`.
+- Passed into the `collect_*` function as `<name>_max_rows`.
+- The guard compares the table's **extracted `row_count`** to the threshold
+  **before** issuing the query. A falsy threshold (`0`/`None`) disables the guard.
+
+**Dialect awareness:** capability differs per engine. Encode the approximate SQL
+plus a capability probe on each dialect profile; default to *skip* for engines
+without a safe approximation (MySQL, SQLite) rather than emitting an expensive
+query that hangs again.
+
+**Precedent in the codebase** (`sqldoc/quality.py`):
+- `detect_duplicates(..., row_count, max_rows)` → `_DUP_SKIPPED_TOO_LARGE` sentinel skip.
+- `analyze_column_quality(..., row_count, heavy_max_rows, approx_distinct_ok)`
+  and `_detect_approx_distinct()` (runtime `APPROX_COUNT_DISTINCT` / `hll` probe).
+- CLI flags `--duplicate-max-rows` and `--heavy-stats-max-rows`.
+
+Related: `collect_quality` also **reconnects on a dropped connection** rather than
+cascading one transient TCP blip into thousands of "communication link failure"
+skips and a silently-incomplete report (`_is_connection_lost` / `_reconnect`; an
+unrecoverable loss records one honest summary error and stops).
+
+**Every current and future feature that profiles or analyzes actual row data must
+follow this pattern.** When adding such a feature, add its threshold option, wire
+the guard, and degrade gracefully — do not ship an unbounded aggregate.
+
 ## Running
 
 Packaged with `pyproject.toml` (setuptools); `pip install .` (or `-e .`) installs the **`sqldoc`** console command (entry point `sqldoc.cli:main`). You can still run it as a module from the repo root using the checked-in venv:

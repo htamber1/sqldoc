@@ -4,6 +4,71 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.3] — 2026-08-13
+
+**Large-table safety + connection resiliency for `sqldoc quality`, plus a
+`backup` default fix.** Three real bugs found while validating sqldoc against a
+live **671-table, ~300-million-row corporate SQL Server** (Windows Auth, ODBC
+Driver 17). On enterprise-scale data the old `quality` path could silently
+produce an ~80%-incomplete report (exit 0) after a single transient blip, and
+could hang for many minutes on individual 60–123M-row tables. No breaking
+changes; **+15 tests** (1205 passing in the offline/mock suite).
+
+### Fixed
+- **`quality` now reconnects on a dropped connection** instead of cascading one
+  transient TCP blip into thousands of bogus skips. `collect_quality` opened a
+  single connection/cursor and reused it for every per-column aggregate (~7,700
+  columns on the validation DB); its per-column `try/except` — meant for benign
+  data errors (un-groupable `text`/`image` columns) — also silently swallowed
+  **connection-level** failures. When the link dropped once mid-run
+  (`08S01 … Communication link failure`), the dead cursor was reused for every
+  remaining column: one blip → **6,153 cascading skips**, only **1,564 of ~7,700
+  columns profiled (~80% lost)**, yet the command **exited 0** with a report that
+  *looked* complete. New `_is_connection_lost()` (classifies `08xxx`/`HYTxx`
+  SQLSTATEs + link-failure/`10053`/`10054` message text vs. a per-column data
+  error) and `_reconnect()` (fresh connection with exponential backoff); every
+  query now runs through a wrapper that reconnects **once** and retries on a
+  connection loss. An unrecoverable outage records **one** honest summary error
+  (`connection lost … stopped after N of M tables`) and stops, rather than
+  emitting thousands of skips and a falsely "complete" report. Per-column data
+  errors behave exactly as before.
+- **`backup --database` now defaults to `master`.** `sqldoc backup` is an
+  instance-level command (it reports backup/PITR status for *every* database on
+  the instance), and every sibling (`server`, `logs`, `secure`, `waits`,
+  `plans`, `ha`, `deadlocks`) declares `--database` with `default='master'`.
+  `backup` alone declared `default=None`, so the documented, sibling-consistent
+  invocation — `sqldoc backup --server <host> --windows-auth` with no
+  `--database` — failed shared connection validation with *"Missing connection
+  settings: database"*. The option's own help even said *"defaults to master"*;
+  the default was simply never wired up. Now fixed (and help text clarified).
+
+### Added — large-table safety (row-count guards + graceful degradation)
+- **`--duplicate-max-rows`** (default `5,000,000`; `0` = no limit) on
+  `sqldoc quality`. Full-row duplicate detection is a `GROUP BY <every column>`
+  scan — O(rows) and unbounded. On the validation DB's 60–123M-row tables it ran
+  so long the whole run appeared to hang (~30 min, no progress).
+  `detect_duplicates` now returns a skip sentinel **before issuing any query**
+  when a table's extracted `row_count` exceeds the threshold, and records a clear
+  note in the report's "Skipped" section (JSON too). Column profiling still runs
+  on every table; only the heaviest check is skipped past the threshold.
+- **`--heavy-stats-max-rows`** (default `5,000,000`; `0` = no limit) on
+  `sqldoc quality`. Per-column profiling was itself unbounded: `COUNT(DISTINCT)`,
+  `MIN`/`MAX`, and the top-values `GROUP BY` each scan/sort the whole column —
+  one `COUNT(DISTINCT)` was observed running **4.7+ minutes** on a single
+  60–123M-row column. Above the threshold, `quality` now **approximates** the
+  distinct count with **`APPROX_COUNT_DISTINCT`** on **SQL Server 2019+** (and the
+  PostgreSQL `hll` extension) — **detected at runtime** via a capability probe —
+  or **skips** it when no safe approximation exists (MySQL/SQLite), and skips
+  `MIN`/`MAX` + top-values; row count and null count (cheap, single scan) always
+  run. Each affected table records a per-table note (approximate vs. skipped).
+- **CLAUDE.md — "Large table safety"** development guideline: any query doing a
+  full-table scan or full-table/all-column aggregate over actual row data MUST
+  have a row-count guard with a configurable threshold (default `5,000,000`;
+  `0` = unlimited) and graceful degradation (approximate where the engine
+  supports it, else skip with a user-visible note; always keep row/null counts).
+  Both new options are registered in `CONFIG_KEYS`, so they are also settable
+  from `.sqldoc.yml`.
+
 ## [3.0.2] — 2026-07-22
 
 **Windows-auth everywhere + `sqldoc doctor` + `driver:` override.** A field-fix

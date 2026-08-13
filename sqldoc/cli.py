@@ -75,7 +75,7 @@ CONFIG_KEYS = {
     'baseline', 'no_baseline', 'sarif', 'json', 'pii_patterns', 'pii_allowlist',
     'confidence_threshold', 'fail_on', 'yes',
     'top', 'min_fragmentation', 'min_pages',
-    'top_values', 'no_duplicates', 'no_glossary',
+    'top_values', 'no_duplicates', 'duplicate_max_rows', 'heavy_stats_max_rows', 'no_glossary',
     'verify_offline',
     'project_dir', 'no_db',
     'databases', 'all_databases',
@@ -1256,12 +1256,16 @@ def health(config, server, database, username, password, connection_string, wind
               help='Most-frequent values to show per column for the distribution view (0 to skip; default: 5)')
 @click.option('--no-duplicates', 'no_duplicates', is_flag=True, default=False,
               help='Skip full-row duplicate detection (the heaviest check)')
+@click.option('--duplicate-max-rows', 'duplicate_max_rows', default=5_000_000, type=click.IntRange(0, None),
+              help='Skip full-row duplicate detection on tables above this row count (0 = no limit; default: 5,000,000). Prevents very long GROUP BY scans from stalling the run on huge tables.')
+@click.option('--heavy-stats-max-rows', 'heavy_stats_max_rows', default=5_000_000, type=click.IntRange(0, None),
+              help='Above this row count, approximate the per-column distinct count (APPROX_COUNT_DISTINCT on SQL Server 2019+, else skip) and skip MIN/MAX + top-values (0 = no limit; default: 5,000,000). Keeps profiling responsive on huge tables.')
 @click.option('--yes', '-y', is_flag=True, default=False, help='Skip the data-read confirmation prompt (for non-interactive use)')
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def quality(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top_values, no_duplicates, yes, verify_offline, use_cms, group, max_workers):
+def quality(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top_values, no_duplicates, duplicate_max_rows, heavy_stats_max_rows, yes, verify_offline, use_cms, group, max_workers):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
@@ -1285,6 +1289,8 @@ def quality(config, server, database, username, password, connection_string, win
     json_out = resolve('json', json_out, param='json_out')
     top_values = resolve('top_values', top_values, param='top_values')
     no_duplicates = resolve('no_duplicates', no_duplicates, param='no_duplicates')
+    duplicate_max_rows = resolve('duplicate_max_rows', duplicate_max_rows, param='duplicate_max_rows')
+    heavy_stats_max_rows = resolve('heavy_stats_max_rows', heavy_stats_max_rows, param='heavy_stats_max_rows')
     yes = resolve('yes', yes)
 
     click.echo(f"\nsqldoc v{__version__}  -  Data quality profiling")
@@ -1318,6 +1324,8 @@ def quality(config, server, database, username, password, connection_string, win
 
     report = collect_quality(adapter, tables, top_values=int(top_values),
                              schemas=schema_list, detect_dupes=not no_duplicates,
+                             dup_max_rows=int(duplicate_max_rows),
+                             heavy_max_rows=int(heavy_stats_max_rows),
                              progress=progress)
     report.database = database
 
@@ -3247,7 +3255,7 @@ webhook = make_integration_command(
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file')
 @click.option('--server', default=None, help='SQL Server hostname or IP')
-@click.option('--database', default=None, help='Database name (defaults to master)')
+@click.option('--database', default='master', help='Database to connect through (default: master; backup status is instance-wide)')
 @click.option('--username', default=None, help='SQL Server username')
 @click.option('--password', default=None, help='SQL Server password')
 @click.option('--connection-string', default=None, help='Full connection string')
