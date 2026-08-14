@@ -277,7 +277,11 @@ def analyze_column_quality(cursor, schema, table, column, data_type,
         approx_expr = profile.approx_distinct(col) if approx_distinct_ok else None
         distinct_expr = approx_expr if approx_expr is not None else "-1"
 
-    blank_expr = (f"SUM(CASE WHEN TRIM({col}) = '' THEN 1 ELSE 0 END)"
+    # LTRIM(RTRIM(...)) rather than TRIM(...): TRIM is SQL Server 2017+, and this
+    # expression is built for every string column on every dialect. The nested
+    # form is equivalent for whitespace and is valid on SQL Server 2005+ as well
+    # as Postgres, MySQL, SQLite, Oracle, Redshift, Snowflake, BigQuery and DB2.
+    blank_expr = (f"SUM(CASE WHEN LTRIM(RTRIM({col})) = '' THEN 1 ELSE 0 END)"
                   if is_string else "0")
     # MIN/MAX only for order-comparable types, and skipped on heavy tables.
     # Stringify in Python (no CAST, so the SQL stays dialect-neutral).

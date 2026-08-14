@@ -7,7 +7,49 @@ two runs reports genuine schema drift, like a git diff for your database.
 import json
 import os
 
-SNAPSHOT_VERSION = 1
+# 2: column "type" became a fully-qualified type string ("varchar(50)") instead
+# of the bare type name ("varchar"). Version 1 snapshots cannot be compared for
+# type changes -- see the guard in diff_snapshots.
+SNAPSHOT_VERSION = 2
+
+# Types whose declared width lives in max_length. nchar/nvarchar store bytes.
+_SIZED_TYPES = frozenset({"char", "varchar", "nchar", "nvarchar",
+                          "binary", "varbinary"})
+_WIDE_TYPES = frozenset({"nchar", "nvarchar"})
+# Types whose shape lives in precision/scale rather than length.
+_DECIMAL_TYPES = frozenset({"decimal", "numeric"})
+# Types carrying a fractional-seconds scale only.
+_SCALE_ONLY_TYPES = frozenset({"datetime2", "time", "datetimeoffset"})
+
+
+def type_signature(c) -> str:
+    """Fully-qualified column type, e.g. 'varchar(50)', 'decimal(18,4)', 'int'.
+
+    The bare sys.types name is not enough for change detection: varchar(20) and
+    varchar(50) are both 'varchar', so widening or narrowing a column was
+    invisible to the diff -- including narrowing, which risks data loss.
+
+    Degrades to the bare type name when the adapter does not supply
+    length/precision, so dialects without them behave exactly as before rather
+    than reporting spurious changes.
+    """
+    base = c.data_type or ""
+    lowered = base.lower()
+    precision = getattr(c, "precision", None)
+    scale = getattr(c, "scale", None)
+    max_length = getattr(c, "max_length", None)
+
+    if lowered in _DECIMAL_TYPES and precision is not None:
+        return f"{base}({precision},{scale or 0})"
+    if lowered in _SCALE_ONLY_TYPES and scale is not None:
+        return f"{base}({scale})"
+    if lowered in _SIZED_TYPES and max_length is not None:
+        if max_length == -1:
+            return f"{base}(max)"
+        # nchar/nvarchar report bytes; convert back to declared characters.
+        width = max_length // 2 if lowered in _WIDE_TYPES else max_length
+        return f"{base}({width})"
+    return base
 
 
 def build_snapshot(database, tables, views=None, procedures=None) -> dict:
@@ -15,7 +57,7 @@ def build_snapshot(database, tables, views=None, procedures=None) -> dict:
     procedures = procedures or []
 
     def col_shape(c):
-        shape = {"type": c.data_type, "nullable": bool(c.is_nullable)}
+        shape = {"type": type_signature(c), "nullable": bool(c.is_nullable)}
         if c.is_primary_key:
             shape["pk"] = True
         if c.is_foreign_key and c.references_table:
@@ -80,7 +122,7 @@ def load_snapshot(path: str):
         return json.load(f)
 
 
-def _diff_columns(old_cols: dict, new_cols: dict) -> dict:
+def _diff_columns(old_cols: dict, new_cols: dict, compare_types: bool = True) -> dict:
     added = [name for name in new_cols if name not in old_cols]
     removed = [name for name in old_cols if name not in new_cols]
     changed = []
@@ -89,8 +131,13 @@ def _diff_columns(old_cols: dict, new_cols: dict) -> dict:
             continue
         o, n = old_cols[name], new_cols[name]
         deltas = []
-        if o.get("type") != n.get("type"):
+        if compare_types and o.get("type") != n.get("type"):
             deltas.append(("type", o.get("type"), n.get("type")))
+        # What a foreign key points at is part of the schema contract. It was
+        # recorded but never compared, so retargeting an FK between two tables
+        # with the same referential actions was completely invisible.
+        if o.get("references") != n.get("references"):
+            deltas.append(("references", o.get("references"), n.get("references")))
         if o.get("nullable") != n.get("nullable"):
             deltas.append(("nullable", o.get("nullable"), n.get("nullable")))
         if bool(o.get("pk")) != bool(n.get("pk")):
@@ -107,8 +154,43 @@ def _diff_columns(old_cols: dict, new_cols: dict) -> dict:
     return {"added": sorted(added), "removed": sorted(removed), "changed": changed}
 
 
+def _diff_indexes(old_idx: dict, new_idx: dict):
+    """Indexes were captured in the snapshot but never compared, so adding or
+    dropping an index -- including a unique index, which is a real constraint
+    change -- was reported as no change at all."""
+    added = sorted(k for k in new_idx if k not in old_idx)
+    removed = sorted(k for k in old_idx if k not in new_idx)
+    changed = []
+    for name in sorted(set(old_idx) & set(new_idx)):
+        o, n = old_idx[name], new_idx[name]
+        deltas = []
+        for field in ("type", "unique", "primary_key"):
+            if o.get(field) != n.get(field):
+                deltas.append((field, o.get(field), n.get(field)))
+        for field in ("columns", "included"):
+            if list(o.get(field) or []) != list(n.get(field) or []):
+                deltas.append((field,
+                               ",".join(o.get(field) or []),
+                               ",".join(n.get(field) or [])))
+        if deltas:
+            changed.append({"name": name, "deltas": deltas})
+    return added, removed, changed
+
+
 def diff_snapshots(old: dict, new: dict) -> dict:
     old_t, new_t = old.get("tables", {}), new.get("tables", {})
+
+    # Snapshots before version 2 stored only the bare type name ('varchar'), so
+    # comparing them against version 2's precise types ('varchar(50)') would
+    # report a spurious type change for every sized column in the database.
+    # Suppress type deltas for the one run that straddles the format change;
+    # every other kind of change is still reported normally, and the run rewrites
+    # the snapshot so the next run compares types again.
+    try:
+        old_version = int(old.get("version", 1))
+    except (TypeError, ValueError):
+        old_version = 1
+    compare_types = old_version >= 2
 
     tables_added = sorted(name for name in new_t if name not in old_t)
     tables_removed = sorted(name for name in old_t if name not in new_t)
@@ -119,17 +201,24 @@ def diff_snapshots(old: dict, new: dict) -> dict:
 
     tables_modified = []
     for name in sorted(set(old_t) & set(new_t)):
-        cd = _diff_columns(old_t[name].get("columns", {}), new_t[name].get("columns", {}))
+        cd = _diff_columns(old_t[name].get("columns", {}),
+                           new_t[name].get("columns", {}),
+                           compare_types=compare_types)
         checks_added, checks_removed = _presence_pair(
             old_t[name].get("checks", {}), new_t[name].get("checks", {}))
         uniques_added, uniques_removed = _presence_pair(
             old_t[name].get("uniques", {}), new_t[name].get("uniques", {}))
+        idx_added, idx_removed, idx_changed = _diff_indexes(
+            old_t[name].get("indexes", {}), new_t[name].get("indexes", {}))
         if (cd["added"] or cd["removed"] or cd["changed"]
-                or checks_added or checks_removed or uniques_added or uniques_removed):
+                or checks_added or checks_removed or uniques_added or uniques_removed
+                or idx_added or idx_removed or idx_changed):
             tables_modified.append({
                 "name": name, **cd,
                 "checks_added": checks_added, "checks_removed": checks_removed,
                 "uniques_added": uniques_added, "uniques_removed": uniques_removed,
+                "indexes_added": idx_added, "indexes_removed": idx_removed,
+                "indexes_changed": idx_changed,
             })
 
     def presence(kind):
@@ -142,6 +231,7 @@ def diff_snapshots(old: dict, new: dict) -> dict:
 
     diff = {
         "database": new.get("database"),
+        "types_not_compared": not compare_types,
         "tables_added": tables_added,
         "tables_removed": tables_removed,
         "tables_modified": tables_modified,
@@ -167,6 +257,11 @@ def diff_snapshots(old: dict, new: dict) -> dict:
 def iter_diff_lines(diff: dict):
     """Yield (kind, text) pairs for rendering. kind in:
     header, add, remove, change, context, summary, none."""
+    if diff.get("types_not_compared"):
+        yield ("context",
+               "Note: the previous snapshot predates precise column types, so "
+               "type changes are not compared on this run. The snapshot is "
+               "upgraded now; the next run will detect them.")
     if not diff["has_changes"]:
         yield ("none", "No schema changes since the last snapshot.")
         return
@@ -196,6 +291,13 @@ def iter_diff_lines(diff: dict):
             yield ("add", f"    + unique   {u}")
         for u in mod.get("uniques_removed", []):
             yield ("remove", f"    - unique   {u}")
+        for i in mod.get("indexes_added", []):
+            yield ("add", f"    + index    {i}")
+        for i in mod.get("indexes_removed", []):
+            yield ("remove", f"    - index    {i}")
+        for ch in mod.get("indexes_changed", []):
+            for field, old_v, new_v in ch["deltas"]:
+                yield ("change", f"    ~ index    {ch['name']}: {field} {old_v} -> {new_v}")
 
     for name in diff["views_added"]:
         yield ("add", f"+ view     {name}")

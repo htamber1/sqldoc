@@ -8,7 +8,7 @@ from sqldoc.intel import (classify_case, analyze_naming, detect_orphan_fks,
                           analyze_impact, generate_migration, collect_intel)
 from sqldoc.intel_renderer import build_intel_json, render_intel_html
 from sqldoc.snapshot import build_snapshot
-from sqldoc.extractor import Table, Column, View, StoredProcedure
+from sqldoc.extractor import Table, Column, Index, View, StoredProcedure
 from conftest import build_tables, build_views, build_procs
 
 
@@ -71,13 +71,81 @@ def test_generate_migration():
     new_tables[0].columns.append(Column("Note", "nvarchar", 200, True, False, False, None, None))
     new = build_snapshot("DB", new_tables)
     sql = generate_migration(old, new)
-    assert "ALTER TABLE [Sales].[Orders] ADD [Note] nvarchar NULL" in sql
+    # The snapshot records a fully-qualified type signature, so the generated
+    # DDL carries the declared width. It previously emitted a bare "nvarchar",
+    # which T-SQL reads as nvarchar(1) — silently narrowing the column.
+    # max_length is in bytes for nvarchar, so 200 bytes = nvarchar(100).
+    assert "ALTER TABLE [Sales].[Orders] ADD [Note] nvarchar(100) NULL" in sql
     assert "DROP TABLE [Sales].[Archive];" in sql
 
 
 def test_generate_migration_no_changes():
     snap = build_snapshot("DB", build_tables())
     assert "No schema changes" in generate_migration(snap, snap)
+
+
+def _with_index(idx):
+    """build_tables() with an extra index on Orders."""
+    tables = build_tables()
+    tables[0].indexes.append(idx)
+    return tables
+
+
+def test_generate_migration_reports_added_index():
+    """An index-only change used to produce a tables_modified entry that emitted
+    nothing at all -- just a blank line -- so the diff said the schema changed
+    while the migration said nothing did."""
+    old = build_snapshot("DB", build_tables())
+    new = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Customer", "NONCLUSTERED", False, False, ["CustomerID"], ["Status"])))
+    sql = generate_migration(old, new)
+    assert "index [IX_Orders_Customer] added" in sql
+    assert "[CustomerID]" in sql and "INCLUDE ([Status])" in sql
+
+
+def test_generate_migration_reports_removed_index():
+    old = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Status", "NONCLUSTERED", False, False, ["Status"], [])))
+    new = build_snapshot("DB", build_tables())
+    assert "index [IX_Orders_Status] removed" in generate_migration(old, new)
+
+
+def test_generate_migration_reports_index_uniqueness_change():
+    old = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Customer", "NONCLUSTERED", False, False, ["CustomerID"], [])))
+    new = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Customer", "NONCLUSTERED", True, False, ["CustomerID"], [])))
+    sql = generate_migration(old, new)
+    assert "index [IX_Orders_Customer]: unique False -> True" in sql
+
+
+def test_generate_migration_never_scripts_index_ddl():
+    """Index changes are commented, not scripted: the snapshot records
+    constraint-backing indexes under the constraint name, so a generated
+    CREATE/DROP INDEX would collide with the PRIMARY KEY / UNIQUE statements the
+    generator already emits for the same object."""
+    old = build_snapshot("DB", build_tables())
+    new = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Customer", "NONCLUSTERED", False, False, ["CustomerID"], [])))
+    sql = generate_migration(old, new)
+    assert "CREATE INDEX" not in sql.upper()
+    assert "DROP INDEX" not in sql.upper()
+    for line in sql.splitlines():
+        if "index [" in line:
+            assert line.lstrip().startswith("--"), f"index change was scripted: {line}"
+
+
+def test_index_only_change_is_not_a_silent_no_op():
+    """The whole point: the generated script must say something a reviewer can act on."""
+    old = build_snapshot("DB", build_tables())
+    new = build_snapshot("DB", _with_index(
+        Index("IX_Orders_Status", "NONCLUSTERED", False, False, ["Status"], [])))
+    sql = generate_migration(old, new)
+    assert "No schema changes" not in sql
+    body = [ln for ln in sql.splitlines()
+            if ln.strip() and not ln.startswith("-- Migration")
+            and not ln.startswith("-- Types") and not ln.startswith("-- Database")]
+    assert body, "index-only change produced an empty migration body"
 
 
 def test_collect_intel_with_baseline_generates_migration():

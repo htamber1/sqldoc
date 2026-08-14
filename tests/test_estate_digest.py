@@ -15,10 +15,13 @@ def store(tmp_path):
     return AgentStore(str(tmp_path / "agent.db"))
 
 
-def _diff(tables_added=(), tables_removed=(), cols_added=(), cols_removed=(), procs_added=()):
+def _diff(tables_added=(), tables_removed=(), cols_added=(), cols_removed=(), procs_added=(),
+          idx_added=(), idx_removed=(), idx_changed=()):
     tm = []
-    if cols_added or cols_removed:
-        tm.append({"name": "dbo.T", "added": list(cols_added), "removed": list(cols_removed)})
+    if cols_added or cols_removed or idx_added or idx_removed or idx_changed:
+        tm.append({"name": "dbo.T", "added": list(cols_added), "removed": list(cols_removed),
+                   "indexes_added": list(idx_added), "indexes_removed": list(idx_removed),
+                   "indexes_changed": list(idx_changed)})
     return {"tables_added": list(tables_added), "tables_removed": list(tables_removed),
             "tables_modified": tm, "procedures_added": list(procs_added),
             "procedures_removed": []}
@@ -31,6 +34,47 @@ def test_extract_schema_change():
                                         procs_added=["dbo.p1"]))
     assert d["new_tables"] == ["dbo.New"] and d["dropped_columns"] == 1
     assert d["new_procedures"] == ["dbo.p1"]
+
+
+def test_extract_counts_index_changes():
+    """Index add/drop/change reach the digest. A dropped index is a silent
+    performance regression and a uniqueness change is a constraint change --
+    both were detected by the snapshot diff but discarded here."""
+    d = ed._extract_schema_change(_diff(idx_added=["IX_A", "IX_B"], idx_removed=["IX_Old"],
+                                        idx_changed=[{"name": "IX_C", "deltas": []}]))
+    assert d["new_indexes"] == 2
+    assert d["dropped_indexes"] == 1
+    assert d["changed_indexes"] == 1
+
+
+def test_extract_tolerates_diffs_written_before_indexes_were_compared():
+    """Stored diffs predate the index keys; they must parse as zero, not KeyError."""
+    d = ed._extract_schema_change({"tables_added": [], "tables_removed": [],
+                                   "tables_modified": [{"name": "dbo.T", "added": ["c"]}],
+                                   "procedures_added": [], "procedures_removed": []})
+    assert d["new_indexes"] == d["dropped_indexes"] == d["changed_indexes"] == 0
+    assert d["new_columns"] == 1
+
+
+def test_index_changes_reach_totals_and_render(store):
+    store.add_event("srv1", "schema_change", "index dropped",
+                    _diff(idx_removed=["IX_Orders_Customer"], idx_added=["IX_New"]))
+    by = ed.collect_estate_changes(store, "2000-01-01T00:00:00+00:00")
+    totals = ed.estate_totals(by)
+    assert totals["new_indexes"] == 1 and totals["dropped_indexes"] == 1
+    html = ed.render_estate_digest_html(by, totals, "July 12, 2026")
+    assert "+1 index(es)" in html and "-1 index(es)" in html
+    assert "indexes" in ed.render_estate_digest_text(by, totals, "July 12, 2026")
+
+
+def test_totals_tolerate_schema_changes_without_index_keys():
+    """estate_totals must not KeyError on a bucket built from an older diff."""
+    by = {"srv1": {"schema_changes": [{"new_tables": [], "dropped_tables": [],
+                                       "new_columns": 1, "dropped_columns": 0,
+                                       "new_procedures": [], "dropped_procedures": []}],
+                   "new_pii": [], "other": []}}
+    t = ed.estate_totals(by)
+    assert t["new_columns"] == 1 and t["new_indexes"] == 0
 
 
 def test_extract_from_json_string():

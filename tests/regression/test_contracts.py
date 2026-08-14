@@ -145,6 +145,62 @@ def test_permission_classification_contract():
     assert classify_permission("SELECT", "GRANT_WITH_GRANT_OPTION") == "admin"
 
 
+def test_doc_json_schema():
+    """`doc --format json` is a published consumer contract, so its key sets are
+    pinned here.
+
+    This needs pinning more than the other JSON outputs, not less:
+    `json_renderer.build_json` serializes the extractor dataclasses with
+    `dataclasses.asdict`, so *any* field added to the model appears in the
+    export automatically, with no per-field code to review. `precision` and
+    `scale` reached the export exactly that way and went unnoticed.
+    """
+    from sqldoc.json_renderer import build_json, JSON_SCHEMA_VERSION
+    from conftest import build_views, build_procs
+
+    j = build_json("DB", [_person_table()], build_views(), build_procs())
+    assert j["schema_version"] == JSON_SCHEMA_VERSION == 1, (
+        "schema_version is the signal consumers key off; changing it is a "
+        "breaking change and must be deliberate.")
+    assert set(j.keys()) == {"schema_version", "sqldoc_version", "database",
+                             "generated_at", "stats", "tables", "views",
+                             "procedures"}
+    assert set(j["stats"].keys()) == {"tables", "views", "procedures", "columns"}
+    assert set(j["tables"][0].keys()) == {"schema", "name", "row_count", "description",
+                                          "columns", "indexes", "triggers",
+                                          "check_constraints", "unique_constraints"}
+    # `precision` and `scale` were added so change detection can tell
+    # decimal(10,2) from decimal(18,4) -- both are 9 bytes, so max_length alone
+    # cannot. They are additive and default to null on adapters that do not
+    # report them, so schema_version stays 1.
+    assert set(j["tables"][0]["columns"][0].keys()) == {
+        "name", "data_type", "max_length", "precision", "scale", "is_nullable",
+        "is_primary_key", "is_foreign_key", "references_table", "references_column",
+        "description", "is_computed", "computed_definition", "default_definition",
+        "fk_on_delete", "fk_on_update"}
+    assert set(j["views"][0].keys()) == {"schema", "name", "description", "columns",
+                                         "definition"}
+    assert set(j["procedures"][0].keys()) == {"schema", "name", "description",
+                                              "parameters", "definition"}
+    assert set(j["procedures"][0]["parameters"][0].keys()) == {
+        "name", "data_type", "max_length", "is_output"}
+
+
+def test_doc_json_index_and_constraint_schema():
+    """Index/trigger/constraint shapes ride the same asdict export."""
+    from sqldoc.json_renderer import build_json
+    from conftest import build_tables
+
+    t = build_json("DB", build_tables())["tables"][0]
+    assert set(t["indexes"][0].keys()) == {"name", "type_desc", "is_unique",
+                                           "is_primary_key", "key_columns",
+                                           "included_columns"}
+    assert set(t["triggers"][0].keys()) == {"name", "is_instead_of", "is_disabled",
+                                            "events", "definition"}
+    assert set(t["check_constraints"][0].keys()) == {"name", "definition", "column"}
+    assert set(t["unique_constraints"][0].keys()) == {"name", "columns"}
+
+
 # --- rendered report structure ---------------------------------------------
 
 def test_doc_report_structure(tmp_path):

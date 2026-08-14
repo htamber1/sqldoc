@@ -34,13 +34,25 @@ def _extract_schema_change(diff) -> dict:
     """Structured counts from a stored schema-change diff."""
     d = _parse_detail(diff)
     new_cols = dropped_cols = 0
+    # Index changes ride the same tables_modified entries. An index appearing or
+    # disappearing overnight is exactly what a digest exists to surface -- a
+    # dropped index is a silent performance regression, and a uniqueness change
+    # is a constraint change -- so they are counted rather than dropped on the
+    # floor. Keys are read with .get so older stored diffs, written before the
+    # snapshot compared indexes at all, still parse.
+    new_idx = dropped_idx = changed_idx = 0
     for tm in d.get("tables_modified", []) or []:
         new_cols += len(tm.get("added", []))
         dropped_cols += len(tm.get("removed", []))
+        new_idx += len(tm.get("indexes_added", []) or [])
+        dropped_idx += len(tm.get("indexes_removed", []) or [])
+        changed_idx += len(tm.get("indexes_changed", []) or [])
     return {
         "new_tables": d.get("tables_added", []) or [],
         "dropped_tables": d.get("tables_removed", []) or [],
         "new_columns": new_cols, "dropped_columns": dropped_cols,
+        "new_indexes": new_idx, "dropped_indexes": dropped_idx,
+        "changed_indexes": changed_idx,
         "new_procedures": d.get("procedures_added", []) or [],
         "dropped_procedures": d.get("procedures_removed", []) or [],
     }
@@ -65,7 +77,8 @@ def collect_estate_changes(store, since_iso: str) -> dict:
 
 def estate_totals(by_server: dict) -> dict:
     t = {"servers_changed": 0, "new_tables": 0, "dropped_tables": 0,
-         "new_columns": 0, "dropped_columns": 0, "new_procedures": 0,
+         "new_columns": 0, "dropped_columns": 0, "new_indexes": 0,
+         "dropped_indexes": 0, "changed_indexes": 0, "new_procedures": 0,
          "dropped_procedures": 0, "new_pii": 0}
     for srv, b in by_server.items():
         if b["schema_changes"] or b["new_pii"] or b["other"]:
@@ -75,6 +88,10 @@ def estate_totals(by_server: dict) -> dict:
             t["dropped_tables"] += len(sc["dropped_tables"])
             t["new_columns"] += sc["new_columns"]
             t["dropped_columns"] += sc["dropped_columns"]
+            # .get: a digest assembled from an older stored diff has no index keys.
+            t["new_indexes"] += sc.get("new_indexes", 0)
+            t["dropped_indexes"] += sc.get("dropped_indexes", 0)
+            t["changed_indexes"] += sc.get("changed_indexes", 0)
             t["new_procedures"] += len(sc["new_procedures"])
             t["dropped_procedures"] += len(sc["dropped_procedures"])
         t["new_pii"] += len(b["new_pii"])
@@ -101,6 +118,12 @@ def render_estate_digest_html(by_server, totals, day_label) -> str:
                 bits.append(f"+{sc['new_columns']} column(s)")
             if sc["dropped_columns"]:
                 bits.append(f"-{sc['dropped_columns']} column(s)")
+            if sc.get("new_indexes"):
+                bits.append(f"+{sc['new_indexes']} index(es)")
+            if sc.get("dropped_indexes"):
+                bits.append(f"-{sc['dropped_indexes']} index(es)")
+            if sc.get("changed_indexes"):
+                bits.append(f"~{sc['changed_indexes']} index(es) changed")
             if sc["new_procedures"]:
                 bits.append(f"+{len(sc['new_procedures'])} proc(s)")
             if sc["dropped_procedures"]:
@@ -115,6 +138,7 @@ def render_estate_digest_html(by_server, totals, day_label) -> str:
     summary = (f"<p><strong>{totals['servers_changed']}</strong> server(s) changed overnight: "
                f"+{totals['new_tables']} tables, -{totals['dropped_tables']} tables, "
                f"+{totals['new_columns']} / -{totals['dropped_columns']} columns, "
+               f"+{totals['new_indexes']} / -{totals['dropped_indexes']} indexes, "
                f"+{totals['new_procedures']} procedures, {totals['new_pii']} new PII finding(s).</p>")
     body = summary + ("".join(rows) if rows else "<p>No changes across the estate.</p>")
     return (f"<html><body style='font-family:-apple-system,Segoe UI,sans-serif;color:#222'>"
@@ -126,6 +150,7 @@ def render_estate_digest_text(by_server, totals, day_label) -> str:
     lines = [f"sqldoc estate change digest - {day_label}",
              f"{totals['servers_changed']} server(s) changed: +{totals['new_tables']} tables, "
              f"-{totals['dropped_tables']} tables, +{totals['new_columns']}/-{totals['dropped_columns']} columns, "
+             f"+{totals['new_indexes']}/-{totals['dropped_indexes']} indexes, "
              f"+{totals['new_procedures']} procs, {totals['new_pii']} new PII", ""]
     for srv in sorted(by_server):
         b = by_server[srv]

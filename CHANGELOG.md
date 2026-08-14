@@ -4,6 +4,120 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] — 2026-08-14
+
+**SQL Server 2016 support, complete schema-change detection, and error messages
+that name the real failure.** A purely additive release — no command changes
+behaviour by default, and nothing here breaks an existing pipeline on upgrade.
+The minor bump reflects new functionality (a new opt-in flag, new detection, a
+new snapshot format), not a break. **+89 tests (1446 → 1535 passing**, plus 123
+skip-gated integration tests).
+
+The theme is the same one v3.0.3 and v3.0.4 chased: **silent wrongness**. Every
+fix below is a case where sqldoc exited 0 and produced a report that looked
+complete and correct while being neither.
+
+### Added
+
+- **`--fail-on-partial` on every `--cms`-capable command** (`doc`, `scan`,
+  `health`, `quality`, `intel`, `comply`, `server`, `secure`, `backup`,
+  `executive`, `access review`). A `--cms` fan-out treats per-server errors as
+  non-fatal so one unreachable host cannot stop an estate run — but that means a
+  run covering 5 of 9 servers still exits 0, and a scheduled job reports success
+  while silently skipping a third of the estate. With `--fail-on-partial`, any
+  failed server exits 2.
+
+  **The flag defaults to off, and the default path is byte-for-byte the previous
+  behaviour**, so upgrading cannot break automation that checks the exit code.
+  Failed servers are listed on stderr either way. The flag is honoured on all
+  three estate paths — bulk fan-out, `executive --cms`, and `access review
+  --cms` — rather than silently doing nothing on two of them.
+
+- **Precise column types in schema snapshots.** `Column` gained `precision` and
+  `scale`, and snapshots now record a fully-qualified type signature
+  (`varchar(50)`, `decimal(18,4)`, `datetime2(3)`) instead of the bare type name.
+  Both fields are optional and default to `null`, so adapters that do not report
+  them degrade to exactly the previous behaviour rather than reporting spurious
+  changes. They also appear in `doc --format json`, whose key sets are now
+  pinned by regression tests.
+
+### Fixed
+
+- **SQL Server 2016 is supported again.** Two queries used built-ins that
+  require SQL Server 2017+: `STRING_AGG` in the trigger-metadata query and
+  `TRIM` in the `quality` blank-string count. The trigger query is **not**
+  isolated — a parse error there aborts all of `extract_metadata`, so on a 2016
+  instance `doc` produced no metadata at all. Replaced with `STUFF(... FOR XML
+  PATH(''))` and `LTRIM(RTRIM(...))`, which are valid on SQL Server 2005+ and,
+  in the `quality` case, on every other supported dialect. A new structural test
+  scans the codebase for unguarded version-gated built-ins so the class of bug
+  cannot return; `APPROX_COUNT_DISTINCT` remains allowed because it is behind a
+  runtime version probe.
+
+- **A query error is no longer reported as a connection failure.** The
+  connecting commands wrap extraction, not just `connect()`, so a statement the
+  server parsed and rejected surfaced through the same handler as a dead host —
+  printing `Connection failed:` and sending people to check firewalls,
+  credentials and ODBC drivers while the connection was fine. This is how the
+  SQL Server 2016 failure above presented. Failures are now classified by
+  SQLSTATE: `08`/`28`/`IM` stay connection failures, `42`/`S0`/`37` are reported
+  as `Query failed:`, and an unrecognized built-in (Msg 195) is named as the
+  version problem it is, with the version that introduced it. Classification is
+  deliberately conservative — anything ambiguous keeps the old wording, so
+  nothing is reclassified on a guess.
+
+- **Schema-change detection missed four kinds of change.** All four were
+  captured in the snapshot and then never compared:
+  - **Column width and precision.** `varchar(20)` → `varchar(50)` and
+    `decimal(10,2)` → `decimal(18,4)` were both invisible, because the snapshot
+    stored only `varchar` / `decimal`. **Narrowing a column — a data-loss
+    change — reported no drift at all.** (`max_length` cannot distinguish the
+    decimal case: both are 9 bytes.)
+  - **Indexes.** Adding or dropping an index, changing its key or included
+    columns, or changing its uniqueness reported no change. A dropped index is a
+    silent performance regression; a uniqueness change is a constraint change.
+  - **Foreign-key targets.** Retargeting an FK between two tables with the same
+    referential actions was completely invisible.
+  - Index changes now also reach the generated migration script (as review
+    comments — see below) and the agent's daily estate digest.
+
+- **`intel --migration-out` emitted type-narrowing DDL.** Because snapshot types
+  carried no width, an added `nvarchar(100)` column was scripted as
+  `ADD [Note] nvarchar`, which T-SQL reads as `nvarchar(1)`. Generated DDL now
+  carries the declared width wherever the adapter reports it.
+
+- **Estate reports overwrote single-database reports.** Every `--cms`-capable
+  command declares a non-None `--output` default, so the intended
+  `cms-<command>.html` fallback was dead code and `doc --cms` wrote its estate
+  report to `documentation.html`, on top of the single-DB report. `access review
+  --cms` was worse: its estate fallback was literally the same string as its
+  single-DB default. A `--cms` run whose `--output` is still the command's own
+  single-DB default now resolves to the estate name instead.
+
+### Changed
+
+- **Snapshot format version 1 → 2** (`.sqldoc-snapshots/`). Existing baselines
+  are read normally; the single run that straddles the change suppresses *type*
+  deltas only — otherwise every sized column in the database would report a
+  spurious change — prints a one-line note saying so, and rewrites the snapshot.
+  Every other kind of change is reported as usual on that run, and the next run
+  compares types normally. Snapshots are a local artifact, not a published
+  contract; no action is required.
+
+- **Index changes in generated migrations are review comments, not DDL.** The
+  snapshot records constraint-backing indexes under the constraint's own name,
+  so emitting `CREATE INDEX`/`DROP INDEX` would collide with the `PRIMARY KEY`
+  and `UNIQUE` statements the generator already produces for the same object —
+  two conflicting statements for one object, in a script a human is meant to
+  run. The comment names the index and its columns.
+
+- **`doc --format json` key sets are now pinned by regression tests.**
+  `json_renderer.build_json` serializes the extractor dataclasses with
+  `dataclasses.asdict`, so *any* field added to the model reaches the published
+  export automatically with no per-field code to review — `precision` and
+  `scale` reached it exactly that way. `schema_version` stays `1`: the new keys
+  are additive and default to `null`.
+
 ## [3.0.4] — 2026-08-14
 
 **Enterprise field-fix release: ODBC driver override honoured everywhere, the

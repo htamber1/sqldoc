@@ -37,6 +37,12 @@ class Column:
     is_foreign_key: bool
     references_table: Optional[str]
     references_column: Optional[str]
+    # precision/scale are needed to tell decimal(10,2) from decimal(18,4):
+    # max_length is 9 bytes for both, so length alone cannot distinguish them.
+    # Optional with None defaults so adapters that do not supply them keep
+    # working -- snapshot type strings then fall back to the bare type name.
+    precision: Optional[int] = None
+    scale: Optional[int] = None
     description: Optional[str] = None
     is_computed: bool = False
     computed_definition: Optional[str] = None

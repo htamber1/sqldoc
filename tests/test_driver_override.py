@@ -344,6 +344,104 @@ def test_abort_connection_failed_stays_quiet_for_other_failures(config_tree, cap
     assert "sqldoc doctor" not in err
 
 
+# --- C2. a query error must not be reported as a connection failure ---------
+#
+# The connecting commands wrap extraction, not just connect(), so a statement
+# the server parses and refuses arrives at the same handler as a dead host.
+# v3.0.4 reported every one of them as "Connection failed", which is what made
+# the SQL Server 2016 STRING_AGG failure so slow to diagnose: the connection was
+# fine, and the message sent people to check firewalls and passwords.
+
+MSG195 = ("('42000', \"[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+          "'STRING_AGG' is not a recognized built-in function name. (195) "
+          "(SQLExecDirectW)\")")
+
+PERMISSION_DENIED = ("('42000', \"[42000] [Microsoft][ODBC Driver 18 for SQL Server]"
+                     "[SQL Server]The SELECT permission was denied on the object "
+                     "'objects', database 'mssqlsystemresource', schema 'sys'. (229)\")")
+
+COMM_LINK_FAILURE = ("('08S01', '[08S01] [Microsoft][ODBC Driver 18 for SQL Server]"
+                     "TCP Provider: An existing connection was forcibly closed (10054)')")
+
+LOGIN_FAILED = ("('28000', \"[28000] [Microsoft][ODBC Driver 18 for SQL Server]"
+                "[SQL Server]Login failed for user 'sa'. (18456)\")")
+
+
+def test_unrecognized_builtin_is_reported_as_a_query_error(config_tree, capsys):
+    """The headline case: Msg 195 on a pre-2017 server."""
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(Exception(MSG195))
+    err = capsys.readouterr().err
+    assert "Query failed:" in err
+    assert "Connection failed:" not in err, (
+        "A Msg 195 was blamed on the connection; the connection succeeded.")
+
+
+def test_unrecognized_builtin_names_the_version_cause(config_tree, capsys):
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(Exception(MSG195))
+    err = capsys.readouterr().err
+    assert "STRING_AGG" in err
+    assert "SQL Server 2017" in err, "the hint must name the version that introduced it"
+    assert "2016" in err, "the hint must state the supported floor"
+
+
+def test_unknown_builtin_outside_the_table_still_explains_itself(config_tree, capsys):
+    """A function sqldoc has no floor recorded for must still be reported as a
+    query error rather than silently falling back to 'Connection failed'."""
+    exc = Exception("('42000', \"[42000] 'SOME_FUTURE_FN' is not a recognized "
+                    "built-in function name. (195)\")")
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(exc)
+    err = capsys.readouterr().err
+    assert "Query failed:" in err
+    assert "SOME_FUTURE_FN" in err
+
+
+def test_permission_denied_is_a_query_error_not_a_connection_failure(config_tree, capsys):
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(Exception(PERMISSION_DENIED))
+    err = capsys.readouterr().err
+    assert "Query failed:" in err
+    assert "permission" in err.lower()
+
+
+@pytest.mark.parametrize("message", [COMM_LINK_FAILURE, LOGIN_FAILED])
+def test_genuine_connection_failures_keep_their_wording(config_tree, capsys, message):
+    """08 (connection) and 28 (authorization) must not be reclassified."""
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(Exception(message))
+    err = capsys.readouterr().err
+    assert "Connection failed:" in err
+    assert "Query failed:" not in err
+
+
+def test_ambiguous_failure_keeps_the_connection_wording(config_tree, capsys):
+    """No SQLSTATE and no recognizable server text: do not guess."""
+    with pytest.raises(click.Abort):
+        cli._abort_connection_failed(Exception("something went wrong"))
+    err = capsys.readouterr().err
+    assert "Connection failed:" in err
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (Exception(MSG195), "42000"),
+    (Exception(COMM_LINK_FAILURE), "08S01"),
+    (Exception(IM002), "IM002"),
+    (Exception("no sqlstate here"), ""),
+])
+def test_sqlstate_is_recovered_from_stringified_errors(exc, expected):
+    """Errors are usually stringified by the time they reach the handler, so the
+    SQLSTATE has to be readable out of the message, not just args[0]."""
+    assert cli._sqlstate(exc) == expected
+
+
+def test_sqlstate_prefers_args_when_the_exception_carries_it():
+    """A live pyodbc error puts the SQLSTATE in args[0]."""
+    exc = Exception("42000", "[42000] ...")
+    assert cli._sqlstate(exc) == "42000"
+
+
 def test_no_command_still_uses_the_bare_connection_failure_message():
     """Structural guard: every connecting command must route through
     `_abort_connection_failed` so none of them can regress to a bare IM002."""

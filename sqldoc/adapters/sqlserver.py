@@ -88,7 +88,12 @@ class SqlServerAdapter(DatabaseAdapter):
         tables_raw = cursor.fetchall()
 
         # DML triggers on tables (one query for the whole DB, grouped by table).
-        # STRING_AGG collapses the per-event rows in sys.trigger_events.
+        # STUFF(... FOR XML PATH('')) collapses the per-event rows in
+        # sys.trigger_events. STRING_AGG would be the natural choice but it
+        # requires SQL Server 2017+, and this query is not isolated -- a parse
+        # error here aborts all of extract_metadata, so an older instance in a
+        # mixed estate would yield no metadata at all. FOR XML PATH works on
+        # 2005+ and keeps one query portable across every supported version.
         cursor.execute("""
             SELECT
                 s.name AS schema_name,
@@ -97,8 +102,11 @@ class SqlServerAdapter(DatabaseAdapter):
                 tr.is_instead_of_trigger,
                 tr.is_disabled,
                 m.definition,
-                (SELECT STRING_AGG(te.type_desc, ',')
-                 FROM sys.trigger_events te WHERE te.object_id = tr.object_id) AS events
+                STUFF((SELECT ',' + te.type_desc
+                       FROM sys.trigger_events te
+                       WHERE te.object_id = tr.object_id
+                       ORDER BY te.type_desc
+                       FOR XML PATH('')), 1, 1, '') AS events
             FROM sys.triggers tr
             INNER JOIN sys.tables t ON tr.parent_id = t.object_id
             INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
@@ -123,6 +131,8 @@ class SqlServerAdapter(DatabaseAdapter):
                     c.name AS column_name,
                     tp.name AS data_type,
                     c.max_length,
+                    c.precision,
+                    c.scale,
                     c.is_nullable,
                     CASE WHEN pk.column_id IS NOT NULL THEN 1 ELSE 0 END AS is_primary_key,
                     CASE WHEN fk.parent_column_id IS NOT NULL THEN 1 ELSE 0 END AS is_foreign_key,
@@ -166,6 +176,8 @@ class SqlServerAdapter(DatabaseAdapter):
                     name=row.column_name,
                     data_type=row.data_type,
                     max_length=row.max_length,
+                    precision=row.precision,
+                    scale=row.scale,
                     is_nullable=bool(row.is_nullable),
                     is_primary_key=bool(row.is_primary_key),
                     is_foreign_key=bool(row.is_foreign_key),

@@ -209,7 +209,8 @@ INTEL_TEMPLATE = """
     <div class="footer">
         <strong>Heuristic analysis.</strong> Naming/orphan-FK findings are suggestions inferred from identifiers — review before renaming or
         adding constraints. Impact analysis matches table names in view/procedure/trigger SQL and the FK graph; dynamic SQL can hide
-        dependencies. Generated migrations use snapshot types (no length/precision) and are a starting point, not a drop-in script.
+        dependencies. Generated migrations use snapshot types, which carry length/precision where the adapter reports it, and are a starting
+        point, not a drop-in script.
     </div>
 </body>
 </html>

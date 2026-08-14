@@ -545,17 +545,112 @@ def _driver_error_hint(exc) -> str:
             "`sqldoc doctor` lists the installed ones.")
 
 
-def _abort_connection_failed(exc):
-    """Report a failed connection, add the ODBC driver hint if one applies, abort.
+# SQL Server Msg 195: "'STRING_AGG' is not a recognized built-in function name."
+_UNKNOWN_BUILTIN_RE = re.compile(
+    r"'([A-Za-z_][A-Za-z0-9_]*)' is not a recognized (?:built-in )?function name",
+    re.IGNORECASE)
 
-    Used by every connecting command rather than only by `cms discover`: a
-    `driver:` mismatch was the single most common failure in field testing, and a
-    bare `IM002` names neither the driver that was requested nor the config file
-    that was supposed to supply the override. Non-driver failures (bad password,
-    unreachable host) are unaffected -- `_driver_error_hint` returns "" for them.
+# T-SQL built-ins introduced after SQL Server 2016, the oldest version sqldoc
+# tests against. Used only to explain a Msg 195 in human terms -- sqldoc's own
+# queries deliberately avoid every one of these unless a runtime probe guards
+# it (enforced by tests/test_sqlserver_version_floor.py).
+_BUILTIN_VERSION_FLOOR = {
+    "STRING_AGG": "SQL Server 2017",
+    "TRIM": "SQL Server 2017",
+    "CONCAT_WS": "SQL Server 2017",
+    "TRANSLATE": "SQL Server 2017",
+    "APPROX_COUNT_DISTINCT": "SQL Server 2019",
+    "GREATEST": "SQL Server 2022",
+    "LEAST": "SQL Server 2022",
+    "GENERATE_SERIES": "SQL Server 2022",
+    "DATE_BUCKET": "SQL Server 2022",
+}
+
+
+def _sqlstate(exc) -> str:
+    """The 5-character SQLSTATE behind a DB-API error, or "".
+
+    pyodbc puts it in `args[0]`, but exceptions are often re-raised or
+    stringified by the time they reach here, so also read it back out of the
+    `('42000', '[42000] ...')` repr and the `[42000]` prefix ODBC drivers emit.
     """
-    click.echo(f"Connection failed: {exc}", err=True)
-    hint = _driver_error_hint(exc)
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], str) and re.fullmatch(r"[0-9A-Z]{5}", args[0]):
+        return args[0]
+    m = re.search(r"[(\[]'?([0-9A-Z]{5})'?[)\]]", str(exc))
+    return m.group(1) if m else ""
+
+
+def _is_query_error(exc) -> bool:
+    """True when the server answered and rejected the *statement*.
+
+    The connecting commands wrap extraction, not just `connect()`, so a query
+    that fails to parse or bind surfaces through the same handler as a dead
+    host. Reporting "Connection failed" for it sends people to check firewalls
+    and passwords while the connection was fine -- exactly what happened when
+    STRING_AGG met SQL Server 2016 (see the v3.1.0 section of CHANGELOG.md).
+
+    Deliberately conservative: only positively-identified query errors are
+    reclassified. Anything ambiguous keeps the old connection-failure wording.
+    """
+    state = _sqlstate(exc)
+    if state:
+        # 08 = connection exception, 28 = invalid authorization, IM = driver
+        # manager. None of these mean the statement was rejected.
+        if state[:2] in ("08", "28") or state.startswith("IM"):
+            return False
+        # 42 = syntax error / access rule violation, S0 = legacy schema errors,
+        # 37 = dynamic SQL syntax error. The server parsed and refused.
+        return state[:2] in ("42", "S0", "37")
+    # No SQLSTATE to go on: only unmistakable server text counts.
+    return bool(_UNKNOWN_BUILTIN_RE.search(str(exc)))
+
+
+def _unsupported_builtin_hint(exc) -> str:
+    """Explain a Msg 195 as a version problem, or "" when it is not one."""
+    m = _UNKNOWN_BUILTIN_RE.search(str(exc))
+    if not m:
+        return ""
+    name = m.group(1).upper()
+    intro = _BUILTIN_VERSION_FLOOR.get(name)
+    lead = (f"  This server does not recognize {name}(), which requires {intro} or later."
+            if intro else
+            f"  This server does not recognize {name}(), which usually means the\n"
+            "  instance predates the version that introduced it.")
+    return (f"{lead}\n"
+            "  The connection itself succeeded -- this is a query error, not a\n"
+            "  connectivity or credentials problem.\n"
+            "  sqldoc tests against SQL Server 2016 and later; older versions are\n"
+            "  best-effort and unclaimed. Run `sqldoc doctor` for environment\n"
+            "  details, and please report this so the query can be made portable.")
+
+
+def _abort_connection_failed(exc):
+    """Report a failed command, add whichever hint applies, abort.
+
+    Handles both failure modes the connecting commands funnel through here,
+    because they wrap extraction rather than just the connect call:
+
+    * a genuine connection failure -- reported as such, with the ODBC `driver:`
+      hint when `IM002` says a driver is missing. A `driver:` mismatch was the
+      single most common failure in field testing, and a bare `IM002` names
+      neither the driver requested nor the config meant to override it.
+    * a query/parse error from a server that answered fine -- reported as a
+      query failure, and for an unrecognized built-in (Msg 195) named as the
+      version problem it is rather than blamed on the connection.
+
+    Ambiguous failures keep the connection-failure wording, so nothing that
+    used to be reported one way is silently reclassified on a guess.
+    """
+    if _is_query_error(exc):
+        click.echo(f"Query failed: {exc}", err=True)
+        hint = _unsupported_builtin_hint(exc) or (
+            "  The connection succeeded; the server rejected this statement.\n"
+            "  Check that the login has permission to read the catalog views, and\n"
+            "  see `sqldoc doctor` for environment details.")
+    else:
+        click.echo(f"Connection failed: {exc}", err=True)
+        hint = _driver_error_hint(exc)
     if hint:
         click.echo(click.style(hint, fg='yellow'), err=True)
     raise click.Abort()
@@ -569,7 +664,15 @@ def _cms_section(cfg):
 
 
 def cms_bulk_option(fn):
-    """Shared --cms / --group / --max-workers options for bulk-capable commands."""
+    """Shared --cms / --group / --max-workers / --fail-on-partial options."""
+    # Off by default on purpose. Per-server errors are non-fatal so one
+    # unreachable host cannot stop an estate run, which means a fan-out that
+    # covered 5 of 9 servers still exits 0 and a scheduled job reports success.
+    # Making that exit 2 unconditionally would break every existing pipeline on
+    # upgrade, so strictness is opt-in and the default behaviour is unchanged.
+    fn = click.option('--fail-on-partial', 'fail_on_partial', is_flag=True, default=False,
+                      help='Exit 2 if any server in a --cms run failed (default: exit 0 '
+                           'as long as the estate report was written)')(fn)
     fn = click.option('--max-workers', default=8, type=click.IntRange(1, 64),
                       help='Parallel servers for a --cms run (default: 8)')(fn)
     fn = click.option('--group', default=None,
@@ -596,7 +699,60 @@ def _load_cms_inventory(cfg):
                                  driver=section.get('driver') or (cfg or {}).get('driver'))
 
 
-def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, json_out, max_workers):
+# Each CMS-capable command declares a non-None --output default aimed at its
+# single-database report. A --cms run must not land on that name, or the estate
+# report silently overwrites the single-DB one. Mapping command -> that default
+# lets run_cms_bulk tell "user asked for this path" from "click filled it in".
+_SINGLE_DB_OUTPUT_DEFAULTS = {
+    "doc": "documentation.html",
+    "scan": "pii-report.html",
+    "health": "health-report.html",
+    "quality": "quality-report.html",
+    "intel": "intel-report.html",
+    "comply": "compliance-report.html",
+    "server": "server-report.html",
+    "secure": "security-report.html",
+    "backup": "backup-report.html",
+    # Not a run_cms_bulk command, but --cms capable and it carried the same
+    # dead-fallback bug; see _run_cms_executive.
+    "executive": "executive-summary.html",
+    # access review --cms: its estate fallback was literally the same string as
+    # its single-DB default, so the estate report always clobbered it.
+    "access review": "access-review.html",
+}
+
+
+def _cms_output(command_name, output, cms_default=None):
+    """Resolve the estate report path for a --cms run.
+
+    `output or <fallback>` is never enough here: click always supplies the
+    command's own non-None --output default, so the fallback is dead code and
+    the estate report lands on -- and overwrites -- the single-database report.
+    Treat "still equal to this command's single-DB default" as "not explicitly
+    set".
+
+    Tradeoff: passing --output documentation.html explicitly on a --cms run is
+    also redirected. The cleaner fix is to declare the click defaults as None
+    and resolve per-mode, but that touches ~9 command signatures.
+    """
+    if not output or output == _SINGLE_DB_OUTPUT_DEFAULTS.get(command_name):
+        return cms_default or f"cms-{command_name}.html"
+    return output
+
+
+def _exit_on_partial(fail_on_partial, failed_count):
+    """Exit 2 for a partially-failed estate run, but only under --fail-on-partial.
+
+    Shared by all three estate paths (bulk, executive, access review) so the flag
+    means the same thing everywhere rather than silently doing nothing on two of
+    them.
+    """
+    if fail_on_partial and failed_count:
+        raise SystemExit(2)
+
+
+def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, json_out,
+                 max_workers, fail_on_partial=False):
     """Shared --cms dispatch: run one command across the estate, aggregate, render.
     Returns True when it handled the run (so the caller returns early)."""
     if not use_cms:
@@ -627,7 +783,7 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
         if not r.ok:
             click.echo(click.style(f"  ! {r.server} ({r.host}): {r.error}", fg='yellow'), err=True)
 
-    out = output or f"cms-{command_name}.html"
+    out = _cms_output(command_name, output)
     render_bulk_html(command_name, results, out, group=group)
     click.echo(f"\nEstate report written to {out}")
     if json_out:
@@ -635,6 +791,12 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
         with open(json_out, 'w', encoding='utf-8') as f:
             _json.dump(build_bulk_json(command_name, results), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
+    # Partial-estate failure reaches the exit code only when asked. Exiting 0
+    # after documenting 5 of 9 servers makes a scheduled fan-out look successful
+    # while silently covering part of the estate -- but flipping that by default
+    # would break existing pipelines, so it is opt-in. The failures are always
+    # printed either way.
+    _exit_on_partial(fail_on_partial, failed)
     return True
 
 
@@ -646,7 +808,8 @@ def _cms_opts(cfg, database=None):
             "driver": section.get('driver') or (cfg or {}).get('driver')}
 
 
-def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
+def _run_cms_executive(cfg, group, database, output, json_out, max_workers,
+                       fail_on_partial=False):
     from sqldoc.cms_executive import collect_estate, build_estate_json
     from sqldoc.cms_executive_renderer import render_estate_html
     inv = _load_cms_inventory(cfg)
@@ -666,7 +829,7 @@ def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
         click.echo("\nTop estate risks:")
         for i, r in enumerate(estate.top_risks[:5], 1):
             click.echo(f"  {i}. [{r.get('severity')}] {r.get('title')}  ({r.get('server')})")
-    out = output or "cms-executive.html"
+    out = _cms_output("executive", output, "cms-executive.html")
     render_estate_html(estate, out, cms_server=inv.cms_server)
     click.echo(f"\nEstate report written to {out}")
     if json_out:
@@ -674,9 +837,11 @@ def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
         with open(json_out, 'w', encoding='utf-8') as f:
             _json.dump(build_estate_json(estate), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
+    _exit_on_partial(fail_on_partial, len(estate.failed or []))
 
 
-def _run_cms_access_review(cfg, group, output, json_out, max_workers):
+def _run_cms_access_review(cfg, group, output, json_out, max_workers,
+                           fail_on_partial=False):
     from sqldoc.access.cms_review import (collect_estate_access, render_estate_access_html,
                                           build_estate_access_json)
     from sqldoc.access import config as access_config, ad as ad_mod
@@ -698,7 +863,7 @@ def _run_cms_access_review(cfg, group, output, json_out, max_workers):
     click.echo(click.style(f"  {len(rep.coverage_gaps)} coverage gap(s)", fg='yellow'))
     if rep.orphaned:
         click.echo(click.style(f"  {len(rep.orphaned)} orphaned login(s)", fg='red'))
-    out = output or "access-review.html"
+    out = _cms_output("access review", output, "cms-access-review.html")
     render_estate_access_html(rep, out, cms_server=inv.cms_server)
     click.echo(f"\nEstate access report written to {out}")
     if json_out:
@@ -706,6 +871,7 @@ def _run_cms_access_review(cfg, group, output, json_out, max_workers):
         with open(json_out, 'w', encoding='utf-8') as f:
             _json.dump(build_estate_access_json(rep), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
+    _exit_on_partial(fail_on_partial, len(rep.failed or []))
 
 
 @click.command()
@@ -737,7 +903,7 @@ def _run_cms_access_review(cfg, group, output, json_out, max_workers):
               help='After rendering, verify the HTML report is fully self-contained (no external CDN/font/image references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def main(config, server, database, username, password, connection_string, windows_auth, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline, use_cms, group, max_workers):
+def main(config, server, database, username, password, connection_string, windows_auth, dialect, output, output_format, mode, model, ai_backend, industry, schemas, no_ai, concurrency, include_definitions, snapshot, no_snapshot, cache, no_cache, yes, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """sqldoc — Automated SQL Server database documentation generator."""
 
     # Merge config file under CLI flags: an explicit CLI flag always wins, then
@@ -755,7 +921,8 @@ def main(config, server, database, username, password, connection_string, window
         return cfg.get(name, value)
 
     if run_cms_bulk('doc', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), None, max_workers):
+                    resolve('output', output), None, max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     server = resolve('server', server)
@@ -957,7 +1124,7 @@ def main(config, server, database, username, password, connection_string, window
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def scan(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline, use_cms, group, max_workers):
+def scan(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, sample, mode, model, ai_backend, industry, baseline, no_baseline, sarif, json_out, confidence_threshold, fail_on, yes, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Scan a SQL Server database for likely PII / regulated columns.
 
     Flags columns by name + data type, maps each to HIPAA / GDPR / PCI-DSS, and
@@ -969,7 +1136,8 @@ def scan(config, server, database, username, password, connection_string, window
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('scan', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server = _resolve_connection(
@@ -1247,7 +1415,7 @@ def install_hooks(repo, force):
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def health(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline, use_cms, group, max_workers):
+def health(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top, min_fragmentation, min_pages, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Analyze database health from SQL Server DMVs.
 
     Surfaces the slowest cached queries, tables with writes but no reads,
@@ -1262,7 +1430,8 @@ def health(config, server, database, username, password, connection_string, wind
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('health', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server = _resolve_connection(
@@ -1351,7 +1520,7 @@ def health(config, server, database, username, password, connection_string, wind
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def quality(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top_values, no_duplicates, duplicate_max_rows, heavy_stats_max_rows, yes, verify_offline, use_cms, group, max_workers):
+def quality(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, top_values, no_duplicates, duplicate_max_rows, heavy_stats_max_rows, yes, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Profile data quality: null rates, per-column distribution, duplicates.
 
     Reads your table data in AGGREGATE only (COUNT / DISTINCT / MIN / MAX /
@@ -1362,7 +1531,8 @@ def quality(config, server, database, username, password, connection_string, win
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('quality', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server = _resolve_connection(
@@ -1458,7 +1628,7 @@ def quality(config, server, database, username, password, connection_string, win
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @cms_bulk_option
 @windows_auth_option
-def intel(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline, use_cms, group, max_workers):
+def intel(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, baseline, migration_out, linked_servers, traverse_linked, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Schema intelligence: naming, orphaned FKs, impact analysis, migrations, linked servers.
 
     Analyzes the extracted schema (no row data): flags inconsistent naming and
@@ -1472,7 +1642,8 @@ def intel(config, server, database, username, password, connection_string, windo
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('intel', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server = _resolve_connection(
@@ -1775,7 +1946,7 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
                    'sox, fedramp, iso27001, cmmc, ccpa, pipeda, soc2 — each mapped to control numbers')
 @cms_bulk_option
 @windows_auth_option
-def comply(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks, use_cms, group, max_workers):
+def comply(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, industry, no_access_audit, verify_offline, all_databases, frameworks, use_cms, group, max_workers, fail_on_partial):
     """Compliance reports: HIPAA/GDPR/PCI-DSS scope, data lineage, access audit.
 
     Groups the PII scan findings by regulation (with the controls each requires),
@@ -1791,7 +1962,8 @@ def comply(config, server, database, username, password, connection_string, wind
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('comply', cfg, use_cms, group, database, resolve('schemas', schemas),
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     schemas = resolve('schemas', schemas)
@@ -2026,7 +2198,7 @@ def dbt(config, project_dir, server, database, username, password, connection_st
 @cms_bulk_option
 @windows_auth_option
 def server(config, server, database, username, password, connection_string, windows_auth, dialect,
-           output, json_out, top, no_jobs, verify_offline, use_cms, group, max_workers):
+           output, json_out, top, no_jobs, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Instance-level SQL Server health + SQL Agent jobs.
 
     Connects at the SQL Server *instance* level (not just one database) and
@@ -2041,7 +2213,8 @@ def server(config, server, database, username, password, connection_string, wind
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('server', cfg, use_cms, group, None, None,
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server_name = _resolve_connection(
@@ -2210,7 +2383,7 @@ def logs(config, server, database, username, password, connection_string, window
 @cms_bulk_option
 @windows_auth_option
 def secure(config, server, database, username, password, connection_string, windows_auth, dialect,
-           output, json_out, fail_under, verify_offline, use_cms, group, max_workers):
+           output, json_out, fail_under, verify_offline, use_cms, group, max_workers, fail_on_partial):
     """Scan for security misconfigurations and score them 0-100.
 
     Runs dialect-aware hardening checks (SQL Server / PostgreSQL / MySQL) and
@@ -2222,7 +2395,8 @@ def secure(config, server, database, username, password, connection_string, wind
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('secure', cfg, use_cms, group, None, None,
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server_name = _resolve_connection(
@@ -2802,7 +2976,7 @@ def baseline(config, server, database, username, password, connection_string, wi
 @windows_auth_option
 def executive(config, server, database, username, password, connection_string, windows_auth, dialect,
               schemas, output, json_out, industry, no_baseline, baseline, verify_offline,
-              use_cms, group, max_workers):
+              use_cms, group, max_workers, fail_on_partial):
     """Single-page, plain-English health + risk summary for a CTO / CISO.
 
     Aggregates the deep technical commands into four scores — data protection
@@ -2821,7 +2995,7 @@ def executive(config, server, database, username, password, connection_string, w
     if use_cms:
         _run_cms_executive(cfg, group, resolve('database', database),
                            resolve('output', output), resolve('json', json_out, param='json_out'),
-                           max_workers)
+                           max_workers, fail_on_partial=fail_on_partial)
         return
 
     conn_str, database, server = _resolve_connection(
@@ -3350,7 +3524,7 @@ webhook = make_integration_command(
 @cms_bulk_option
 @windows_auth_option
 def backup(config, server, database, username, password, connection_string, windows_auth, dialect,
-           output, json_out, use_cms, group, max_workers):
+           output, json_out, use_cms, group, max_workers, fail_on_partial):
     """Backup + point-in-time-recovery status for every database on the instance.
 
     Reports recovery model, last full/diff/log backup, never-backed-up databases,
@@ -3361,7 +3535,8 @@ def backup(config, server, database, username, password, connection_string, wind
     cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
     resolve = _make_resolver(ctx, cfg)
     if run_cms_bulk('backup', cfg, use_cms, group, None, None,
-                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers):
+                    resolve('output', output), resolve('json', json_out, param='json_out'), max_workers,
+                    fail_on_partial=fail_on_partial):
         return
 
     conn_str, database, server = _resolve_connection(
@@ -3982,7 +4157,10 @@ def access_jira(config, ticket, user_override, transition_to, no_comment, mode, 
               help='Estate-wide audit across every CMS-registered server')
 @click.option('--group', default=None, help='Limit the --cms audit to a CMS server group')
 @click.option('--max-workers', default=8, type=click.IntRange(1, 64), help='Parallel servers (--cms)')
-def access_review(config, inactive_days, output, json_out, use_cms, group, max_workers):
+@click.option('--fail-on-partial', 'fail_on_partial', is_flag=True, default=False,
+              help='Exit 2 if any server in a --cms run failed (default: exit 0 '
+                   'as long as the estate report was written)')
+def access_review(config, inactive_days, output, json_out, use_cms, group, max_workers, fail_on_partial):
     """Review all logins + role memberships and flag access risks.
 
     Flags inactive accounts, over-privileged accounts (vs AD job title),
@@ -3999,7 +4177,8 @@ def access_review(config, inactive_days, output, json_out, use_cms, group, max_w
     from sqldoc.access.render import render_review_html, build_review_json
     cfg = _access_cfg(config)
     if use_cms:
-        _run_cms_access_review(cfg, group, output, json_out, max_workers)
+        _run_cms_access_review(cfg, group, output, json_out, max_workers,
+                               fail_on_partial=fail_on_partial)
         return
     days = inactive_days if inactive_days is not None else int(access_config.review_config(cfg).get("inactive_days", 90))
 
