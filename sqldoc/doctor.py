@@ -177,7 +177,11 @@ def check_config(config_path: str = ".sqldoc.yml", exists=None, load=None) -> Ch
     if exists is None:
         exists = os.path.exists
     if not exists(config_path):
-        return Check("Config", OK, f"no {config_path} (using CLI flags / defaults)")
+        # Name the directories that were searched: a config sitting one level up
+        # is the usual reason settings like `driver:` appear not to apply.
+        return Check("Config", OK,
+                     f"no {os.path.basename(config_path)} in {os.getcwd()} "
+                     f"or any parent directory (using CLI flags / defaults)")
     if load is None:
         def load(p):
             import yaml

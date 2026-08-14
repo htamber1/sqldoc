@@ -23,6 +23,26 @@ from sqldoc.access.sqlserver import (
     DB_PRINCIPALS_SQL, DB_ROLE_MEMBERS_SQL, DB_PERMISSIONS_SQL)
 from sqldoc.access.titles import expected_level_for_title, exceeds, is_service_account
 
+# Windows authorities whose principals are built-in or virtual: they are created
+# and managed by the OS / SQL Server setup and never appear in Active Directory.
+BUILTIN_LOGIN_AUTHORITIES = {
+    "NT AUTHORITY",          # SYSTEM, LOCAL SERVICE, NETWORK SERVICE, ...
+    "NT SERVICE",            # MSSQLSERVER, SQLSERVERAGENT, SQLWriter, Winmgmt, ...
+    "BUILTIN",               # Administrators, Users
+    "NT VIRTUAL MACHINE",
+    "IIS APPPOOL",
+    "APPLICATION PACKAGE AUTHORITY",
+}
+
+
+def is_builtin_principal(name: str) -> bool:
+    """True for a Windows built-in/virtual login (``NT SERVICE\\MSSQLSERVER``)."""
+    n = (name or "").strip()
+    if "\\" not in n:
+        return False
+    return n.split("\\", 1)[0].strip().upper() in BUILTIN_LOGIN_AUTHORITIES
+
+
 LOGIN_ACTIVITY_SQL = """
     /* ACCESS_LOGIN_ACTIVITY */
     SELECT login_name AS name, MAX(last_request_end_time) AS last_activity
@@ -82,6 +102,12 @@ def review_logins(cursor, server, source, inactive_days, now_epoch, service_patt
     cutoff = now_epoch - inactive_days * 86400
 
     for lg in logins:
+        # Windows built-in / virtual accounts are platform-managed and have no AD
+        # object by definition, so the orphan check below would flag every one of
+        # them — and its fix script would DROP LOGIN the account SQL Server
+        # itself runs under. They are not identities an access review governs.
+        if is_builtin_principal(lg.name):
+            continue
         # Orphaned individual Windows login (its AD user no longer resolves).
         if source is not None and "WINDOWS_LOGIN" in (lg.type or "").upper():
             try:

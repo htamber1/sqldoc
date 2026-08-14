@@ -75,16 +75,23 @@ def test_pii_summary_schema():
 # --- JSON output contracts -------------------------------------------------
 
 def test_access_check_json_schema():
-    from sqldoc.access.model import AccessReport, ADUser, DatabaseAccess
+    from sqldoc.access.model import AccessReport, ADUser, DatabaseAccess, Login
     from sqldoc.access.render import build_check_json
     rep = AccessReport(user=ADUser(identifier="u", found=True))
+    rep.logins.append(Login(name="l", type="WINDOWS_GROUP"))
     rep.access.append(DatabaseAccess(server="s", database="d", login="l",
                                      roles=["db_datareader"], level="read"))
     j = build_check_json(rep)
     assert j["report_type"] == "access-check"
     assert set(j.keys()) == {"report_type", "user", "matched_groups", "logins", "access", "errors"}
+    # `server_permissions` and `flags` were added deliberately: both are collected
+    # by the access probe and were previously exported nowhere, which made
+    # server-scoped grants and escalation routes invisible to any consumer.
+    assert set(j["logins"][0].keys()) == {"name", "type", "server", "is_disabled",
+                                          "server_roles", "server_permissions"}
     assert set(j["access"][0].keys()) == {"server", "database", "login", "db_user", "via",
-                                          "roles", "level", "permissions", "pii_tables"}
+                                          "roles", "level", "permissions", "pii_tables",
+                                          "flags"}
 
 
 def test_access_script_json_schema():

@@ -88,12 +88,53 @@ def _cn(dn: str) -> str:
     return first.split("=", 1)[1] if "=" in first else first
 
 
+# AD's LDAP_MATCHING_RULE_IN_CHAIN: walks a membership chain server-side, so one
+# query returns transitive (nested) group membership. Microsoft directories only.
+IN_CHAIN = "1.2.840.113556.1.4.1941"
+
+
+def _merge_groups(direct: list, nested: list) -> list:
+    """Union of direct and nested group names, case-insensitively de-duplicated,
+    keeping the first spelling seen (direct wins) and a stable order."""
+    out, seen = [], set()
+    for name in list(direct or []) + list(nested or []):
+        key = (name or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
 # --- LDAP (ldap3) ----------------------------------------------------------
 
 def build_connection(cfg: dict):
-    """Open + bind an ldap3 connection (module-level for mocking)."""
+    """Open + bind an ldap3 connection (module-level for mocking).
+
+    With ``access.ad.windows_auth: true`` the bind uses SASL/GSSAPI — Kerberos
+    against the caller's existing Windows logon session — so no bind account or
+    password is stored anywhere. That needs a GSSAPI backend: ``winkerberos``
+    on Windows, ``gssapi`` elsewhere.
+
+    Otherwise it is a simple bind with ``bind_dn`` / ``bind_password`` (and an
+    anonymous bind if neither is set, which most directories reject).
+    """
     ldap3 = require("ldap3", "activedirectory")
     server = ldap3.Server(cfg["server"], get_info=ldap3.ALL, use_ssl=bool(cfg.get("use_ssl", False)))
+    if cfg.get("windows_auth"):
+        try:
+            return ldap3.Connection(server, authentication=ldap3.SASL,
+                                    sasl_mechanism=ldap3.KERBEROS, auto_bind=True)
+        except Exception as e:
+            # ldap3 raises LDAPPackageUnavailableError when no GSSAPI backend is
+            # importable; name the install rather than leaking the internal error.
+            if type(e).__name__ == "LDAPPackageUnavailableError":
+                raise IntegrationError(
+                    "access.ad.windows_auth needs a Kerberos backend for the "
+                    "passwordless bind: pip install winkerberos (Windows) or "
+                    "pip install gssapi (Linux/macOS). Alternatively set "
+                    "bind_dn/bind_password for a simple bind.") from e
+            raise
     conn = ldap3.Connection(
         server, user=cfg.get("bind_dn"), password=cfg.get("bind_password"),
         auto_bind=True)
@@ -145,7 +186,32 @@ class LdapADSource:
         if missing:
             raise IntegrationError(
                 f"access.ad ({self.source}) is missing: {', '.join(missing)}. "
-                f"Set server, base_dn (and bind_dn/bind_password) under access.ad.")
+                f"Set server and base_dn under access.ad, plus either "
+                f"windows_auth: true (passwordless bind as the current Windows "
+                f"user) or bind_dn/bind_password.")
+
+    def _nested_groups(self, conn, user_dn: str) -> list:
+        """Groups the user belongs to transitively, including via nesting.
+
+        Uses AD's LDAP_MATCHING_RULE_IN_CHAIN (1.2.840.113556.1.4.1941), which
+        walks the membership chain server-side in one indexed query. The rule is
+        Microsoft-specific, so it is skipped for generic LDAP and any failure is
+        non-fatal — the direct `memberOf` list still stands.
+
+        Disable with ``access.ad.nested_groups: false``.
+        """
+        if self.generic or not user_dn:
+            return []
+        if self.cfg.get("nested_groups") is False:
+            return []
+        try:
+            conn.search(
+                self.cfg["base_dn"],
+                f"(&(objectClass=group)(member:{IN_CHAIN}:={_ldap_escape(user_dn)}))",
+                search_scope="SUBTREE", attributes=["cn"])
+            return [str(_attr(g, "cn")) for g in (getattr(conn, "entries", []) or [])]
+        except Exception:
+            return []
 
     def get_user(self, identifier: str) -> ADUser:
         self._need()
@@ -167,6 +233,12 @@ class LdapADSource:
         if isinstance(member_of, str):
             member_of = [member_of]
         groups = [_cn(dn) for dn in member_of if dn]
+        user_dn = str(_attr(e, "distinguishedName"))
+        # `memberOf` lists DIRECT memberships only. Access is routinely granted
+        # through nesting (user -> G-Role -> D-Resource, where only D-Resource is
+        # a SQL login), so a direct-only list silently under-reports access.
+        # Expand transitively; see _nested_groups for the AD-specific rule.
+        groups = _merge_groups(groups, self._nested_groups(conn, user_dn))
         sam = str(_attr(e, a["uid"]))
         disabled = False
         if a.get("disabled") == "userAccountControl":

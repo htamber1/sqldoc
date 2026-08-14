@@ -33,6 +33,13 @@ def analyze_gap(parsed, report) -> GapResult:
             current.append(f"{a.database}: member of {', '.join(a.roles)} via {a.login}")
         elif a.permissions:
             current.append(f"{a.database}: {len(a.permissions)} explicit grant(s) via {a.login}")
+        elif a.level and a.level != "none":
+            # Server-wide privileges (sysadmin / CONTROL SERVER) and database-
+            # scoped grants confer access with no database role or object
+            # permission to name, so describe them by their resolution path.
+            # Without this the request report says a user already has access
+            # while listing nothing at all under "current access".
+            current.append(f"{a.database}: {a.level} via {a.via or a.login}")
     target_roles = roles_for_level(needs)
 
     if not rows or have == "none":
@@ -52,6 +59,12 @@ def analyze_gap(parsed, report) -> GapResult:
             if a.roles:
                 role_note = f" (via {', '.join(a.roles)} on {a.database})"
                 break
+        if not role_note:
+            # No database role to cite — name the path that actually grants it.
+            for a in rows:
+                if a.via:
+                    role_note = f" (via {a.via})"
+                    break
         return GapResult(
             verdict="ALREADY", request=parsed, have_level=have, needs_level=needs,
             explanation=(f"{report.user.display_name or report.user.identifier} already has "

@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 import re
 from sqldoc import __version__
 from sqldoc.extractor import build_connection_string
-from sqldoc.adapters import get_adapter, detect_dialect, UnsupportedDialectError, DIALECT_CHOICES
+from sqldoc.adapters import (get_adapter, detect_dialect, UnsupportedDialectError,
+                             DIALECT_CHOICES, build_connection_string_for)
 from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures, load_cache, save_cache
 from sqldoc import industry as industry_mod
@@ -271,12 +272,13 @@ def open_adapter(resolve, conn_str, dialect):
         raise click.UsageError(str(e))
 
 
-def _adapter_from_db_entry(entry):
+def _adapter_from_db_entry(entry, cfg=None):
     """Build (name, adapter) from one `.sqldoc.yml` `databases:` entry.
 
     An entry is a mapping with a `name` plus either a `connection_string` or the
     discrete `server`/`database`/`username`/`password`, and an optional
-    `dialect`. Returns (name, adapter, conn_str)."""
+    `dialect`. The ODBC driver comes from the entry's `driver`, else the
+    top-level `driver:` override. Returns (name, adapter, conn_str)."""
     if not isinstance(entry, dict):
         raise click.UsageError("Each item under 'databases:' must be a mapping.")
     name = entry.get('name') or entry.get('database') or 'database'
@@ -293,7 +295,14 @@ def _adapter_from_db_entry(entry):
             raise click.UsageError(
                 f"Database '{name}' is missing connection settings: {', '.join(missing)} "
                 f"(or provide a connection_string).")
-        conn_str = build_connection_string(server, database, username, password)
+        # Build with the entry's own dialect: a postgres/mysql/sqlite entry with
+        # discrete parts needs that adapter's native form, not an ODBC string.
+        try:
+            conn_str = build_connection_string_for(
+                dialect, server, database, username, password,
+                driver=entry.get('driver') or (cfg or {}).get('driver'))
+        except UnsupportedDialectError as e:
+            raise click.UsageError(str(e))
     try:
         adapter = get_adapter(conn_str, dialect)
     except UnsupportedDialectError as e:
@@ -337,7 +346,12 @@ def load_tenants(cfg):
                 raise click.UsageError(
                     f"Tenant '{name}' is missing connection settings: {', '.join(missing)} "
                     f"(or provide a connection_string).")
-            conn_str = build_connection_string(server, database, username, password)
+            try:
+                conn_str = build_connection_string_for(
+                    entry.get('dialect'), server, database, username, password,
+                    driver=entry.get('driver') or (cfg or {}).get('driver'))
+            except UnsupportedDialectError as e:
+                raise click.UsageError(f"Tenant '{name}': {e}")
         database = entry.get('database') or _parse_database(conn_str) or name
         registry[key] = {
             "name": name, "conn_str": conn_str, "dialect": entry.get('dialect'),
@@ -430,13 +444,47 @@ def _resolve_connection(resolve, server, database, username, password, connectio
     return conn_str, database, server
 
 
+def find_config(path: str, explicit: bool) -> str:
+    """Resolve which config file to load, searching parent directories.
+
+    An explicit --config path, or any path carrying a directory component, is
+    used as given. The default bare ``.sqldoc.yml`` is looked for in the current
+    directory and then each parent up to the filesystem root -- the way git
+    finds ``.git`` -- so running sqldoc from a subdirectory of a project still
+    picks up its settings.
+
+    Without this, `cd`-ing one level down silently dropped the whole config:
+    `driver:` reverted to the built-in default and the only symptom was a bare
+    ODBC `IM002` error that never mentioned the config file.
+    """
+    if explicit or os.path.dirname(path) or os.path.exists(path):
+        return path
+    name = os.path.basename(path)
+    current = os.path.abspath(os.getcwd())
+    while True:
+        parent = os.path.dirname(current)
+        if parent == current:          # reached the filesystem root
+            return path
+        current = parent
+        candidate = os.path.join(current, name)
+        if os.path.exists(candidate):
+            return candidate
+
+
 def load_config(path: str, explicit: bool) -> dict:
     """Load .sqldoc.yml into a dict keyed by CLI option name.
 
     Missing file is fine unless the path was passed explicitly with --config.
-    Hyphenated keys (e.g. no-ai) are normalized to underscores; unknown keys
-    warn so typos surface instead of being silently ignored.
+    The default path is also searched for in parent directories (see
+    `find_config`). Hyphenated keys (e.g. no-ai) are normalized to underscores;
+    unknown keys warn so typos surface instead of being silently ignored.
     """
+    resolved = find_config(path, explicit)
+    if resolved != path:
+        # Never adopt a parent-directory config silently: name it, so the
+        # settings in effect are always traceable back to a file.
+        click.echo(f"Using config: {resolved}", err=True)
+        path = resolved
     if not os.path.exists(path):
         if explicit:
             raise click.UsageError(f"Config file not found: {path}")
@@ -475,6 +523,44 @@ def load_config(path: str, explicit: bool) -> dict:
 
 # --- CMS bulk helpers (defined early so bulk-capable commands can use them) --
 
+def _driver_error_hint(exc) -> str:
+    """An actionable hint for ODBC driver-manager failures, or "" for others.
+
+    `IM002` ("Data source name not found and no default driver specified") says
+    only that a driver is missing -- not which driver was asked for, nor which
+    config file (if any) supplies the `driver:` override. Spell all three out.
+    """
+    text = str(exc)
+    if "IM002" not in text and "Data source name not found" not in text:
+        return ""
+    from sqldoc.adapters.sqlserver import SqlServerAdapter
+    found = find_config('.sqldoc.yml', False)
+    where = (f"Config in effect: {os.path.abspath(found)}."
+             if os.path.exists(found)
+             else f"No .sqldoc.yml found in {os.getcwd()} or any parent directory.")
+    return ("  The ODBC driver in the connection string is not installed on this "
+            f"machine (sqldoc defaults to '{SqlServerAdapter.DEFAULT_DRIVER}').\n"
+            f"  {where}\n"
+            "  Set `driver:` in .sqldoc.yml to a driver you have -- "
+            "`sqldoc doctor` lists the installed ones.")
+
+
+def _abort_connection_failed(exc):
+    """Report a failed connection, add the ODBC driver hint if one applies, abort.
+
+    Used by every connecting command rather than only by `cms discover`: a
+    `driver:` mismatch was the single most common failure in field testing, and a
+    bare `IM002` names neither the driver that was requested nor the config file
+    that was supposed to supply the override. Non-driver failures (bad password,
+    unreachable host) are unaffected -- `_driver_error_hint` returns "" for them.
+    """
+    click.echo(f"Connection failed: {exc}", err=True)
+    hint = _driver_error_hint(exc)
+    if hint:
+        click.echo(click.style(hint, fg='yellow'), err=True)
+    raise click.Abort()
+
+
 def _cms_section(cfg):
     raw = (cfg or {}).get("cms") or {}
     if not isinstance(raw, dict):
@@ -506,7 +592,8 @@ def _load_cms_inventory(cfg):
             "--cms needs a discovered inventory (run 'sqldoc cms discover') or a "
             "'cms:' section with a server in .sqldoc.yml.")
     return cms_mod.discover_live(server, windows_auth=section.get('windows_auth', True),
-                                 username=section.get('username'), password=section.get('password'))
+                                 username=section.get('username'), password=section.get('password'),
+                                 driver=section.get('driver') or (cfg or {}).get('driver'))
 
 
 def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, json_out, max_workers):
@@ -522,7 +609,8 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
     targets = select_servers(inv, group)
     opts = {"windows_auth": section.get('windows_auth', True),
             "username": section.get('username'), "password": section.get('password'),
-            "database": database, "schemas": schemas}
+            "database": database, "schemas": schemas,
+            "driver": section.get('driver') or (cfg or {}).get('driver')}
 
     click.echo(f"\nsqldoc v{__version__}  -  {command_name} --cms")
     click.echo(f"{'='*44}")
@@ -554,7 +642,8 @@ def _cms_opts(cfg, database=None):
     section = _cms_section(cfg)
     return {"windows_auth": section.get('windows_auth', True),
             "username": section.get('username'), "password": section.get('password'),
-            "database": database}
+            "database": database,
+            "driver": section.get('driver') or (cfg or {}).get('driver')}
 
 
 def _run_cms_executive(cfg, group, database, output, json_out, max_workers):
@@ -766,8 +855,7 @@ def main(config, server, database, username, password, connection_string, window
         views = extract_views(adapter)
         procedures = extract_procedures(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     all_schemas = {o.schema for o in tables + views + procedures}
     click.echo(
@@ -935,8 +1023,7 @@ def scan(config, server, database, username, password, connection_string, window
     try:
         tables = extract_metadata(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     if schemas:
         allow = [s.strip() for s in schemas.split(',')]
@@ -1211,8 +1298,7 @@ def health(config, server, database, username, password, connection_string, wind
                                 min_pages=int(min_pages), schemas=schema_list,
                                 tables=tables)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
     report.database = database
 
     for section, msg in report.errors:
@@ -1313,8 +1399,7 @@ def quality(config, server, database, username, password, connection_string, win
     try:
         tables = extract_metadata(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     schema_list = [s.strip() for s in schemas.split(',')] if schemas else None
 
@@ -1411,8 +1496,7 @@ def intel(config, server, database, username, password, connection_string, windo
         views = extract_views(adapter)
         procedures = extract_procedures(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     if schemas:
         allow = [s.strip() for s in schemas.split(',')]
@@ -1561,8 +1645,7 @@ def insights(config, server, database, username, password, connection_string, wi
     try:
         tables = extract_metadata(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     if schemas:
         allow = [s.strip() for s in schemas.split(',')]
@@ -1616,8 +1699,12 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
 
     schema_allow = [s.strip() for s in schemas.split(',')] if schemas else None
     db_access_list = []
+    # A driver mismatch fails every database in the list for the same reason, so
+    # the hint is collected here and printed once after the loop rather than
+    # repeated per database.
+    driver_hint = ""
     for entry in db_entries:
-        name, adapter, _conn_str = _adapter_from_db_entry(entry)
+        name, adapter, _conn_str = _adapter_from_db_entry(entry, cfg)
         click.echo(f"[{name}] connecting to {adapter.display_name}...")
         try:
             tables = extract_metadata(adapter)
@@ -1639,7 +1726,10 @@ def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
         except Exception as e:
             da = DatabaseAccess(database=name, error=f"{type(e).__name__}: {e}")
             click.echo(click.style(f"  ! [{name}] failed: {e}", fg='yellow'), err=True)
+            driver_hint = driver_hint or _driver_error_hint(e)
         db_access_list.append(da)
+    if driver_hint:
+        click.echo(click.style(driver_hint, fg='yellow'), err=True)
 
     report = build_cross_db(db_access_list)
     s = summarize_multi(report)
@@ -1743,8 +1833,7 @@ def comply(config, server, database, username, password, connection_string, wind
         views = extract_views(adapter)
         procedures = extract_procedures(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     if schemas:
         allow = [s.strip() for s in schemas.split(',')]
@@ -1976,8 +2065,7 @@ def server(config, server, database, username, password, connection_string, wind
     try:
         report = collect_server(adapter, top=int(top), include_jobs=not no_jobs)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
     report.server_name = label
 
     for section, msg in report.errors:
@@ -2079,8 +2167,7 @@ def logs(config, server, database, username, password, connection_string, window
         report = collect_logs(adapter, log_number=int(log_number), search=search,
                               severity=severity, last_hours=last_hours)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2157,8 +2244,7 @@ def secure(config, server, database, username, password, connection_string, wind
     try:
         report = collect_security(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2243,8 +2329,7 @@ def waits(config, server, database, username, password, connection_string, windo
     try:
         report = collect_waits(adapter, top=int(top))
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2324,8 +2409,7 @@ def ha(config, server, database, username, password, connection_string, windows_
     try:
         report = collect_ha(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2406,8 +2490,7 @@ def deadlocks(config, server, database, username, password, connection_string, w
     try:
         report = collect_deadlocks(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2503,8 +2586,7 @@ def plans(config, server, database, username, password, connection_string, windo
     try:
         report = collect_plans(adapter, top=int(top))
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     for section, msg in report.errors:
         click.echo(click.style(f"  ! {section}: {msg}", fg='yellow'), err=True)
@@ -2657,8 +2739,7 @@ def baseline(config, server, database, username, password, connection_string, wi
     try:
         current = capture_baseline(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
 
     if capture:
         import json as _json
@@ -2762,8 +2843,7 @@ def executive(config, server, database, username, password, connection_string, w
     try:
         tables = extract_metadata(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
     if schemas:
         allow = [s.strip() for s in schemas.split(',')]
         tables = [t for t in tables if t.schema in allow]
@@ -3092,6 +3172,11 @@ def _run_integration(name, push_mode, config, server, database, username, passwo
         bundle = gather(adapter, database, schemas=resolve('schemas', schemas))
     except Exception as e:
         click.echo(click.style(f"Collection failed: {e}", fg='red'), err=True)
+        # The integration --push commands connect too, so a driver mismatch here
+        # needs the same hint as the standalone reporting commands.
+        hint = _driver_error_hint(e)
+        if hint:
+            click.echo(click.style(hint, fg='yellow'), err=True)
         raise click.Abort()
     for note in bundle.notes:
         click.echo(click.style(f"  ! {note}", fg='yellow'), err=True)
@@ -3294,8 +3379,7 @@ def backup(config, server, database, username, password, connection_string, wind
     try:
         report = collect_backups(adapter)
     except Exception as e:
-        click.echo(f"Connection failed: {e}", err=True)
-        raise click.Abort()
+        _abort_connection_failed(e)
     s = backup_summarize(report)
     click.echo(f"PITR: {'enabled' if report.pitr_enabled else 'disabled'} "
                f"({report.pitr_mechanism or 'n/a'})   {s['databases']} db(s), "
@@ -3359,9 +3443,13 @@ def cms_discover(config, cms_server, windows_auth, username, password, output, j
     click.echo(f"Connecting to CMS: {cms_server} ({'Windows auth' if windows_auth else 'SQL auth'})...")
     try:
         inv = cms_mod.discover_live(cms_server, windows_auth=windows_auth,
-                                    username=username, password=password)
+                                    username=username, password=password,
+                                    driver=section.get('driver') or cfg.get('driver'))
     except Exception as e:
         click.echo(click.style(f"CMS discovery failed: {e}", fg='red'), err=True)
+        hint = _driver_error_hint(e)
+        if hint:
+            click.echo(click.style(hint, fg='yellow'), err=True)
         raise click.Abort()
 
     ngroups = len([g for g in inv.groups if not g.is_system])
@@ -3377,6 +3465,18 @@ def cms_discover(config, cms_server, windows_auth, username, password, output, j
             _json.dump(build_inventory_json(inv), f, indent=2, default=str)
         click.echo(f"JSON written to {json_out}")
     if not no_save:
+        # Say what is about to be written, and where, BEFORE writing it. A full
+        # estate inventory is reconnaissance-grade data (every hostname), and it
+        # lands in a file users routinely commit or paste into support threads --
+        # which may also already hold credentials. Announcing it after the fact
+        # made the write easy to miss entirely.
+        click.echo(click.style(
+            f"\nSaving {len(inv.servers)} server hostname(s) and {ngroups} group(s) "
+            f"to {config} under 'cms_servers:'.", fg='yellow'))
+        click.echo(click.style(
+            "  That file will then contain every hostname in the estate -- keep it "
+            "out of source control. Re-run with --no-save to skip persisting.",
+            fg='yellow'))
         cms_mod.save_cms_servers(config, inv)
         click.echo(f"Saved inventory to {config} under 'cms_servers:'.")
 
@@ -3469,11 +3569,30 @@ def access_check(config, identifier, output, json_out):
     """
     from sqldoc.access.checker import check_access
     from sqldoc.access.render import render_check_html, build_check_json
+    from sqldoc.access import ad as ad_mod, config as access_config
     from sqldoc.integrations.base import IntegrationError
     cfg = _access_cfg(config)
     click.echo(f"\nsqldoc v{__version__}  -  access check")
     click.echo(f"{'='*44}")
-    click.echo(f"Resolving '{identifier}' in Active Directory...")
+    # Name the identity source actually in use. With no `access.ad:` section the
+    # source auto-detects to 'native', which contacts no directory at all -- so
+    # claiming "Active Directory" here would misdescribe what was checked.
+    ad_cfg = access_config.ad_config(cfg)
+    try:
+        source_name = ad_mod.get_source(ad_cfg).source
+        servers = access_config.servers(cfg)
+    except (IntegrationError, ValueError) as e:
+        raise click.UsageError(str(e))
+    click.echo(f"Resolving '{identifier}' via {source_name}...")
+    if source_name == "native" and not ad_cfg:
+        click.echo(click.style(
+            "  ! No 'access.ad:' section configured, so no directory was queried. "
+            "Group-based access will NOT be detected — only SQL-native logins match.",
+            fg='yellow'), err=True)
+    if not servers:
+        click.echo(click.style(
+            "  ! No 'access.servers:' configured, so no SQL Server was contacted.",
+            fg='yellow'), err=True)
     try:
         report = check_access(cfg, identifier)
     except IntegrationError as e:
@@ -3492,7 +3611,16 @@ def access_check(config, identifier, output, json_out):
                        + click.style(a.level, fg={'admin': 'red', 'write': 'yellow', 'read': 'cyan'}.get(a.level))
                        + f"  roles=[{', '.join(a.roles) or '-'}]{pii}")
         if not report.access:
-            click.echo(click.style("  No SQL Server access found.", fg='green'))
+            # "No access" is only a finding if something was actually checked;
+            # otherwise it is an empty run and must not read as an all-clear.
+            if not servers:
+                click.echo(click.style(
+                    "  Nothing was checked — this is NOT a confirmation that "
+                    "'" + identifier + "' has no access.", fg='yellow'))
+            else:
+                click.echo(click.style(
+                    f"  No SQL Server access found (checked {len(servers)} server(s) "
+                    f"via {source_name}).", fg='green'))
     for w, m in report.errors:
         click.echo(click.style(f"  ! {w}: {m}", fg='yellow'), err=True)
 
@@ -4199,7 +4327,11 @@ def doctor(config, server, database, username, password, connection_string, wind
     installed, so an "ODBC Driver 17 vs 18" mismatch is obvious and fixable via
     the `driver:` config key."""
     ctx = click.get_current_context()
-    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    config_explicit = ctx.get_parameter_source('config').name == 'COMMANDLINE'
+    cfg = load_config(config, config_explicit)
+    # Report on the file that was actually loaded, which may live in a parent
+    # directory, rather than on the bare default name.
+    config = find_config(config, config_explicit)
     resolve = _make_resolver(ctx, cfg)
 
     # Only test a connection when the user actually supplied connection settings

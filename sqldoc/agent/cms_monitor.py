@@ -13,7 +13,8 @@ def discover(cms_cfg: dict):
     """Discover the CMS inventory (module-level indirection for mocking)."""
     from sqldoc.cms import discover_live
     return discover_live(cms_cfg["server"], windows_auth=cms_cfg.get("windows_auth", True),
-                         username=cms_cfg.get("username"), password=cms_cfg.get("password"))
+                         username=cms_cfg.get("username"), password=cms_cfg.get("password"),
+                         driver=cms_cfg.get("driver"))
 
 
 def build_databases(inventory, cms_cfg: dict) -> list:
@@ -24,7 +25,8 @@ def build_databases(inventory, cms_cfg: dict) -> list:
     for s in inventory.servers:
         cs = connection_string_for(s.server_name, database=db,
                                    windows_auth=cms_cfg.get("windows_auth", True),
-                                   username=cms_cfg.get("username"), password=cms_cfg.get("password"))
+                                   username=cms_cfg.get("username"), password=cms_cfg.get("password"),
+                                   driver=cms_cfg.get("driver"))
         out.append(DatabaseConfig(name=s.name, connection_string=cs, dialect="sqlserver",
                                   mode=cms_cfg.get("mode", "local"),
                                   no_ai=bool(cms_cfg.get("no_ai", True))))

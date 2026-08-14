@@ -27,7 +27,8 @@ def _adapter_for(server, opts, database=None):
     cs = connection_string_for(
         server.server_name, database=database or opts.get("database") or "master",
         windows_auth=opts.get("windows_auth", True),
-        username=opts.get("username"), password=opts.get("password"))
+        username=opts.get("username"), password=opts.get("password"),
+        driver=opts.get("driver"))
     return get_adapter(cs, "sqlserver")
 
 

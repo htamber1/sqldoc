@@ -44,6 +44,11 @@ def _level_pill(level) -> str:
     return f"<span class='pill {_e(level)}'>{_e(level)}</span>"
 
 
+def _tags(values) -> str:
+    return ("".join(f"<span class='tag'>{_e(v)}</span>" for v in values)
+            or "<span class='muted'>-</span>")
+
+
 def _write(output_path, text):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(text)
@@ -63,8 +68,12 @@ def build_check_json(report) -> dict:
             "groups": u.groups,
         },
         "matched_groups": report.matched_groups,
+        # `server_permissions` carries server-scoped grants (CONTROL SERVER,
+        # ALTER ANY LOGIN, a resolved IMPERSONATE) that are NOT role memberships,
+        # so `server_roles` alone does not describe what a login can reach.
         "logins": [{"name": l.name, "type": l.type, "server": l.server,
-                    "is_disabled": l.is_disabled, "server_roles": l.server_roles}
+                    "is_disabled": l.is_disabled, "server_roles": l.server_roles,
+                    "server_permissions": l.server_permissions}
                    for l in report.logins],
         "access": [{
             "server": a.server, "database": a.database, "login": a.login,
@@ -73,6 +82,10 @@ def build_check_json(report) -> dict:
                             for p in a.permissions],
             "pii_tables": [{"schema": s, "table": t, "risk": r, "regulations": g}
                            for (s, t, r, g) in a.pii_tables],
+            # Escalation routes deliberately kept out of `level` so the effective
+            # access is not overstated -- which makes exporting them the only way
+            # a consumer can see them at all.
+            "flags": a.flags,
         } for a in report.access],
         "errors": [{"where": w, "message": m} for (w, m) in report.errors],
     }
@@ -96,6 +109,27 @@ def render_check_html(report, output_path):
         f" &middot; {'enabled' if u.enabled else 'DISABLED'}</div>"
         f"<p><strong>AD groups ({len(u.groups)}):</strong> {groups}</p>"
         f"<p><strong>Groups with SQL Server access:</strong> {matched}</p></div>")
+
+    # Server-level privileges reach every database on the instance with no
+    # database principal required, so they belong above the per-database table --
+    # a sysadmin group login shows nothing in sys.database_principals at all.
+    priv_rows = []
+    for lg in report.logins:
+        if not (lg.server_roles or lg.server_permissions):
+            continue
+        priv_rows.append(
+            f"<tr><td class='mono'>{_e(lg.name)}</td>"
+            f"<td>{_tags(lg.server_roles)}</td>"
+            f"<td>{_tags(lg.server_permissions)}</td></tr>")
+    server_priv = ""
+    if priv_rows:
+        server_priv = (
+            "<h2>Server-level privileges</h2><div class='card'>"
+            "<p class='muted'>Fixed server roles and server-scoped grants. These apply "
+            "across the whole instance regardless of database-level permissions — a "
+            "login holding one of these reaches every database.</p><table>"
+            "<tr><th>Login</th><th>Server roles</th><th>Server-scoped grants</th></tr>"
+            + "".join(priv_rows) + "</table></div>")
 
     if report.access:
         rows = []
@@ -122,6 +156,22 @@ def render_check_html(report, output_path):
             access += ("<h2>PII-flagged tables currently accessible</h2><div class='card'><table>"
                        "<tr><th>Database</th><th>Table</th><th>Risk</th><th>Regulations</th></tr>"
                        + "".join(pii_rows) + "</table></div>")
+        # Escalation routes are recorded as flags rather than folded into the
+        # effective level, so without a section of their own they would be
+        # collected and never seen.
+        flag_rows = []
+        for a in report.access:
+            for note in a.flags:
+                flag_rows.append(
+                    f"<tr><td>{_e(a.database)}</td><td class='mono'>{_e(a.login)}</td>"
+                    f"<td>{_e(note)}</td></tr>")
+        if flag_rows:
+            access += ("<h2>Escalation routes flagged</h2><div class='card'>"
+                       "<p class='MEDIUM'><strong>These do not raise the effective level "
+                       "shown above</strong> — each is a route by which the principal could "
+                       "obtain more access than the level states.</p><table>"
+                       "<tr><th>Database</th><th>Login</th><th>Escalation route</th></tr>"
+                       + "".join(flag_rows) + "</table></div>")
     else:
         access = "<div class='card'><p class='muted'>No SQL Server access found for this user.</p></div>"
 
@@ -131,7 +181,7 @@ def render_check_html(report, output_path):
         errs = f"<div class='card'><h2 style='margin-top:0'>Notes</h2><ul class='muted'>{items}</ul></div>"
 
     _write(output_path, _doc(f"Access check — {u.display_name or u.identifier}",
-                             header + access + errs))
+                             header + server_priv + access + errs))
 
 
 # --- request / gap ---------------------------------------------------------

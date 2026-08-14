@@ -28,8 +28,16 @@ class _Backup:
 
 
 class _DB:
-    def __init__(self, never=False, issues=None):
+    # Mirrors the fields of backup.DatabaseBackup that the executive scoring
+    # reads. `age_hours` defaults to a fresh backup so an unqualified _DB() is a
+    # fully compliant database; backup_compliance now judges staleness too.
+    _n = 0
+
+    def __init__(self, never=False, issues=None, age_hours=1.0, database=None):
+        _DB._n += 1
+        self.database = database or f"DB{_DB._n}"
         self.never_backed_up = never
+        self.last_backup_age_hours = age_hours
         self.issues = issues or []
 
 

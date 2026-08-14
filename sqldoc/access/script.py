@@ -32,14 +32,28 @@ def pick_login(report, parsed, override=None):
     if override:
         return override, ("\\" in override), "caller-specified login"
 
+    from sqldoc.access.roles import level_meets
+    needs = parsed.level or "read"
     dbl = (parsed.database or "").lower()
     # 1) A Windows group already present in the target database — upgrade it.
+    #    Skip any group that ALREADY satisfies the requested level: granting to it
+    #    changes nothing for the requester while widening that group's footprint
+    #    for every other member. That matters most when the group is privileged —
+    #    picking a sysadmin group as the target of a read request would add a
+    #    redundant role membership to the most powerful group on the server.
     for a in report.access:
         if (a.database or "").lower() == dbl and "group" in (a.via or "").lower():
+            if level_meets(a.level, needs):
+                continue
             return a.login, True, f"existing group with access to {a.database}"
-    # 2) A Windows group login the user belongs to that exists on the server.
+    # 2) A Windows group login the user belongs to that exists on the server —
+    #    again skipping any that is already server-wide privileged (sysadmin /
+    #    CONTROL SERVER), which the requested level cannot add to.
+    from sqldoc.access.sqlserver import _server_implied_level
     for lg in report.logins:
         if "GROUP" in (lg.type or "").upper():
+            if level_meets(_server_implied_level(lg), needs):
+                continue
             return lg.name, True, "existing AD group login the user belongs to"
     # 3) Fall back to the user's own Windows login.
     login = user.login or user.sam_account_name or user.identifier

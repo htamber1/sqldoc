@@ -4,6 +4,192 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.4] — 2026-08-14
+
+**Enterprise field-fix release: ODBC driver override honoured everywhere, the
+access suite corrected against a real Active Directory, and backup staleness
+finally scored.** The second release driven entirely by running sqldoc against
+real corporate infrastructure — a SQL Server 2022 estate, a Central Management
+Server, and a production Active Directory — this time reaching the paths v3.0.3
+never touched: the CMS fan-out, the `sqldoc access` suite, and multi-tenant mode.
+Every fix below was reproduced against real infrastructure or a failing unit test
+before being written. No breaking changes; **+241 tests** (1446 passing in the
+offline/mock suite, +117 skip-gated integration).
+
+The unifying theme is **silent wrongness**: in every case sqldoc exited 0 and
+produced a report that looked complete and correct while being neither.
+
+### Fixed
+
+- **The `driver:` config override was ignored at nine-plus call sites.** `cms`
+  (`connection_string_for`, `connect_cms`, `discover_live`), `cms_bulk`
+  (`_adapter_for`, the whole `--cms` fan-out), `agent/cms_monitor`,
+  `agent/config` (`_resolve_connection`, plus `agent.cms` never inheriting the
+  top-level key — which made the `cms_monitor` fix inert), `cli`
+  (`_adapter_from_db_entry` for the `databases:` list, `load_tenants` for
+  multi-tenant mode, `_load_cms_inventory`, `run_cms_bulk`, `_cms_opts`,
+  `cms discover`), and `access/config` + `access/checker` for the entire access
+  suite all hardcoded `ODBC Driver 18 for SQL Server` or dropped the parameter.
+  On a host with only **Driver 17** every one of those features was unusable
+  even with `driver:` set correctly — and `sqldoc doctor` recommended the exact
+  fix those paths ignored. *Root cause worth noting: `driver` must be threaded
+  manually to every call site, so each new site is a fresh chance to forget. A
+  single resolved connection-settings object would make this structurally
+  impossible.*
+- **Non-SQL-Server dialects configured with discrete parts got a SQL Server ODBC
+  string.** A `postgres`/`mysql`/`sqlite`/`mongodb`/`snowflake` entry supplying
+  `server`/`database`/`username`/`password` (rather than a `connection_string`)
+  was handed an ODBC string — the correct adapter with a connection string it
+  cannot parse. New `adapters.build_connection_string_for(dialect, …)` routes to
+  the matching adapter and gates `windows_auth`/`driver` to the SQL Server family
+  (which includes Azure SQL MI and Synapse); used by `cli._adapter_from_db_entry`,
+  `cli.load_tenants` and `access.checker.build_db_adapter`.
+- **`.sqldoc.yml` was only read from the current directory.** Running from a
+  subdirectory silently dropped every setting: `driver:` reverted to the built-in
+  default and the only symptom was a bare ODBC `IM002` that never mentioned the
+  config file. Added git-style parent-directory search (`cli.find_config`), with
+  the resolved path echoed (`Using config: …`) so a parent config is never
+  adopted silently. `doctor` now reports the resolved path and names the
+  directories searched.
+- **`IM002` failures now explain themselves, on every connecting command.** The
+  hint names the driver that was requested, the config file in effect (or that
+  none was found and where it searched), and the fix. Wired into all 17
+  connecting commands via a shared `cli._abort_connection_failed` — `doc`,
+  `scan`, `health`, `quality`, `intel`, `insights`, `comply`, `server`, `logs`,
+  `secure`, `waits`, `ha`, `deadlocks`, `plans`, `baseline`, `executive`,
+  `backup` — plus the integration `--push` path (`_run_integration`), a
+  once-per-run hint in `comply --all-databases`, and `cms discover`. Non-driver
+  failures are unaffected: a bad password gets no ODBC advice.
+- **`executive` scored stale backups as 100% compliant.** `backup_compliance`
+  documented itself as measuring a "non-stale" posture but never checked backup
+  age — `issues` only ever contained *never backed up*, *FULL/BULK_LOGGED without
+  log backups* and *SIMPLE recovery*. A database on FULL recovery with current
+  log backups and a **two-year-old** full backup raised no rule at all and scored
+  **100%**. Now reuses the existing `backup.stale_databases()` with a shared
+  `backup.DEFAULT_MAX_BACKUP_AGE_HOURS` (24 h, matching the agent alert), and
+  matches stale entries by identity so a repeated database name cannot miscount.
+- **`access check` could report a false all-clear.** With no `access:` config the
+  identity source auto-detects to `native`, which returns `found=True` with no
+  groups **without contacting anything**, and zero servers are configured. The
+  command nonetheless printed "Resolving … in Active Directory…" followed by a
+  green **"No SQL Server access found."** — indistinguishable from a verified
+  negative, for a user who was in fact `sysadmin`. It now names the identity
+  source actually in use, warns when no directory or no server was contacted, and
+  refuses to imply verification when nothing was checked.
+- **A `sysadmin` was reported as having no access.** `collect_db_access` skipped
+  any matched login without a database principal — but `sysadmin` has none, since
+  it bypasses permission checks entirely and maps to `dbo` in every database.
+  `server_roles` was already collected and simply never consulted.
+- **Implicit-admin detection widened beyond `sysadmin`.** `securityadmin` (can
+  grant itself anything) → admin. `CONTROL SERVER` → admin; it is a *permission*,
+  not a role, so it never appears in `sys.server_role_members` and needed a new
+  `class = 100` query. `CONTROL ON DATABASE` → admin; `DB_PERMISSIONS_SQL`
+  filtered `WHERE perm.class = 1` and inner-joined `sys.objects`, so
+  database-scoped (`class = 0`) grants were **structurally impossible** to
+  return. Database-scoped `SELECT` likewise grants read over the whole database.
+  `ALTER ANY LOGIN` → admin (can reset any SQL login's password, including `sa`).
+- **`IMPERSONATE` of a privileged principal → admin**, at server scope
+  (`class = 101`; target holding sysadmin/securityadmin/CONTROL SERVER or named
+  `sa`) and database scope (`class = 4`; target `dbo` or a `db_owner` member).
+  Both queries resolve the grant's **target**, because impersonating an *ordinary*
+  principal is not escalation and must not read as admin.
+- **`TAKE OWNERSHIP` is flagged, not levelled.** New `flags` field on
+  `DatabaseAccess` records an escalation *route* without overstating effective
+  access. Object-level classification in `comply.classify_permission` is
+  unchanged (wider blast radius).
+- **Nested AD groups were invisible.** Only the direct `memberOf` attribute was
+  read, so access granted through nesting (`user → G-Role → D-Resource`, where
+  only `D-Resource` is a SQL login) silently under-reported. Now expanded
+  transitively via AD's `LDAP_MATCHING_RULE_IN_CHAIN`
+  (`1.2.840.113556.1.4.1941`) — Microsoft-only, skipped for generic LDAP,
+  non-fatal on failure, disable with `access.ad.nested_groups: false`. Measured
+  live: **48 groups seen vs 213 actual**.
+- **`access request` said a user already had access while listing nothing.** An
+  access row derived from server-wide privilege has no roles and no object
+  permissions, so `gap.py`'s "current access" list came back empty. It now falls
+  back to the resolution path, producing e.g. `already has admin access (via
+  group … -> server-wide sysadmin)`.
+- **`access script` chose the sysadmin group as the grant target.** The grantee
+  selector picked a group that *already* satisfied the requested level:
+  redundant for the requester, and it widens a privileged group's footprint for
+  every other member. Both group-preference tiers now skip any group that already
+  meets the requested level.
+- **`access review` flagged the SQL Server service account as orphaned.**
+  `NT AUTHORITY\SYSTEM` and `NT SERVICE\*` were reported **HIGH "orphaned — no
+  backing AD account"**, because the check resolves the name in AD and these
+  virtual accounts can never exist there. The generated fix was
+  **`DROP LOGIN [NT SERVICE\MSSQLSERVER]`** — following it would break the SQL
+  Server service; the inactivity path would emit `ALTER LOGIN … DISABLE` for the
+  same accounts. Built-in Windows authorities are now skipped for both checks.
+  **6 of 25 findings were this false positive.**
+- **Escalation risk was collected and displayed nowhere.** `DatabaseAccess.flags`
+  and `Login.server_permissions` were populated by the probe but exported by
+  neither the HTML nor the JSON, making server-scoped grants and escalation
+  routes invisible to every consumer. `access/render.py` gained a
+  **Server-level privileges** section (above the per-database table, since a
+  sysadmin group login has no `sys.database_principals` row) and an
+  **Escalation routes flagged** section that states explicitly that a flag does
+  *not* raise the level shown. Both fields are now in `build_check_json`.
+- **Robustness.** Optional enrichment columns (`perm_class`, `target_name`) are
+  read tolerantly, so an unexpected row shape degrades instead of raising
+  `AttributeError` mid-audit; the new permission queries are wrapped so a rights
+  failure degrades to the previous behaviour rather than losing all access data
+  for that server.
+
+### Added
+
+- **`access.servers` entries accept `windows_auth:` and `driver:`.** Previously
+  only `connection_string` or server+username+password were accepted, forcing
+  Windows-auth shops to hand-write a `Trusted_Connection` string while the rest
+  of sqldoc honoured `windows_auth: true`. Both are inherited from the top level
+  and routed through the same builder as `databases:`. Inheritance tests
+  `is None` rather than falsiness, so an explicit per-entry `windows_auth: false`
+  still overrides a global `true`.
+- **Passwordless Kerberos LDAP bind.** `access.ad.windows_auth: true` binds over
+  SASL/GSSAPI as the current Windows logon session, so no bind account or
+  password is stored anywhere. Never inherits over an explicit `bind_dn`, so a
+  configured service account is never silently discarded. A missing GSSAPI
+  backend now raises an actionable error naming the install rather than leaking
+  ldap3's internal `LDAPPackageUnavailableError`. *Note: ldap3's NTLM cannot use
+  the current Windows session — it computes its response from a supplied
+  password or hash and never calls SSPI — so Kerberos/GSSAPI is the only
+  passwordless route.*
+- **`winkerberos` / `gssapi` declared in the `activedirectory` extra**, with
+  environment markers (`winkerberos` is Windows-only; `gssapi` generally needs
+  Kerberos dev headers elsewhere). A documented feature with an undeclared
+  dependency should not stand.
+- **`cms discover` names its destination before writing.** The command persists
+  the full estate inventory to `.sqldoc.yml` under `cms_servers:` unless
+  `--no-save` is passed — in validation, **159 hostnames and 34 groups (~25 KB)**
+  written on first run with only a one-line notice *after* the fact. It now
+  states the destination, the hostname and group counts, and that the file will
+  then contain every hostname in the estate, *before* the write. (Inverting the
+  default to opt-in `--save` is a breaking change deliberately deferred to a
+  future major version.)
+
+### Changed
+
+- **Report contract (deliberate):** `access-check` JSON gained
+  `access[].flags` and `logins[].server_permissions`. The pinned key sets in
+  `tests/regression/test_contracts.py` were updated accordingly, and `logins[]`
+  is now pinned as well (it previously was not). A collected-but-never-displayed
+  risk signal is useless, so this contract change was made on purpose.
+
+### Tests
+
+**+241 (1205 → 1446 passing.)** Nine new offline suites, no database or
+directory required: `test_driver_override.py` (73 — driver override across every
+path, the dialect-aware builder over all dialects, config discovery, and the
+`IM002` hint end-to-end through `doc`/`scan`), `test_access_ad_chain.py` (31),
+`test_access_implicit_admin.py` (27), `test_access_workflow_fixes.py` (30 —
+`gap`/`script`/`review`, which the field patch shipped without cover),
+`test_access_escalation_routes.py` (19), `test_access_render_risk.py` (19 —
+including air-gap safety and HTML escaping of the new sections),
+`test_executive_backup_score.py` (17), `test_access_windows_auth.py` (13),
+`test_access_check_reporting.py` (12). `tests/test_executive.py`'s `_DB` stub was
+made faithful to `backup.DatabaseBackup` (it predated the fields
+`stale_databases` reads).
+
 ## [3.0.3] — 2026-08-13
 
 **Large-table safety + connection resiliency for `sqldoc quality`, plus a

@@ -7,18 +7,42 @@ Example::
         type: auto            # ldap | graph | auto
         server: ldap://dc.corp.local
         base_dn: DC=corp,DC=local
-        bind_dn: CN=svc,OU=Svc,DC=corp,DC=local
-        bind_password: "***"
         netbios_domain: CORP
+        # Passwordless: bind over SASL/GSSAPI as the current Windows user
+        # (needs winkerberos on Windows, gssapi elsewhere). Inherited from the
+        # top-level `windows_auth:` unless a bind_dn is set below.
+        windows_auth: true
+        # ...or a stored service account instead of windows_auth:
+        # bind_dn: CN=svc,OU=Svc,DC=corp,DC=local
+        # bind_password: "***"
         # --- or Entra ID / Graph ---
         tenant_id: "..."
         client_id: "..."
         client_secret: "***"
       servers:
+        # Preferred: discrete parts. sqldoc builds the connection string with
+        # the adapter for `dialect`, and the ODBC driver comes from the
+        # top-level `driver:` key (or a per-entry `driver:`), so nothing here
+        # is pinned to one driver version.
         - name: prod
-          connection_string: "DRIVER={ODBC Driver 18 for SQL Server};SERVER=sql1;UID=sa;PWD=***"
+          server: sql1
+          username: sa
+          password: "***"
           dialect: sqlserver
           databases: [Sales, HR]
+        # Windows auth needs no username/password. `windows_auth:` and
+        # `driver:` are inherited from the top level when omitted here, so a
+        # Windows-auth shop can just set `windows_auth: true` once globally.
+        - name: warehouse
+          server: sql2
+          windows_auth: true
+          dialect: sqlserver
+          databases: [Ledger]
+        # Or supply a ready-made connection string, which is used verbatim:
+        - name: analytics
+          connection_string: "postgresql://readonly:***@pg1/analytics"
+          dialect: postgres
+          databases: [public]
       approvers:
         Sales: alice@corp.com
         default: dba@corp.com
@@ -37,7 +61,20 @@ def section(cfg: dict) -> dict:
 
 
 def ad_config(cfg: dict) -> dict:
-    return section(cfg).get("ad") or {}
+    raw = section(cfg).get("ad") or {}
+    if not raw:
+        return {}
+    ad = dict(raw)
+    # Per-section Windows auth, else the top-level `windows_auth:`. Inheriting is
+    # skipped when an explicit bind account is configured, so a global
+    # `windows_auth: true` (meant for SQL Server) never silently discards a
+    # bind_dn/bind_password the user set for the directory.
+    wa = ad.get("windows_auth")
+    if wa is None and not ad.get("bind_dn"):
+        wa = (cfg or {}).get("windows_auth")
+    if wa is not None:
+        ad["windows_auth"] = bool(wa)
+    return ad
 
 
 def servers(cfg: dict) -> list:
@@ -51,12 +88,22 @@ def servers(cfg: dict) -> list:
         dbs = s.get("databases") or []
         if isinstance(dbs, str):
             dbs = [dbs]
+        # Per-entry Windows auth, else the top-level `windows_auth:` setting --
+        # the same inheritance the rest of sqldoc uses. Tested against None (not
+        # falsiness) so an explicit per-entry `windows_auth: false` still wins
+        # over a top-level true.
+        wa = s.get("windows_auth")
+        if wa is None:
+            wa = (cfg or {}).get("windows_auth")
         out.append({
             "name": s.get("name") or s.get("server") or "server",
             "connection_string": s.get("connection_string"),
             "server": s.get("server"), "username": s.get("username"),
             "password": s.get("password"), "dialect": s.get("dialect", "sqlserver"),
             "databases": list(dbs),
+            # Per-entry ODBC driver, else the top-level `driver:` override.
+            "driver": s.get("driver") or (cfg or {}).get("driver"),
+            "windows_auth": bool(wa),
         })
     return out
 

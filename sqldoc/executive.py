@@ -58,14 +58,33 @@ def health_score(health_summary) -> int:
     return max(0, 100 - min(100, weighted))
 
 
-def backup_compliance(backup_report) -> int:
-    """Percentage of databases with an acceptable, non-stale backup posture."""
+def backup_compliance(backup_report, max_age_hours: float = None) -> int:
+    """Percentage of databases with an acceptable, non-stale backup posture.
+
+    A database counts as compliant only if it has been backed up, reports no
+    issues, AND its most recent backup is within `max_age_hours` (default:
+    `backup.DEFAULT_MAX_BACKUP_AGE_HOURS`). Staleness is judged by
+    `backup.stale_databases` — the same rule the agent alert uses.
+
+    Age matters on its own: a database on FULL recovery with current log
+    backups raises none of the issue rules, so without this check a full backup
+    two years old still scored as 100% compliant.
+    """
     if backup_report is None or not getattr(backup_report, "supported", True):
         return None
     dbs = backup_report.databases
     if not dbs:
         return 100 if backup_report.pitr_enabled else 0
-    healthy = sum(1 for d in dbs if not d.never_backed_up and not d.issues)
+    from sqldoc.backup import DEFAULT_MAX_BACKUP_AGE_HOURS, stale_databases
+    if max_age_hours is None:
+        max_age_hours = DEFAULT_MAX_BACKUP_AGE_HOURS
+    # Match the returned entries by identity, not by name: stale_databases hands
+    # back the very objects in `dbs`, so this is exact and cannot miscount if a
+    # report ever carries two entries with the same database name.
+    stale = {id(d) for d in stale_databases(backup_report, max_age_hours)}
+    healthy = sum(1 for d in dbs
+                  if not d.never_backed_up and not d.issues
+                  and id(d) not in stale)
     return round(100 * healthy / len(dbs))
 
 

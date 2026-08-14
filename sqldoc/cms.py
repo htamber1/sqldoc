@@ -115,17 +115,19 @@ def discover_inventory(cursor, cms_server: str = "") -> CmsInventory:
 
 
 def connect_cms(cms_server: str, windows_auth: bool = True, username: str = None,
-                password: str = None):
+                password: str = None, driver: str = None):
     """Open a connection to the CMS server's msdb (module-level for mocking)."""
     import pyodbc
     return pyodbc.connect(connection_string_for(cms_server, database="msdb",
                                                 windows_auth=windows_auth,
-                                                username=username, password=password),
+                                                username=username, password=password,
+                                                driver=driver),
                           timeout=15)
 
 
-def discover_live(cms_server, windows_auth=True, username=None, password=None) -> CmsInventory:
-    conn = connect_cms(cms_server, windows_auth, username, password)
+def discover_live(cms_server, windows_auth=True, username=None, password=None,
+                  driver=None) -> CmsInventory:
+    conn = connect_cms(cms_server, windows_auth, username, password, driver)
     try:
         return discover_inventory(conn.cursor(), cms_server)
     finally:
@@ -136,14 +138,18 @@ def discover_live(cms_server, windows_auth=True, username=None, password=None) -
 
 def connection_string_for(server_name: str, database: str = "master",
                           windows_auth: bool = True, username: str = None,
-                          password: str = None) -> str:
+                          password: str = None, driver: str = None) -> str:
     # Validate the CMS-supplied server/database so a registered-server name
     # cannot inject extra ODBC attributes (connection-string injection).
     from sqldoc.validation import (validate_server, validate_database,
-                                   validate_username)
+                                   validate_username, validate_driver)
+    from sqldoc.adapters.sqlserver import SqlServerAdapter
     server_name = validate_server(server_name)
     database = validate_database(database)
-    base = (f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={server_name};"
+    # Honour the `driver:` config override like the rest of sqldoc: hosts
+    # commonly have "ODBC Driver 17 for SQL Server" rather than the default 18.
+    driver_name = validate_driver(driver) if driver else SqlServerAdapter.DEFAULT_DRIVER
+    base = (f"DRIVER={{{driver_name}}};SERVER={server_name};"
             f"DATABASE={database};TrustServerCertificate=yes;")
     if windows_auth or not username:
         return base + "Trusted_Connection=yes;"

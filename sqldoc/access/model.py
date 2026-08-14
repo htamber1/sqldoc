@@ -38,6 +38,7 @@ class Login:
     is_disabled: bool = False
     server: str = ""
     server_roles: list = field(default_factory=list)   # fixed server roles held
+    server_permissions: list = field(default_factory=list)  # server-scoped grants (e.g. CONTROL SERVER)
 
 
 @dataclass
@@ -52,6 +53,7 @@ class DatabaseAccess:
     permissions: list = field(default_factory=list)    # (permission, state, schema, object)
     level: str = "none"             # coarse effective level: read/write/admin
     pii_tables: list = field(default_factory=list)     # [(schema, table, risk, [regs])]
+    flags: list = field(default_factory=list)          # escalation routes noted, not levelled
 
 
 @dataclass

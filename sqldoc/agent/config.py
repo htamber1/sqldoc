@@ -159,8 +159,11 @@ class AgentConfig:
     raw_config: dict = None
 
 
-def _resolve_connection(entry: dict) -> tuple:
-    """Return (connection_string, dialect) for one database entry."""
+def _resolve_connection(entry: dict, default_driver: str = None) -> tuple:
+    """Return (connection_string, dialect) for one database entry.
+
+    ``default_driver`` is the top-level ``driver:`` ODBC override; it applies to
+    SQL Server only (the other adapters take no driver argument)."""
     dialect = entry.get("dialect")
     cs = entry.get("connection_string")
     if cs:
@@ -179,7 +182,14 @@ def _resolve_connection(entry: dict) -> tuple:
     adapter_cls = DIALECTS.get(dialect)
     if adapter_cls is None:
         raise ValueError(f"database '{entry.get('name', '?')}' has unknown dialect '{dialect}'.")
-    cs = adapter_cls.build_connection_string(server, database, username, password)
+    # Only the SQL Server adapter accepts a driver override; the rest build
+    # URI-style strings from the four discrete parts.
+    driver = entry.get("driver") or default_driver
+    if driver and dialect == "sqlserver":
+        cs = adapter_cls.build_connection_string(server, database, username, password,
+                                                 driver=driver)
+    else:
+        cs = adapter_cls.build_connection_string(server, database, username, password)
     return cs, dialect
 
 
@@ -237,6 +247,10 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         raise ValueError("agent.cms must be a mapping (with at least a 'server').")
     if cms_cfg and not cms_cfg.get("server"):
         raise ValueError("agent.cms needs a 'server' (the CMS instance name).")
+    if cms_cfg and not cms_cfg.get("driver") and (cfg or {}).get("driver"):
+        # Inherit the top-level ODBC `driver:` override for CMS discovery and
+        # for every per-server connection built from the discovered inventory.
+        cms_cfg = dict(cms_cfg, driver=cfg["driver"])
     cms_reconcile_minutes = float(agent.get("cms_reconcile_minutes", 15.0))
     estate_digest = _parse_estate_digest(agent.get("estate_digest"))
 
@@ -256,7 +270,7 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         if name in seen:
             raise ValueError(f"duplicate database name '{name}' in agent.databases.")
         seen.add(name)
-        cs, dialect = _resolve_connection(entry)
+        cs, dialect = _resolve_connection(entry, (cfg or {}).get("driver"))
         databases.append(DatabaseConfig(
             name=name, connection_string=cs, dialect=dialect,
             mode=entry.get("mode", mode), model=entry.get("model", model),

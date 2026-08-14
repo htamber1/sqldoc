@@ -26,16 +26,21 @@ def _with_database(conn_str: str, database: str) -> str:
 
 def build_db_adapter(server_entry: dict, database: str):
     """A DatabaseAdapter pointed at one database on one server."""
-    from sqldoc.adapters import get_adapter
-    from sqldoc.extractor import build_connection_string
+    from sqldoc.adapters import get_adapter, build_connection_string_for
     dialect = server_entry.get("dialect", "sqlserver")
     conn_str = server_entry.get("connection_string")
     if conn_str:
         conn_str = _with_database(conn_str, database)
     else:
-        conn_str = build_connection_string(
-            server_entry.get("server"), database,
-            server_entry.get("username"), server_entry.get("password"))
+        # Build with this entry's dialect so a postgres/mysql server audited via
+        # discrete parts gets that adapter's native string, not an ODBC one.
+        # `windows_auth` lets Windows-auth shops configure discrete parts instead
+        # of hand-writing a Trusted_Connection string.
+        conn_str = build_connection_string_for(
+            dialect, server_entry.get("server"), database,
+            server_entry.get("username"), server_entry.get("password"),
+            windows_auth=bool(server_entry.get("windows_auth")),
+            driver=server_entry.get("driver"))
     return get_adapter(conn_str, dialect)
 
 

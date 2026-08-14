@@ -302,6 +302,11 @@ def render_backup_html(database: str, report: BackupReport, output_path: str):
         f.write(doc)
 
 
+# Default staleness threshold: a backup older than this is treated as stale by
+# the agent alert and by the executive backup score.
+DEFAULT_MAX_BACKUP_AGE_HOURS = 24.0
+
+
 def stale_databases(report: BackupReport, max_age_hours: float) -> list:
     """Databases whose most recent backup is older than `max_age_hours`, or that
     have never been backed up (used by the agent alert)."""

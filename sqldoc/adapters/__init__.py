@@ -137,6 +137,39 @@ def get_adapter(connection_string: str, dialect: str = None,
     return cls(connection_string, connect=connect)
 
 
+def build_connection_string_for(dialect: str, server: str, database: str,
+                                username: str, password: str,
+                                windows_auth: bool = False,
+                                driver: str = None) -> str:
+    """Assemble a connection string using the adapter that matches `dialect`.
+
+    Each adapter renders its own native form -- ODBC for SQL Server, a URI for
+    postgres/mysql/mongodb/snowflake, a bare path for sqlite -- so discrete
+    `server`/`database`/`username`/`password` config settings work for every
+    dialect, not just SQL Server. `windows_auth` and `driver` are SQL Server
+    concepts and are accepted only by that adapter family (which includes
+    Azure SQL MI and Synapse); they are ignored for other dialects.
+
+    Raises `UnsupportedDialectError` for an unknown or not-yet-implemented
+    dialect, matching `get_adapter`.
+    """
+    name = (dialect or "sqlserver").lower()
+    if name not in DIALECTS:
+        raise UnsupportedDialectError(
+            f"Unknown dialect '{name}'. Choose one of: {', '.join(DIALECT_CHOICES)}."
+        )
+    cls = DIALECTS[name]
+    if cls is None:
+        raise UnsupportedDialectError(
+            f"Dialect '{name}' is recognized but not supported yet "
+            f"(planned for v1.5.0). Currently supported: {', '.join(SUPPORTED_DIALECTS)}."
+        )
+    if issubclass(cls, SqlServerAdapter):
+        return cls.build_connection_string(server, database, username, password,
+                                           windows_auth=windows_auth, driver=driver)
+    return cls.build_connection_string(server, database, username, password)
+
+
 __all__ = [
     "DatabaseAdapter", "Capabilities", "SqlServerAdapter",
     "PostgresAdapter", "MySQLAdapter", "SqliteAdapter", "SnowflakeAdapter",
@@ -145,4 +178,5 @@ __all__ = [
     "MongoAdapter", "AuroraMySQLAdapter", "AuroraPostgresAdapter",
     "UnsupportedDialectError", "DIALECTS", "SUPPORTED_DIALECTS",
     "PLANNED_DIALECTS", "DIALECT_CHOICES", "detect_dialect", "get_adapter",
+    "build_connection_string_for",
 ]
