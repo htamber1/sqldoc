@@ -13,14 +13,264 @@ DEFAULT_CONCURRENCY = 8
 MAX_ATTEMPTS = 4          # 1 try + 3 retries
 CACHE_VERSION = 1
 
+# One cheap reachability check per backend, per process, before any fan-out.
+PROBE_TIMEOUT = 5.0
 
-def _retry(fn, what: str):
-    """Call fn(), retrying transient failures with exponential backoff + jitter."""
+# How long a probe result and a down-latch stay valid.
+#
+# This TTL is what lets a long-lived host (the agent daemon) pick up a backend
+# that has come back, WITHOUT anyone calling a destructive reset. That matters
+# because the state is shared on purpose: enrich_*() fans out over a thread pool,
+# and the latch only works if one worker's hard failure is visible to its
+# siblings. Anything that clears the state globally -- as the agent poller used
+# to do at the top of every cycle -- can wipe a latch that another database's
+# poller thread is actively relying on, restoring the per-object retry storm for
+# that database. Expiry has no such cross-thread edge.
+#
+# 60s is comfortably longer than a full degraded fan-out (~4s for 10,000 objects)
+# so a latch cannot expire mid-run, and comfortably shorter than any sane poll
+# interval so each cycle re-probes.
+BACKEND_STATE_TTL = 60.0
+
+def ollama_base_url() -> str:
+    """The Ollama endpoint actually in use.
+
+    Read per call (not at import) so the environment can change between runs and
+    so tests can point the probe at a closed port. OLLAMA_HOST is the same
+    variable the ollama CLI itself honours, and it accepts a bare host:port.
+    """
+    base = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip().rstrip("/")
+    if not base:
+        base = "http://localhost:11434"
+    if not base.startswith(("http://", "https://")):
+        base = "http://" + base
+    return base
+
+
+class BackendUnavailable(RuntimeError):
+    """The AI backend cannot be reached or used at all (refused connection,
+    missing SDK, missing or rejected credentials).
+
+    Distinct from a transient failure: retrying will not help, so nothing that
+    raises this is retried, and the caller degrades instead of attempting the
+    remaining objects one by one.
+    """
+
+    def __init__(self, backend: str, endpoint: str, reason: str):
+        super().__init__(f"{backend} unavailable at {endpoint}: {reason}")
+        self.backend = backend
+        self.endpoint = endpoint
+        self.reason = reason
+
+
+def backend_endpoint(backend: str) -> str:
+    """Human-readable endpoint for a backend, for notices and error text."""
+    if backend == "ollama":
+        return ollama_base_url()
+    return {
+        "anthropic": "api.anthropic.com (ANTHROPIC_API_KEY)",
+        "openai": "api.openai.com (OPENAI_API_KEY)",
+        "gemini": "generativelanguage.googleapis.com (GOOGLE_API_KEY)",
+    }.get(backend, backend)
+
+
+# --- Backend availability: probe once, latch, never retry a dead backend ----
+# Two mechanisms, deliberately both:
+#   * probe_backend() is the up-front check a command makes before fanning out;
+#   * the _DOWN latch is the backstop for any path that does NOT probe -- the
+#     first hard failure marks the backend down and every later call fails fast,
+#     instead of repeating the same refused connection thousands of times.
+#
+# Both are keyed by BACKEND and shared process-wide, deliberately: the fan-out
+# runs on a thread pool, so a worker's hard failure has to be visible to its
+# siblings for the latch to bound anything. Entries carry an expiry instead of
+# being cleared, so a long-lived process recovers without any thread having to
+# destroy state another thread is using.
+_DOWN = {}
+_DOWN_LOCK = threading.Lock()
+_PROBED = {}
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def mark_backend_down(backend: str, endpoint: str, reason: str):
+    """Latch a backend as unusable (first reason wins until the entry expires)."""
+    with _DOWN_LOCK:
+        cur = _DOWN.get(backend)
+        if cur is None or cur[2] <= _now():
+            _DOWN[backend] = (endpoint, reason, _now() + BACKEND_STATE_TTL)
+
+
+def backend_down(backend: str):
+    """(endpoint, reason) if this backend is known-dead right now, else None.
+
+    An entry past its TTL is treated as absent (and dropped), so the next caller
+    re-probes a backend that may have come back.
+    """
+    with _DOWN_LOCK:
+        entry = _DOWN.get(backend)
+        if entry is None:
+            return None
+        endpoint, reason, expires = entry
+        if expires <= _now():
+            del _DOWN[backend]
+            return None
+        return (endpoint, reason)
+
+
+def degraded() -> bool:
+    """True if any backend is currently latched down, so a caller that never
+    probed can still report honestly at the end of a run."""
+    with _DOWN_LOCK:
+        now = _now()
+        return any(exp > now for _, _, exp in _DOWN.values())
+
+
+def degraded_detail():
+    """(backend, endpoint, reason) for a backend currently down, else None."""
+    with _DOWN_LOCK:
+        now = _now()
+        for backend, (endpoint, reason, exp) in _DOWN.items():
+            if exp > now:
+                return (backend, endpoint, reason)
+    return None
+
+
+def reset_backend_state():
+    """Clear probe + latch state outright.
+
+    For TESTS, and for a process that genuinely wants to start clean. Do NOT
+    call this from a worker or a per-database poll cycle: the state is shared
+    across threads on purpose, and clearing it there wipes a latch another
+    thread's fan-out is relying on. Long-lived hosts should let
+    BACKEND_STATE_TTL expire the entries instead.
+    """
+    with _DOWN_LOCK:
+        _DOWN.clear()
+        _PROBED.clear()
+
+
+def _is_unreachable(exc) -> bool:
+    """True for failures that will never succeed on retry: refused or unroutable
+    connections, a missing optional SDK, and absent or rejected credentials.
+
+    Matched on type NAME rather than by importing the optional cloud SDKs, so
+    this stays correct whether or not openai / gemini are installed.
+    """
+    if isinstance(exc, BackendUnavailable):
+        return True
+    if isinstance(exc, ImportError):
+        return True
+    if isinstance(exc, (requests.exceptions.ConnectionError,
+                        requests.exceptions.ConnectTimeout)):
+        return True
+    if type(exc).__name__ in (
+            "APIConnectionError", "APIConnectionTimeoutError", "ConnectError",
+            "ConnectionRefusedError", "AuthenticationError",
+            "PermissionDeniedError", "NotFoundError"):
+        return True
+    # requests HTTPError: 401/403/404 are permanent; 5xx and 429 stay transient.
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return code in (401, 403, 404)
+
+
+def probe_backend(mode: str = "local", backend: str = None, model: str = None,
+                  timeout: float = None) -> tuple:
+    """Check ONCE whether the effective AI backend can be used at all.
+
+    Returns (ok, endpoint, reason). Memoized per backend per process, so calling
+    it from several commands -- or twice in one command -- costs one check. A
+    negative result also latches the backend down, so any AI call that slips
+    past the preflight fails fast rather than retrying.
+
+    Backend-agnostic by construction: each backend answers the same question
+    ("can I use you at all?") the cheapest way it can -- a local metadata GET
+    for Ollama, a credential/SDK check for the cloud backends. Never a billable
+    call, and never a model load.
+    """
+    backend = resolve_backend(mode, backend)
+    endpoint = backend_endpoint(backend)
+    with _DOWN_LOCK:
+        cached = _PROBED.get(backend)
+        if cached is not None and cached[1] <= _now():
+            del _PROBED[backend]
+            cached = None
+    if cached is not None:
+        return cached[0]
+    timeout = PROBE_TIMEOUT if timeout is None else timeout
+
+    if backend == "ollama":
+        try:
+            resp = requests.get(ollama_base_url() + "/api/tags", timeout=timeout)
+            resp.raise_for_status()
+            ok, reason = True, "reachable"
+        except Exception as e:
+            ok, reason = False, f"{type(e).__name__}: {e}"
+    elif backend == "anthropic":
+        ok = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        reason = "reachable" if ok else "ANTHROPIC_API_KEY is not set"
+    elif backend == "openai":
+        ok = bool(os.environ.get("OPENAI_API_KEY"))
+        reason = "reachable" if ok else "OPENAI_API_KEY is not set"
+        if ok:
+            try:
+                import openai  # noqa: F401
+            except ImportError:
+                ok, reason = False, ("the 'openai' package is not installed "
+                                     "(pip install sqldoc[openai])")
+    elif backend == "gemini":
+        ok = bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
+        reason = "reachable" if ok else "GOOGLE_API_KEY / GEMINI_API_KEY is not set"
+        if ok:
+            try:
+                import google.generativeai  # noqa: F401
+            except ImportError:
+                ok, reason = False, ("the 'google-generativeai' package is not installed "
+                                     "(pip install sqldoc[gemini])")
+    else:
+        ok, reason = False, f"unknown AI backend '{backend}'"
+
+    result = (ok, endpoint, reason)
+    with _DOWN_LOCK:
+        _PROBED[backend] = (result, _now() + BACKEND_STATE_TTL)
+    if not ok:
+        mark_backend_down(backend, endpoint, reason)
+    return result
+
+
+def _retry(fn, what: str, backend: str = None):
+    """Call fn(), retrying TRANSIENT failures with exponential backoff + jitter.
+
+    Two things this deliberately does not do:
+
+    * It does not retry an unreachable backend. A refused connection, a missing
+      SDK or a rejected key fails the same way every time, so retrying it three
+      times with backoff just multiplies the wait by four for no chance of
+      success. Those raise :class:`BackendUnavailable` on the first attempt.
+    * It does not re-attempt a backend already known to be down. The first hard
+      failure latches it, and every later call returns immediately. Without this,
+      a per-object fan-out (one task per table AND per column) repeats the same
+      dead connection thousands of times -- which is how a schema-only run came
+      to take hours instead of seconds.
+    """
+    backend = backend or (what.split(":", 1)[0] if what else "ollama")
+    down = backend_down(backend)
+    if down is not None:
+        endpoint, reason = down
+        raise BackendUnavailable(backend, endpoint, reason)
+
     delay = 1.0
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             return fn()
         except Exception as e:
+            if _is_unreachable(e):
+                endpoint = backend_endpoint(backend)
+                reason = f"{type(e).__name__}: {e}"
+                mark_backend_down(backend, endpoint, reason)
+                raise BackendUnavailable(backend, endpoint, reason) from e
             if attempt == MAX_ATTEMPTS:
                 raise
             wait = delay + random.uniform(0, 0.4)
@@ -273,13 +523,13 @@ def dispatch(prompt: str, mode: str = "local", model: str = None,
 def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
     def do():
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            ollama_base_url() + "/api/generate",
             json={"model": model, "prompt": prompt, "stream": False},
             timeout=120,
         )
         response.raise_for_status()
         return response.json()["response"].strip()
-    return _retry(do, f"ollama:{model}")
+    return _retry(do, f"ollama:{model}", backend="ollama")
 
 def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5", max_tokens: int = 200) -> str:
     def do():
@@ -290,7 +540,7 @@ def _call_anthropic(prompt: str, model: str = "claude-haiku-4-5", max_tokens: in
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
-    return _retry(do, f"anthropic:{model}")
+    return _retry(do, f"anthropic:{model}", backend="anthropic")
 
 
 # OpenAI + Gemini clients are created lazily and shared (both SDKs are
@@ -327,7 +577,7 @@ def _call_openai(prompt: str, model: str = "gpt-4o", max_tokens: int = 300) -> s
             messages=[{"role": "user", "content": prompt}],
         )
         return (resp.choices[0].message.content or "").strip()
-    return _retry(do, f"openai:{model}")
+    return _retry(do, f"openai:{model}", backend="openai")
 
 
 def _call_gemini(prompt: str, model: str = "gemini-1.5-flash", max_tokens: int = 300) -> str:
@@ -349,7 +599,7 @@ def _call_gemini(prompt: str, model: str = "gemini-1.5-flash", max_tokens: int =
         resp = gm.generate_content(
             prompt, generation_config={"max_output_tokens": max_tokens})
         return (resp.text or "").strip()
-    return _retry(do, f"gemini:{model}")
+    return _retry(do, f"gemini:{model}", backend="gemini")
 
 def _run_tasks(tasks: list, concurrency: int, label: str):
     """Run independent, zero-argument LLM-call tasks across a thread pool.
@@ -359,8 +609,9 @@ def _run_tasks(tasks: list, concurrency: int, label: str):
     can run fully in parallel. A failed task logs and is skipped rather than
     aborting the whole run; progress is reported from a single locked counter.
     """
+    stats = {"total": len(tasks), "ok": 0, "failed": 0, "unavailable": 0, "skipped": 0}
     if not tasks:
-        return
+        return stats
     total = len(tasks)
     state = {"done": 0}
     lock = threading.Lock()
@@ -368,18 +619,34 @@ def _run_tasks(tasks: list, concurrency: int, label: str):
     def worker(fn):
         try:
             fn()
+            with lock:
+                stats["ok"] += 1
+        except BackendUnavailable as e:
+            # The backend is gone. Count it and move on without printing per
+            # object -- one notice for the run is the point of the latch.
+            with lock:
+                stats["unavailable"] += 1
+                if stats["unavailable"] == 1:
+                    print(f"    ! AI backend unavailable ({e.reason}); "
+                          f"skipping the remaining {label} descriptions")
         except Exception as e:
             with lock:
+                stats["failed"] += 1
                 print(f"    ! {label} description failed: {e}")
         finally:
             with lock:
                 state["done"] += 1
                 d = state["done"]
+                ok = stats["ok"]
             if d % 10 == 0 or d == total:
-                print(f"  [{d}/{total}] {label} descriptions generated")
+                # Report what was actually GENERATED, not merely attempted. The
+                # old line said "[6/6] descriptions generated" after six
+                # failures, which read as success in the logs.
+                print(f"  [{d}/{total}] {label} descriptions attempted, {ok} generated")
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         list(pool.map(worker, tasks))
+    return stats
 
 
 def _cache_or_task(cache, key, target, genfn, tasks, stats):
@@ -397,14 +664,20 @@ def _cache_or_task(cache, key, target, genfn, tasks, stats):
             cache["entries"][key] = val
     tasks.append(task)
 
-def _report(label, tasks, stats, cache):
+def _report(label, tasks, stats, cache, run_stats=None):
+    generated = run_stats["ok"] if run_stats else len(tasks)
     if cache is not None:
-        print(f"  {label}: {stats['hits']} reused from cache, {len(tasks)} generated")
+        print(f"  {label}: {stats['hits']} reused from cache, {generated} generated")
+    if run_stats and (run_stats["unavailable"] or run_stats["failed"]):
+        missed = run_stats["unavailable"] + run_stats["failed"]
+        print(f"  {label}: {missed} of {run_stats['total']} left undescribed "
+              f"(AI backend unavailable)" if run_stats["unavailable"]
+              else f"  {label}: {missed} of {run_stats['total']} left undescribed")
 
 
 def enrich_tables(tables: list[Table], mode: str = "local", model: str = "llama3.1:8b",
                   concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
-                  include_definitions: bool = False) -> list[Table]:
+                  include_definitions: bool = False, stats_out: dict = None) -> list[Table]:
     tasks, stats = [], {"hits": 0}
     for table in tables:
         _cache_or_task(cache, _key(model, "table", _sig_table(table, include_definitions)), table,
@@ -414,13 +687,16 @@ def enrich_tables(tables: list[Table], mode: str = "local", model: str = "llama3
                 continue
             _cache_or_task(cache, _key(model, "column", _sig_col(table.name, col)), col,
                            (lambda tn=table.name, c=col: generate_column_description(tn, c, mode, model)), tasks, stats)
-    _run_tasks(tasks, concurrency, "table")
-    _report("tables", tasks, stats, cache)
+    run_stats = _run_tasks(tasks, concurrency, "table")
+    _report("tables", tasks, stats, cache, run_stats)
+    if stats_out is not None:
+        for k, v in run_stats.items():
+            stats_out[k] = stats_out.get(k, 0) + v
     return tables
 
 def enrich_views(views: list[View], mode: str = "local", model: str = "llama3.1:8b",
                  concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
-                 include_definitions: bool = False) -> list[View]:
+                 include_definitions: bool = False, stats_out: dict = None) -> list[View]:
     tasks, stats = [], {"hits": 0}
     for view in views:
         _cache_or_task(cache, _key(model, "view", _sig_view(view, include_definitions)), view,
@@ -430,17 +706,23 @@ def enrich_views(views: list[View], mode: str = "local", model: str = "llama3.1:
                 continue
             _cache_or_task(cache, _key(model, "column", _sig_col(view.name, col)), col,
                            (lambda vn=view.name, c=col: generate_column_description(vn, c, mode, model)), tasks, stats)
-    _run_tasks(tasks, concurrency, "view")
-    _report("views", tasks, stats, cache)
+    run_stats = _run_tasks(tasks, concurrency, "view")
+    _report("views", tasks, stats, cache, run_stats)
+    if stats_out is not None:
+        for k, v in run_stats.items():
+            stats_out[k] = stats_out.get(k, 0) + v
     return views
 
 def enrich_procedures(procedures: list[StoredProcedure], mode: str = "local", model: str = "llama3.1:8b",
                       concurrency: int = DEFAULT_CONCURRENCY, cache: dict = None,
-                      include_definitions: bool = False) -> list[StoredProcedure]:
+                      include_definitions: bool = False, stats_out: dict = None) -> list[StoredProcedure]:
     tasks, stats = [], {"hits": 0}
     for proc in procedures:
         _cache_or_task(cache, _key(model, "proc", _sig_proc(proc, include_definitions)), proc,
                        (lambda p=proc: generate_procedure_description(p, mode, model, include_definitions)), tasks, stats)
-    _run_tasks(tasks, concurrency, "procedure")
-    _report("procedures", tasks, stats, cache)
+    run_stats = _run_tasks(tasks, concurrency, "procedure")
+    _report("procedures", tasks, stats, cache, run_stats)
+    if stats_out is not None:
+        for k, v in run_stats.items():
+            stats_out[k] = stats_out.get(k, 0) + v
     return procedures

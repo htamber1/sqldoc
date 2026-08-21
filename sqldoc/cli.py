@@ -89,6 +89,7 @@ CONFIG_KEYS = {
     'test', 'push', 'kinds', 'alerting',
     # Access request workflow suite.
     'access', 'user', 'ticket', 'request', 'level', 'inactive_days', 'approver',
+    'include_read_principals',
     'frameworks',
     # Central Management Server (CMS).
     'cms', 'cms_servers', 'group', 'windows_auth', 'max_workers',
@@ -663,16 +664,32 @@ def _cms_section(cfg):
     return raw
 
 
+def fail_on_partial_option(fn):
+    """The shared --fail-on-partial flag.
+
+    Off by default on purpose. A partial run still wrote its deliverable, so it
+    exits 0 and a scheduled job reports success; making it exit 2 unconditionally
+    would break every existing pipeline on upgrade. Strictness is opt-in.
+
+    ONE flag, one meaning, wherever a run can cover less than it was asked to:
+
+      * a ``--cms`` fan-out where some servers failed;
+      * an AI-capable command where the backend was unreachable, so the output
+        degraded to the deterministic (``--no-ai``) result.
+
+    Defined separately from :func:`cms_bulk_option` because the second case
+    applies to single-server commands that have no ``--cms`` options at all.
+    """
+    return click.option(
+        '--fail-on-partial', 'fail_on_partial', is_flag=True, default=False,
+        help='Exit 2 if the run was partial: a server in a --cms run failed, or '
+             'AI was requested but the backend was unreachable (default: exit 0 '
+             'as long as the report was written)')(fn)
+
+
 def cms_bulk_option(fn):
     """Shared --cms / --group / --max-workers / --fail-on-partial options."""
-    # Off by default on purpose. Per-server errors are non-fatal so one
-    # unreachable host cannot stop an estate run, which means a fan-out that
-    # covered 5 of 9 servers still exits 0 and a scheduled job reports success.
-    # Making that exit 2 unconditionally would break every existing pipeline on
-    # upgrade, so strictness is opt-in and the default behaviour is unchanged.
-    fn = click.option('--fail-on-partial', 'fail_on_partial', is_flag=True, default=False,
-                      help='Exit 2 if any server in a --cms run failed (default: exit 0 '
-                           'as long as the estate report was written)')(fn)
+    fn = fail_on_partial_option(fn)
     fn = click.option('--max-workers', default=8, type=click.IntRange(1, 64),
                       help='Parallel servers for a --cms run (default: 8)')(fn)
     fn = click.option('--group', default=None,
@@ -740,12 +757,73 @@ def _cms_output(command_name, output, cms_default=None):
     return output
 
 
+# Bulk commands whose findings are scoped to the connected database (as opposed
+# to instance-wide checks like `secure`, `server` and `backup`, for which the
+# default `master` connection is the right place to look).
+_CMS_DB_SCOPED = ("doc", "scan", "health", "quality", "intel", "comply")
+
+
+def _ai_preflight(mode, ai_backend, model, no_ai, degrade_to,
+                  label="AI descriptions"):
+    """Probe the AI backend ONCE before any per-object work, and degrade cleanly.
+
+    Returns (no_ai, degraded_reason). When the backend cannot be reached the
+    caller carries on with exactly the deterministic output it would have
+    produced under --no-ai, having printed one notice naming the endpoint --
+    instead of attempting every object against a backend that is not there.
+
+    Backend-agnostic: `ai.probe_backend` asks whichever backend is in effect
+    (ollama / anthropic / openai / gemini) the same question, so this helper is
+    identical for every command and every dialect.
+
+    `degrade_to` describes, in the user's terms, what they are getting instead
+    ("schema-only documentation", "the heuristic analysis", ...).
+    """
+    if no_ai:
+        return True, None
+    ok, endpoint, reason = ai.probe_backend(mode, ai_backend, model)
+    if ok:
+        return False, None
+    click.echo(click.style(
+        f"! AI backend unreachable at {endpoint} - continuing with {degrade_to}.",
+        fg='yellow', bold=True), err=True)
+    click.echo(click.style(f"  reason: {reason}", fg='yellow'), err=True)
+    click.echo(click.style(
+        f"  {label} are skipped. Re-run with --no-ai to make this explicit "
+        f"(and silence this notice), or start the backend and re-run.",
+        fg='yellow'), err=True)
+    return True, reason
+
+
+def _finish_degraded_ai(ai_degraded, fail_on_partial, what):
+    """End-of-command handling for "AI was requested and was not available".
+
+    The degradation is ALWAYS announced -- that is not optional, and it is the
+    half of this that fixes the silent-wrongness. Only the exit code is gated,
+    by the same --fail-on-partial flag and the same _exit_on_partial helper the
+    estate paths use, so a partial AI run and a partial estate run mean the same
+    thing and are controlled the same way.
+
+    An explicit --no-ai run never reaches here: the user asked for the
+    deterministic output and got exactly that, which is a clean exit 0.
+    """
+    if not ai_degraded:
+        return
+    msg = f"Completed WITHOUT {what} - the AI backend was unreachable."
+    if fail_on_partial:
+        msg += " Exiting 2 (--fail-on-partial)."
+    else:
+        msg += " Re-run with --fail-on-partial to make this a non-zero exit."
+    click.echo(click.style(msg, fg='yellow', bold=True), err=True)
+    _exit_on_partial(fail_on_partial, 1)
+
+
 def _exit_on_partial(fail_on_partial, failed_count):
     """Exit 2 for a partially-failed estate run, but only under --fail-on-partial.
 
-    Shared by all three estate paths (bulk, executive, access review) so the flag
-    means the same thing everywhere rather than silently doing nothing on two of
-    them.
+    Shared by all three estate paths (bulk, executive, access review) AND by
+    _finish_degraded_ai, so the flag means the same thing everywhere rather than
+    silently doing nothing on some of them.
     """
     if fail_on_partial and failed_count:
         raise SystemExit(2)
@@ -774,6 +852,16 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
                + (f" in group '{group}'" if group else "") + "...")
     if not targets:
         click.echo(click.style("  No matching servers.", fg='yellow'))
+    # Say which database the per-database detectors actually looked at. Without
+    # --database the workers connect to `master`, and every DB-scoped check in
+    # health/quality/doc/scan/intel/comply is DB_ID()-scoped -- so the run
+    # profiles `master` on all N servers and reports a near-empty, clean-looking
+    # result for an estate whose real databases were never opened.
+    if command_name in _CMS_DB_SCOPED and not database:
+        click.echo(click.style(
+            "  No --database given: connecting to 'master' on each server. "
+            "Per-database results below describe 'master', not your user "
+            "databases -- pass --database to profile a real one.", fg='yellow'))
     results = run_bulk(inv, command_name, opts, group=group, max_workers=max_workers)
     ok = sum(1 for r in results if r.ok)
     failed = len(results) - ok
@@ -782,6 +870,16 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
     for r in results:
         if not r.ok:
             click.echo(click.style(f"  ! {r.server} ({r.host}): {r.error}", fg='yellow'), err=True)
+    # A `driver:` mismatch fails every server identically, so the estate run
+    # prints N copies of a bare IM002 and no hint -- while the single-server
+    # path has explained that error since v3.0. Print the same hint once, after
+    # the list, rather than once per server.
+    for r in results:
+        if not r.ok:
+            hint = _driver_error_hint(r.error)
+            if hint:
+                click.echo(click.style(hint, fg='yellow'), err=True)
+                break
 
     out = _cms_output(command_name, output)
     render_bulk_html(command_name, results, out, group=group)
@@ -800,6 +898,19 @@ def run_cms_bulk(command_name, cfg, use_cms, group, database, schemas, output, j
     return True
 
 
+def _cms_targets(inv, group=None):
+    """The servers an estate run will actually touch, honouring --group.
+
+    `run_cms_bulk` already scopes its "Estate: N server(s)" line this way. The
+    executive, access-review and cms-report paths printed `len(inv.servers)`
+    instead, so `--group` runs announced the whole estate ("Auditing 159
+    registered server(s)") while touching only the group -- the count in the
+    log did not describe the audit the log was recording.
+    """
+    from sqldoc.cms import select_servers
+    return select_servers(inv, group)
+
+
 def _cms_opts(cfg, database=None):
     section = _cms_section(cfg)
     return {"windows_auth": section.get('windows_auth', True),
@@ -815,7 +926,8 @@ def _run_cms_executive(cfg, group, database, output, json_out, max_workers,
     inv = _load_cms_inventory(cfg)
     click.echo(f"\nsqldoc v{__version__}  -  executive --cms")
     click.echo(f"{'='*44}")
-    click.echo(f"Scoring {len(inv.servers)} server(s) across the estate...")
+    click.echo(f"Scoring {len(_cms_targets(inv, group))} server(s)"
+               + (f" in group '{group}'" if group else " across the estate") + "...")
     estate = collect_estate(inv, _cms_opts(cfg, database), group=group, max_workers=max_workers)
     click.echo(click.style(
         f"\nEstate overall: {estate.overall if estate.overall is not None else 'N/A'}/100"
@@ -854,7 +966,8 @@ def _run_cms_access_review(cfg, group, output, json_out, max_workers,
             source = None
     click.echo(f"\nsqldoc v{__version__}  -  access review --cms")
     click.echo(f"{'='*44}")
-    click.echo(f"Auditing {len(inv.servers)} registered server(s)...")
+    click.echo(f"Auditing {len(_cms_targets(inv, group))} registered server(s)"
+               + (f" in group '{group}'" if group else "") + "...")
     rep = collect_estate_access(inv, _cms_opts(cfg), source=source, group=group,
                                 max_workers=max_workers)
     click.echo(f"  {len(rep.servers)} audited"
@@ -1054,7 +1167,13 @@ def main(config, server, database, username, password, connection_string, window
             print_diff(diff_snapshots(previous, current), snap_path)
         save_snapshot(current, snap_path)
 
-    # Generate AI descriptions
+    # Generate AI descriptions.
+    # Preflight first: one probe, then either enrich or degrade to schema-only.
+    # Without this, an unreachable backend is discovered once PER OBJECT -- one
+    # task per table AND per column AND per procedure -- each retried 3x with
+    # backoff, which is how a schema-only result came to cost hours.
+    no_ai, ai_degraded = _ai_preflight(mode, ai_backend, model, no_ai,
+                                       degrade_to="schema-only documentation")
     if not no_ai:
         # Description cache: reuse descriptions for objects whose structure is
         # unchanged since the last run (huge speed/cost win on incremental runs).
@@ -1066,17 +1185,38 @@ def main(config, server, database, username, password, connection_string, window
 
         click.echo(f"\nGenerating AI descriptions using {mode} mode ({concurrency} parallel)"
                    f"{' with SQL definitions' if include_definitions else ''}...")
+        ai_stats = {}
         try:
-            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
-            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
-            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions)
+            tables = enrich_tables(tables, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions, stats_out=ai_stats)
+            views = enrich_views(views, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions, stats_out=ai_stats)
+            procedures = enrich_procedures(procedures, mode=mode, model=model, concurrency=concurrency, cache=cache_obj, include_definitions=include_definitions, stats_out=ai_stats)
+        except ai.BackendUnavailable as e:
+            # The backend died mid-run (it answered the probe, then went away).
+            # Same degradation as the preflight: keep the schema-only output.
+            click.echo(click.style(
+                f"\n! AI backend became unreachable at {e.endpoint} - "
+                f"continuing with schema-only documentation.", fg='yellow', bold=True), err=True)
+            click.echo(click.style(f"  reason: {e.reason}", fg='yellow'), err=True)
+            ai_degraded = e.reason
         except Exception as e:
             click.echo(f"\nAI generation failed: {e}", err=True)
             click.echo("Try --no-ai to generate schema-only documentation")
             raise click.Abort()
 
+        # A backend that dies mid-run leaves objects undescribed; say so once,
+        # rather than letting a scrolled-past stderr line be the only evidence.
+        if ai_stats.get("unavailable") or ai_stats.get("failed"):
+            missed = ai_stats.get("unavailable", 0) + ai_stats.get("failed", 0)
+            click.echo(click.style(
+                f"! {missed} of {ai_stats.get('total', 0)} object(s) have no AI description.",
+                fg='yellow'), err=True)
+            if ai_stats.get("unavailable") and not ai_degraded:
+                ai_degraded = "AI backend became unavailable during the run"
+
         if cache_obj is not None:
             save_cache(cache_obj, cache_path)
+    elif ai_degraded:
+        click.echo("Skipping AI descriptions (AI backend unreachable)")
     else:
         click.echo("Skipping AI descriptions (--no-ai flag set)")
 
@@ -1094,6 +1234,7 @@ def main(config, server, database, username, password, connection_string, window
 
     _verify_offline(output, resolve('verify_offline', verify_offline))
     click.echo(f"\nDone! Open {output} in your browser to view the documentation.")
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "AI descriptions")
 
 @click.command()
 @click.option('--config', default='.sqldoc.yml', help='Path to config file (default: .sqldoc.yml if present)')
@@ -1218,6 +1359,7 @@ def scan(config, server, database, username, password, connection_string, window
     click.echo(f"Flagged {len(findings)} column(s) across {affected} table(s).")
 
     # Optional AI data sampling reads real values (which may be actual PII).
+    ai_degraded = None
     if sample and findings:
         click.echo(
             "\nWARNING: --sample reads up to 5 real values from each flagged column\n"
@@ -1235,6 +1377,13 @@ def scan(config, server, database, username, password, connection_string, window
             do_sample = True
         else:
             do_sample = click.confirm("Proceed with data sampling?", default=False)
+        # Preflight before sampling fans out one AI call per flagged column.
+        sample_no_ai, ai_degraded = _ai_preflight(
+            mode, ai_backend, model, False,
+            degrade_to="name/type findings only",
+            label="AI confirmation of sampled values")
+        if sample_no_ai:
+            do_sample = False
         if do_sample:
             def progress(i, total, f):
                 if i == 1 or i % 10 == 0 or i == total:
@@ -1304,6 +1453,10 @@ def scan(config, server, database, username, password, connection_string, window
     if gate_msg:
         click.echo(click.style(f"\nGATE FAILED: {gate_msg} (--fail-on {fail_on}).", fg='red', bold=True))
         ctx.exit(1)
+
+    # Deliberately AFTER the --fail-on gate: a real HIGH-risk finding (exit 1)
+    # must outrank "the AI that would have confirmed it was unreachable".
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "AI confirmation of sampled values")
 
 
 @click.command('scan-files')
@@ -1750,7 +1903,8 @@ def intel(config, server, database, username, password, connection_string, windo
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained (no external references) for air-gapped use')
 @windows_auth_option
-def insights(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, industry, no_ai, concurrency, yes, verify_offline):
+@fail_on_partial_option
+def insights(config, server, database, username, password, connection_string, windows_auth, dialect, schemas, output, json_out, ask, no_glossary, mode, model, ai_backend, industry, no_ai, concurrency, yes, verify_offline, fail_on_partial):
     """AI-powered schema insights: NL-to-SQL, anomalies, glossary, relationships.
 
     Turns plain-English questions into T-SQL, flags architectural anomalies,
@@ -1781,6 +1935,10 @@ def insights(config, server, database, username, password, connection_string, wi
     if mode not in ('local', 'cloud'):
         raise click.UsageError(f"Invalid mode '{mode}' (must be 'local' or 'cloud').")
     model = default_ai_model(mode, ai_backend, model)
+    # Preflight before the glossary fans out one AI call per table.
+    no_ai, ai_degraded = _ai_preflight(mode, ai_backend, model, no_ai,
+                                       degrade_to="the heuristic anomaly + relationship analysis",
+                                       label="The AI glossary and NL-to-SQL answers")
     use_ai = not no_ai
     is_cloud = ai.is_cloud_backend(mode, ai_backend)
     provider = _PROVIDER_NAMES.get(ai.resolve_backend(mode, ai_backend), 'the cloud provider')
@@ -1831,6 +1989,11 @@ def insights(config, server, database, username, password, connection_string, wi
     for c, msg in report.errors:
         click.echo(click.style(f"  ! {c}: {msg}", fg='yellow'), err=True)
 
+    if ai_degraded:
+        click.echo(click.style(
+            "! Glossary and NL-to-SQL were skipped (AI backend unreachable).",
+            fg='yellow'), err=True)
+
     s = insights_summarize(report)
     click.echo(
         click.style(f"Anomalies: {s['anomalies']}", fg='red')
@@ -1848,6 +2011,7 @@ def insights(config, server, database, username, password, connection_string, wi
             _json.dump(build_insights_json(database, report), f, indent=2, default=str)
         click.echo(f"Machine-readable report written to {json_out}")
     click.echo(f"Open {output} in your browser for the full insights report.")
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "glossary / NL-to-SQL")
 
 
 def _comply_all_databases(cfg, resolve, output, json_out, schemas, custom_cats,
@@ -2468,8 +2632,10 @@ def secure(config, server, database, username, password, connection_string, wind
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @windows_auth_option
+@fail_on_partial_option
 def waits(config, server, database, username, password, connection_string, windows_auth, dialect,
-          output, json_out, top, no_ai, mode, model, ai_backend, yes, verify_offline):
+          output, json_out, top, no_ai, mode, model, ai_backend, yes, verify_offline,
+          fail_on_partial):
     """Analyze what the server is waiting on and explain it with AI.
 
     Reads wait statistics (SQL Server sys.dm_os_wait_stats / PostgreSQL
@@ -2491,6 +2657,10 @@ def waits(config, server, database, username, password, connection_string, windo
     json_out = resolve('json', json_out, param='json_out')
     top = resolve('top', top)
     no_ai = resolve('no_ai', no_ai)
+    # Bound up front: the preflight below runs only when there is something to
+    # explain, but the degraded-exit check at the end of the command always
+    # reads it.
+    ai_degraded = None
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
@@ -2522,6 +2692,10 @@ def waits(config, server, database, username, password, connection_string, windo
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True
+        no_ai, ai_degraded = _ai_preflight(
+            mode, ai_backend, model, no_ai,
+            degrade_to="the wait-statistics report without an AI explanation",
+            label="The AI explanation of the top waits")
         if not no_ai:
             click.echo(f"Explaining top waits with AI ({mode})...")
             try:
@@ -2538,6 +2712,7 @@ def waits(config, server, database, username, password, connection_string, windo
         click.echo(f"Machine-readable wait report written to {json_out}")
     _verify_offline(output, resolve('verify_offline', verify_offline))
     click.echo(f"Open {output} in your browser for the full wait-statistics report.")
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "the AI wait explanation")
 
 
 @click.command()
@@ -2629,8 +2804,10 @@ def ha(config, server, database, username, password, connection_string, windows_
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @windows_auth_option
+@fail_on_partial_option
 def deadlocks(config, server, database, username, password, connection_string, windows_auth, dialect,
-              output, json_out, no_ai, mode, model, ai_backend, yes, verify_offline):
+              output, json_out, no_ai, mode, model, ai_backend, yes, verify_offline,
+              fail_on_partial):
     """Find and visualize deadlocks, with an AI explanation of the cause and fix.
 
     SQL Server parses deadlock graphs from the system_health extended-events
@@ -2652,6 +2829,10 @@ def deadlocks(config, server, database, username, password, connection_string, w
     output = resolve('output', output)
     json_out = resolve('json', json_out, param='json_out')
     no_ai = resolve('no_ai', no_ai)
+    # Bound up front: the preflight below runs only when there is something to
+    # explain, but the degraded-exit check at the end of the command always
+    # reads it.
+    ai_degraded = None
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
@@ -2684,6 +2865,10 @@ def deadlocks(config, server, database, username, password, connection_string, w
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True
+        no_ai, ai_degraded = _ai_preflight(
+            mode, ai_backend, model, no_ai,
+            degrade_to="the plan report without AI explanations",
+            label="The AI plan explanations")
         if not no_ai:
             click.echo(f"Explaining the deadlock with AI ({mode})...")
             try:
@@ -2700,6 +2885,7 @@ def deadlocks(config, server, database, username, password, connection_string, w
         click.echo(f"Machine-readable deadlock report written to {json_out}")
     _verify_offline(output, resolve('verify_offline', verify_offline))
     click.echo(f"Open {output} in your browser for the full deadlock report.")
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "the AI deadlock explanation")
 
 
 @click.command()
@@ -2724,8 +2910,10 @@ def deadlocks(config, server, database, username, password, connection_string, w
 @click.option('--verify-offline', 'verify_offline', is_flag=True, default=False,
               help='After rendering, verify the HTML report is fully self-contained for air-gapped use')
 @windows_auth_option
+@fail_on_partial_option
 def plans(config, server, database, username, password, connection_string, windows_auth, dialect,
-          output, json_out, top, explain_top, no_ai, mode, model, ai_backend, yes, verify_offline):
+          output, json_out, top, explain_top, no_ai, mode, model, ai_backend, yes, verify_offline,
+          fail_on_partial):
     """Analyze the worst cached query plans and recommend fixes with AI.
 
     Pulls the top-N worst-performing cached queries (SQL Server
@@ -2748,6 +2936,10 @@ def plans(config, server, database, username, password, connection_string, windo
     json_out = resolve('json', json_out, param='json_out')
     top = resolve('top', top)
     no_ai = resolve('no_ai', no_ai)
+    # Bound up front: the preflight below runs only when there is something to
+    # explain, but the degraded-exit check at the end of the command always
+    # reads it.
+    ai_degraded = None
     mode = resolve('mode', mode)
     model = resolve('model', model)
     ai_backend = resolve_ai_backend(resolve, ai_backend)
@@ -2780,6 +2972,10 @@ def plans(config, server, database, username, password, connection_string, windo
             if not yes and not click.confirm("Proceed with cloud mode?", default=False):
                 click.echo("Skipping AI (re-run with --mode local or --no-ai).")
                 no_ai = True
+        no_ai, ai_degraded = _ai_preflight(
+            mode, ai_backend, model, no_ai,
+            degrade_to="the deadlock report without an AI explanation",
+            label="The AI explanation of the deadlock")
         if not no_ai:
             click.echo(f"Explaining the top {explain_top} plan(s) with AI ({mode})...")
             explain_plans(report, mode=mode, model=model, limit=int(explain_top))
@@ -2793,6 +2989,7 @@ def plans(config, server, database, username, password, connection_string, windo
         click.echo(f"Machine-readable plans report written to {json_out}")
     _verify_offline(output, resolve('verify_offline', verify_offline))
     click.echo(f"Open {output} in your browser for the full query-plan report.")
+    _finish_degraded_ai(ai_degraded, fail_on_partial, "the AI plan explanations")
 
 
 @click.command()
@@ -3603,7 +3800,15 @@ def cms_discover(config, cms_server, windows_auth, username, password, output, j
     from sqldoc import cms as cms_mod
     from sqldoc.cms_renderer import render_tree_text, render_tree_html, build_inventory_json
     ctx = click.get_current_context()
-    cfg = load_config(config, ctx.get_parameter_source('config').name == 'COMMANDLINE')
+    config_explicit = ctx.get_parameter_source('config').name == 'COMMANDLINE'
+    cfg = load_config(config, config_explicit)
+    # Save back to the file we actually READ, not to a fresh one in the CWD.
+    # load_config() resolves the default `.sqldoc.yml` by walking up parent
+    # directories (see find_config); writing to the unresolved `config` string
+    # created a *second* config in the CWD that then shadowed the real one --
+    # silently dropping `driver:`/`windows_auth:` so the very next `--cms`
+    # command failed against every registered server with a bare ODBC IM002.
+    config = find_config(config, config_explicit)
     section = _cms_section(cfg)
     cms_server = cms_server or section.get('server')
     if not cms_server:
@@ -3647,13 +3852,13 @@ def cms_discover(config, cms_server, windows_auth, username, password, output, j
         # made the write easy to miss entirely.
         click.echo(click.style(
             f"\nSaving {len(inv.servers)} server hostname(s) and {ngroups} group(s) "
-            f"to {config} under 'cms_servers:'.", fg='yellow'))
+            f"to {os.path.abspath(config)} under 'cms_servers:'.", fg='yellow'))
         click.echo(click.style(
             "  That file will then contain every hostname in the estate -- keep it "
             "out of source control. Re-run with --no-save to skip persisting.",
             fg='yellow'))
         cms_mod.save_cms_servers(config, inv)
-        click.echo(f"Saved inventory to {config} under 'cms_servers:'.")
+        click.echo(f"Saved inventory to {os.path.abspath(config)} under 'cms_servers:'.")
 
 
 @cms.command('report')
@@ -3687,7 +3892,8 @@ def cms_report(config, group, output, json_out, max_workers):
 
     click.echo(f"\nsqldoc v{__version__}  -  cms report")
     click.echo(f"{'='*44}")
-    click.echo(f"Probing {len(inv.servers)} registered server(s)...")
+    click.echo(f"Probing {len(_cms_targets(inv, group))} registered server(s)"
+               + (f" in group '{group}'" if group else "") + "...")
     results = collect_report(inv, _cms_opts(cfg), store=store, group=group, max_workers=max_workers)
     reachable = sum(1 for r in results if r.ok)
     click.echo(click.style(f"  {reachable} reachable", fg='green')
@@ -4157,16 +4363,27 @@ def access_jira(config, ticket, user_override, transition_to, no_comment, mode, 
               help='Estate-wide audit across every CMS-registered server')
 @click.option('--group', default=None, help='Limit the --cms audit to a CMS server group')
 @click.option('--max-workers', default=8, type=click.IntRange(1, 64), help='Parallel servers (--cms)')
-@click.option('--fail-on-partial', 'fail_on_partial', is_flag=True, default=False,
-              help='Exit 2 if any server in a --cms run failed (default: exit 0 '
-                   'as long as the estate report was written)')
-def access_review(config, inactive_days, output, json_out, use_cms, group, max_workers, fail_on_partial):
+# Use the SHARED decorator rather than re-declaring the flag here. `--fail-on-partial`
+# has one meaning across every command that carries it -- "the run covered less than
+# it was asked to" -- and both of its causes route through the same `_exit_on_partial`
+# helper. Hand-declaring it here is what left this command on stale help text after the
+# flag's contract widened; the AI half of that contract is simply inert for `review`,
+# which has no AI path.
+@fail_on_partial_option
+@click.option('--include-read-principals', 'include_read_principals',
+              is_flag=True, default=False,
+              help='Also report read-level database principals that have no server '
+                   'login. Off by default: shops that grant through database-only '
+                   'role groups have thousands, and they are the intended design')
+def access_review(config, inactive_days, output, json_out, use_cms, group, max_workers,
+                  fail_on_partial, include_read_principals):
     """Review all logins + role memberships and flag access risks.
 
     Flags inactive accounts, over-privileged accounts (vs AD job title),
-    separation-of-duties violations, orphaned Windows logins, and service
-    accounts with excessive permissions — each with a generated fix script,
-    prioritized most-severe first.
+    separation-of-duties violations, orphaned Windows logins, service accounts
+    with excessive permissions, and database principals whose access does not
+    trace back to a server login — each with a generated fix script, prioritized
+    most-severe first.
 
     With --cms, runs an ESTATE-WIDE audit across every registered server: who has
     elevated access on multiple servers, who exists on some servers but not
@@ -4176,16 +4393,28 @@ def access_review(config, inactive_days, output, json_out, use_cms, group, max_w
     from sqldoc.access import config as access_config
     from sqldoc.access.render import render_review_html, build_review_json
     cfg = _access_cfg(config)
+    review_cfg = access_config.review_config(cfg)
+    # Settable from config as well as the CLI. Adding the key to CONFIG_KEYS only stops
+    # load_config discarding it -- this command resolves its own options rather than
+    # going through the generic resolver, so without this the config value would load
+    # and then be ignored, which is the collected-but-never-surfaced pattern itself.
+    # Checked in the section `inactive_days` already uses, then the top-level key. The
+    # flag is on-only (there is no --no- form), so an explicit flag simply wins.
+    if not include_read_principals:
+        include_read_principals = bool(
+            review_cfg.get("include_read_principals",
+                           cfg.get("include_read_principals", False)))
     if use_cms:
         _run_cms_access_review(cfg, group, output, json_out, max_workers,
                                fail_on_partial=fail_on_partial)
         return
-    days = inactive_days if inactive_days is not None else int(access_config.review_config(cfg).get("inactive_days", 90))
+    days = inactive_days if inactive_days is not None else int(review_cfg.get("inactive_days", 90))
 
     click.echo(f"\nsqldoc v{__version__}  -  access review")
     click.echo(f"{'='*44}")
     click.echo(f"Scanning logins + role memberships (inactive threshold: {days} days)...")
-    findings = review_access(cfg, inactive_days=days)
+    findings = review_access(cfg, inactive_days=days,
+                             include_read_principals=include_read_principals)
 
     counts = {s: sum(1 for f in findings if f.severity == s) for s in ("HIGH", "MEDIUM", "LOW")}
     click.echo(f"\n{len(findings)} finding(s): "
@@ -4350,11 +4579,34 @@ def access_recommend(config, identifier, database, mode, model, ai_backend, no_a
         raise click.Abort()
     click.echo(f"  {user.display_name or identifier}: {user.title or '?'}, {user.department or '?'}")
     click.echo("  Learning from existing peers...")
-    peers = gather_peers(cfg, source)
+    peer_stats = {}
+    peers = gather_peers(cfg, source, stats=peer_stats)
     rec = recommend_roles(user, peers, database=database, mode=mode, model=model,
                           backend=backend, no_ai=no_ai)
 
     click.echo(f"\n  Considered {rec.peers_considered} peer(s).")
+    # Explain a thin peer population rather than letting "0 peer(s)" read as
+    # "nobody comparable exists". In an estate that grants through role groups
+    # there is nothing for a title-based model to learn from, and the caller
+    # needs to know that is why -- not conclude the baseline is peer-evidenced.
+    if not rec.peers_considered:
+        skipped = [
+            (peer_stats.get("groups_skipped", 0),
+             "group principal(s) — entitlements here are group-based, which a "
+             "title/department model cannot learn from"),
+            (peer_stats.get("service_accounts_skipped", 0),
+             "service account(s) — excluded so least privilege is not inferred "
+             "from application accounts"),
+            (peer_stats.get("unresolved_skipped", 0),
+             "principal(s) with no directory title/department"),
+        ]
+        for n, why in skipped:
+            if n:
+                click.echo(click.style(f"    skipped {n} {why}.", fg='yellow'))
+        if any(n for n, _ in skipped):
+            click.echo(click.style(
+                "    The roles below are the title-based baseline only, not "
+                "evidence from peers.", fg='yellow'))
     click.echo(click.style("  Recommended roles:", bold=True))
     for r, reason in rec.recommended_roles:
         click.echo(f"    {r}  — {reason}")

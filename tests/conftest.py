@@ -19,6 +19,26 @@ def _isolate_sqldoc_home(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_ai_backend_state():
+    """Clear the AI backend probe cache + down-latch between tests.
+
+    `sqldoc.ai` latches an unreachable backend at PROCESS scope on purpose: the
+    latch is what stops a per-object fan-out from repeating one dead connection
+    thousands of times, so it is deliberately shared across the worker threads
+    of a single run and expires on a timer rather than being cleared by callers.
+
+    That is correct for a CLI process and wrong for a test session, where every
+    test shares one interpreter: a test that legitimately latches a backend down
+    would otherwise leak that state into every test that runs after it. Resetting
+    per test is precisely the use `reset_backend_state()` documents itself for.
+    """
+    from sqldoc import ai as _ai
+    _ai.reset_backend_state()
+    yield
+    _ai.reset_backend_state()
+
+
 # --- In-memory schema fixtures (no database required) ----------------------
 
 def build_tables():

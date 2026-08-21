@@ -43,10 +43,23 @@ class Login:
 
 @dataclass
 class DatabaseAccess:
-    """Effective access one principal (login) has in one database."""
+    """Effective access one principal has in one database.
+
+    Access is normally reached through a server login, but it does not have to
+    be: a Windows user or group can be granted directly in the database with no
+    server login at all (``CREATE USER [DOMAIN\\Group]`` with no ``FOR LOGIN``).
+    SQL Server still authorises those principals -- database-level authorization
+    matches every SID in the connecting session's Windows token against
+    ``sys.database_principals.sid`` -- so they confer real, usable access.
+
+    ``login`` is therefore the *optional* server login: it is left empty for a
+    login-less principal rather than fabricated. ``principal`` always names the
+    database principal that actually holds the access, and ``has_server_login``
+    says which of the two shapes this row is.
+    """
     server: str
     database: str
-    login: str                      # the server login granting this access
+    login: str                      # the server login granting this access ("" if none)
     db_user: str = ""               # the mapped database principal name
     via: str = ""                   # "group DOMAIN\SalesRead" | "direct login"
     roles: list = field(default_factory=list)          # database roles held
@@ -54,6 +67,10 @@ class DatabaseAccess:
     level: str = "none"             # coarse effective level: read/write/admin
     pii_tables: list = field(default_factory=list)     # [(schema, table, risk, [regs])]
     flags: list = field(default_factory=list)          # escalation routes noted, not levelled
+    # --- principal identity (additive; see the class docstring) --------------
+    principal: str = ""             # the database principal holding the access
+    principal_type: str = ""        # WINDOWS_GROUP | WINDOWS_USER | SQL_USER | ...
+    has_server_login: bool = True   # False => granted in the database only
 
 
 @dataclass
@@ -62,7 +79,11 @@ class AccessReport:
     user: ADUser
     logins: list = field(default_factory=list)         # matched Login rows
     access: list = field(default_factory=list)         # DatabaseAccess rows
-    matched_groups: list = field(default_factory=list) # AD groups that map to a login
+    # AD groups that grant this user SQL Server access, whether they reach it
+    # through a server login OR as a login-less database principal. It counts
+    # *access*, not logins: a shop that grants through database-only role groups
+    # would otherwise be told "with SQL access: 0" while holding db_datareader.
+    matched_groups: list = field(default_factory=list)
     errors: list = field(default_factory=list)         # (label, message) best-effort notes
 
     def has_any_access(self) -> bool:

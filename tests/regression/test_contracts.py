@@ -89,9 +89,15 @@ def test_access_check_json_schema():
     # server-scoped grants and escalation routes invisible to any consumer.
     assert set(j["logins"][0].keys()) == {"name", "type", "server", "is_disabled",
                                           "server_roles", "server_permissions"}
+    # `principal`, `principal_type` and `has_server_login` were added deliberately
+    # (v3.2.0): a Windows user or group can hold roles as a DATABASE principal with
+    # no server login at all, and those grants confer real access. `login` stays as
+    # it was and is left EMPTY for such a principal rather than fabricated, so
+    # `principal` is the field that always names whatever actually holds the access.
     assert set(j["access"][0].keys()) == {"server", "database", "login", "db_user", "via",
                                           "roles", "level", "permissions", "pii_tables",
-                                          "flags"}
+                                          "flags", "principal", "principal_type",
+                                          "has_server_login"}
 
 
 def test_access_script_json_schema():

@@ -178,15 +178,61 @@ def render_alerts(store, days: int = 30) -> str:
     return _page("Alerts · sqldoc agent", body)
 
 
-def _handle_approval_link(raw_path: str) -> str:
-    """Record an approve/reject decision from an emailed link (best-effort; the
-    Jira rejection comment is posted when a decision is recorded via the CLI,
-    which has the full config)."""
+def _approval_params(raw_path: str):
+    """(token, reason, decision) from an approve/reject URL."""
     from urllib.parse import urlparse, parse_qs
     q = parse_qs(urlparse(raw_path).query)
-    token = (q.get("token") or [""])[0]
-    reason = (q.get("reason") or [None])[0]
-    decision = "approve" if "/approve" in raw_path else "reject"
+    return ((q.get("token") or [""])[0],
+            (q.get("reason") or [None])[0],
+            "approve" if "/approve" in raw_path else "reject")
+
+
+def render_approval_confirm(raw_path: str) -> str:
+    """GET on an emailed approve/reject link: CONFIRM, never execute.
+
+    A bare GET must not change anything. These links are emailed, and mail
+    security gateways, link scanners, URL-rewriting proxies and browser
+    prefetchers all fetch links in mail without a human involved -- each of which
+    silently recorded a decision when the GET did the work. The decision is now
+    taken by the POST this page submits.
+    """
+    token, reason, decision = _approval_params(raw_path)
+    from sqldoc.access import approval
+    rec = approval.get_approval(token) if token else None
+    if not rec:
+        return _page("Approval",
+                     f"<p class='err'>No pending approval with token "
+                     f"'{html.escape(token)}'.</p>")
+    if rec.get("status") != "pending":
+        return _page("Approval",
+                     f"<div class='card'><h2>Already "
+                     f"{html.escape(str(rec.get('status')))}</h2>"
+                     f"<p class='muted'>Decided at "
+                     f"{html.escape(str(rec.get('decided_at') or '-'))}.</p></div>")
+    verb = "Approve" if decision == "approve" else "Reject"
+    return _page(f"Confirm {verb.lower()}",
+                 f"<div class='card'><h2>{verb} this access request?</h2>"
+                 f"<p class='muted'>{html.escape(str(rec.get('database','')))} / "
+                 f"{html.escape(str(rec.get('login','')))} &rarr; "
+                 f"{html.escape(str(rec.get('role','')))}</p>"
+                 f"<p class='muted'>Requested by "
+                 f"{html.escape(str(rec.get('requester','')))}.</p>"
+                 f"<form method='POST' action='/access/{decision}'>"
+                 f"<input type='hidden' name='token' value='{html.escape(token)}'>"
+                 f"<input type='hidden' name='reason' value='"
+                 f"{html.escape(reason or '')}'>"
+                 f"<button type='submit'>Confirm {html.escape(verb.lower())}</button>"
+                 f"</form>"
+                 f"<p class='muted'>Nothing has been recorded yet. This step exists "
+                 f"because a link in an email can be fetched by a scanner or a "
+                 f"prefetcher without anyone clicking it.</p></div>")
+
+
+def handle_approval_decision(path: str, form: dict) -> str:
+    """POST: actually record the decision."""
+    decision = "approve" if "/approve" in path else "reject"
+    token = (form.get("token") or [""])[0]
+    reason = (form.get("reason") or [None])[0] or None
     from sqldoc.access import approval
     try:
         rec = approval.record_decision({}, token, decision, reason=reason)
@@ -283,7 +329,8 @@ def _make_handler(store, authn=None):
                     self._send(json.dumps(overview_json(store), indent=2),
                                "application/json; charset=utf-8")
                 elif path in ("/access/approve", "/access/reject"):
-                    self._send(_handle_approval_link(self.path))
+                    # GET is a confirmation page only -- it records nothing.
+                    self._send(render_approval_confirm(self.path))
                 elif path == "/alerts":
                     self._send(render_alerts(store))
                 elif path == "/api/alerts":
@@ -297,10 +344,36 @@ def _make_handler(store, authn=None):
                     else:
                         self._send(_page("no doc", "<p class='muted'>No documentation yet.</p>"), code=404)
                 elif path.startswith("/db/"):
-                    self._send(render_db_page(store, path[len("/db/"):]))
+                    name = path[len("/db/"):]
+                    code = 200 if name in store.list_databases() else 404
+                    self._send(render_db_page(store, name), code=code)
                 else:
                     self._send(_page("404", "<p class='err'>Not found.</p>"), code=404)
             except Exception as e:  # never let a request crash the daemon
+                self._send(_page("error", f"<p class='err'>{html.escape(str(e))}</p>"), code=500)
+
+        def do_POST(self):
+            if not self._authorized():
+                return
+            path = unquote(self.path.split("?", 1)[0]).rstrip("/") or "/"
+            try:
+                if path in ("/access/approve", "/access/reject"):
+                    from urllib.parse import parse_qs
+                    try:
+                        length = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        length = 0
+                    # Bounded read: this endpoint takes a token and a short
+                    # reason, never a payload worth buffering.
+                    if length > 64 * 1024:
+                        self._send(_page("error", "<p class='err'>Payload too large.</p>"),
+                                   code=413)
+                        return
+                    raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+                    self._send(handle_approval_decision(path, parse_qs(raw)))
+                else:
+                    self._send(_page("404", "<p class='err'>Not found.</p>"), code=404)
+            except Exception as e:
                 self._send(_page("error", f"<p class='err'>{html.escape(str(e))}</p>"), code=500)
 
         def log_message(self, *args):

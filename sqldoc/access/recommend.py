@@ -26,12 +26,31 @@ class PeerProfile:
     roles: list = field(default_factory=list)
 
 
-def gather_peers(cfg, source, adapter_factory=None) -> list:
+def _is_builtin_principal(name: str) -> bool:
+    n = (name or "").upper()
+    return n.startswith("NT AUTHORITY\\") or n.startswith("NT SERVICE\\") or n.startswith("##")
+
+
+def gather_peers(cfg, source, adapter_factory=None, stats=None) -> list:
     """Existing users (resolved in AD) and the roles they hold, across the
-    configured databases — the training data for recommendations."""
+    configured databases — the training data for recommendations.
+
+    Peer learning is title/department based, so only individual accounts that
+    resolve in the directory can be peers. `stats`, when a dict is passed, is
+    filled with the counts behind that filtering (`groups_skipped`,
+    `service_accounts_skipped`, `unresolved_skipped`) so the caller can say why
+    the peer population is small instead of reporting a bare "0 peer(s)" —
+    which reads as "nobody comparable exists" rather than "this estate grants
+    through groups, so there is nothing here to learn from".
+    """
     from sqldoc.access import config as access_config
     from sqldoc.access.checker import build_db_adapter
+    from sqldoc.access.titles import is_service_account
     factory = adapter_factory or build_db_adapter
+    counts = stats if stats is not None else {}
+    counts.setdefault("groups_skipped", 0)
+    counts.setdefault("service_accounts_skipped", 0)
+    counts.setdefault("unresolved_skipped", 0)
     peers = []
     for entry in access_config.servers(cfg):
         for database in entry["databases"]:
@@ -48,12 +67,34 @@ def gather_peers(cfg, source, adapter_factory=None) -> list:
                     for r in cursor.fetchall():
                         roles_by.setdefault(cell(r, "member_name"), []).append(cell(r, "role_name"))
                     for member, ptype in principals.items():
-                        if source is None or "\\" not in member or "USER" not in (ptype or "").upper():
+                        if source is None or "\\" not in member:
+                            continue
+                        upper = (ptype or "").upper()
+                        if "GROUP" in upper:
+                            # Role groups carry the entitlements in group-based
+                            # estates, but a group has no AD title/department,
+                            # so it cannot be a peer in a title-based model.
+                            # Counted, not silently dropped.
+                            counts["groups_skipped"] += 1
+                            continue
+                        if "USER" not in upper:
+                            continue
+                        if _is_builtin_principal(member):
+                            continue
+                        # Service accounts are not people: they routinely hold
+                        # db_owner/db_ddladmin for an application, and learning a
+                        # *least-privilege* baseline from them recommends exactly
+                        # the over-privilege this command exists to avoid.
+                        # review.py already filters them with this same helper.
+                        if is_service_account(member, (cfg or {}).get("service_account_patterns")):
+                            counts["service_accounts_skipped"] += 1
                             continue
                         try:
                             u = source.get_user(_name_part(member))
                         except Exception:
                             u = None
+                        if u is None or not u.found or not (u.title or u.department):
+                            counts["unresolved_skipped"] += 1
                         if u is not None and u.found and (u.title or u.department):
                             peers.append(PeerProfile(login=member, title=u.title,
                                                      department=u.department, database=database,

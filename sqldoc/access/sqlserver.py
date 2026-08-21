@@ -117,6 +117,47 @@ DB_PRINCIPALS_SQL = """
     WHERE dp.type IN ('U', 'G', 'S')
 """
 
+# Database principals enriched with the server-login linkage, which the plain
+# query above cannot express. Kept as a SEPARATE query, fetched through _fetch,
+# so an engine or permission level that cannot serve it degrades to the previous
+# login-only behaviour instead of failing the whole audit.
+#
+# Linkage is by SID, never by name. Name matching is wrong three ways:
+#   * `authentication_type_desc` does not discriminate -- a Windows principal
+#     reports WINDOWS whether or not a login exists;
+#   * the catalog genuinely disagrees on case (db user `DOMAIN\SVC_X` against a
+#     login recorded as `DOMAIN\svc_x`), so name matching works only by
+#     collation luck;
+#   * it cannot see the classic restore orphan, where the name still matches but
+#     the SID no longer does.
+DB_PRINCIPALS_DETAIL_SQL = """
+    /* ACCESS_DB_PRINCIPALS_DETAIL */
+    SELECT dp.name AS db_user, dp.type_desc AS type_desc,
+           dp.authentication_type_desc AS auth_type,
+           CASE WHEN EXISTS (SELECT 1 FROM sys.server_principals sp
+                             WHERE sp.sid = dp.sid)
+                THEN 1 ELSE 0 END AS has_server_login
+    FROM sys.database_principals dp
+    WHERE dp.type IN ('U', 'G', 'S')
+      AND dp.principal_id > 4
+      AND dp.sid IS NOT NULL
+"""
+
+# Database principal types that are Windows identities. A login-less principal
+# of one of these types is LIVE access; a login-less SQL_USER is a broken orphan
+# and is a different finding with a different fix.
+WINDOWS_PRINCIPAL_TYPES = {"WINDOWS_GROUP", "WINDOWS_USER"}
+
+# `authentication_type_desc` values:
+#   WINDOWS  -- authenticated by Windows, mapped by SID (login optional)
+#   INSTANCE -- mapped to a server login by SID (missing login => orphan)
+#   NONE     -- a user WITHOUT LOGIN: deliberate, used for module signing and
+#               EXECUTE AS. Never a finding, and never an access path for a
+#               person, so it is excluded everywhere below.
+AUTH_WINDOWS = "WINDOWS"
+AUTH_INSTANCE = "INSTANCE"
+AUTH_NONE = "NONE"
+
 DB_ROLE_MEMBERS_SQL = """
     /* ACCESS_DB_ROLE_MEMBERS */
     SELECT r.name AS role_name, m.name AS member_name
@@ -226,25 +267,92 @@ def collect_server_logins(cursor) -> list:
 
 
 def match_user_logins(logins, user) -> list:
-    """The logins that grant this user access: their own Windows login and every
-    Windows-group login for a group they belong to. Name-part matched
-    case-insensitively so it's domain-naming agnostic."""
+    """The logins that grant this identifier access: the principal's own login
+    and every Windows-group login for a group they belong to. Name-part matched
+    case-insensitively so it's domain-naming agnostic.
+
+    The identifier may itself BE a Windows group. Estates that standardise on
+    role groups (grant to `DOMAIN\\GRP-App_QA`, never to a person) ask about the
+    group by name, and that group is a server login in its own right. Matching
+    groups only against `user.groups` meant such an identifier matched nothing:
+    `access check` reported "no access" for the principal holding the access,
+    and everything downstream (gap analysis, `access script`/`approve`) then
+    generated a redundant grant. The non-group branch has always matched the
+    identifier directly -- the group branch now does the same.
+    """
+    names = _user_name_sets(user)
+    return [lg for lg in logins if principal_matches(lg.name, lg.type, user, names)]
+
+
+def _user_name_sets(user):
+    """The name sets an identifier is matched against, computed once.
+
+    Returned as a dict so the (identical) predicate can be shared by the login
+    matcher and the database-principal matcher instead of each growing its own
+    copy -- the divergence that produced this whole class of bug.
+    """
     group_parts = {_name_part(g).lower() for g in (user.groups or [])}
     group_parts |= {g.lower() for g in (user.groups or [])}   # also bare CNs
     sam = (user.sam_account_name or "").lower()
     login_full = (user.login or "").lower()
-    matched = []
-    for lg in logins:
-        part = _name_part(lg.name).lower()
-        full = lg.name.lower()
-        tdesc = (lg.type or "").upper()
-        if "GROUP" in tdesc:
-            if part in group_parts or full in group_parts:
-                matched.append(lg)
-        else:  # windows/sql login -> the user themselves
-            if sam and (part == sam or full == login_full):
-                matched.append(lg)
-    return matched
+    ident = (getattr(user, "identifier", "") or "").lower()
+    ident_part = _name_part(ident).lower()
+    # The identifier itself, however it was supplied (full DOMAIN\name, bare
+    # name, sam, or login). Empty strings are dropped so a blank field cannot
+    # match a principal whose name part is also empty.
+    self_names = {n for n in (ident, ident_part, sam, login_full,
+                              _name_part(login_full).lower()) if n}
+    return {"group_parts": group_parts, "self_names": self_names,
+            "sam": sam, "login_full": login_full}
+
+
+def principal_matches(name, type_desc, user, names=None) -> bool:
+    """Does `name` (a login OR a database principal) belong to this identifier?
+
+    One predicate, used for both server logins and database principals. A group
+    matches by membership *or* by being the identifier itself; an individual
+    matches itself. Name-part matched case-insensitively so it is domain-naming
+    agnostic.
+    """
+    names = names or _user_name_sets(user)
+    part = _name_part(name).lower()
+    full = (name or "").lower()
+    if "GROUP" in (type_desc or "").upper():
+        return (part in names["group_parts"] or full in names["group_parts"]
+                or full in names["self_names"] or part in names["self_names"])
+    sam = names["sam"]
+    return bool(sam and (part == sam or full == names["login_full"]))
+
+
+def collect_db_principals(cursor) -> dict:
+    """Every database principal, with its auth type and server-login linkage.
+
+    Returns ``{name: {"type": ..., "auth": ..., "has_login": bool}}``. Empty when
+    the enriched query is unavailable, which callers must treat as "linkage
+    unknown" and fall back to login-only behaviour.
+    """
+    out = {}
+    for r in _fetch(cursor, DB_PRINCIPALS_DETAIL_SQL):
+        out[cell(r, "db_user")] = {
+            "type": (cell(r, "type_desc") or "").upper(),
+            "auth": (_opt(r, "auth_type") or "").upper(),
+            "has_login": bool(int(_opt(r, "has_server_login", 0) or 0)),
+        }
+    return out
+
+
+def login_less_windows_principals(principals) -> dict:
+    """The subset that is LIVE access with no server login.
+
+    Windows users and groups only, and never an ``AUTHENTICATION_TYPE = NONE``
+    user (a deliberate ``CREATE USER ... WITHOUT LOGIN``, which no person
+    connects as). A login-less SQL_USER is excluded here because it is a broken
+    orphan, not access -- ``review.py`` reports that separately.
+    """
+    return {n: m for n, m in (principals or {}).items()
+            if m.get("type") in WINDOWS_PRINCIPAL_TYPES
+            and m.get("auth") == AUTH_WINDOWS
+            and not m.get("has_login")}
 
 
 def _max_level(levels) -> str:
@@ -262,8 +370,15 @@ def _perm_level(permission: str, state: str) -> str:
     return classify_permission(permission, state)
 
 
-def collect_db_access(cursor, server, database, matched_logins, pii_findings) -> list:
-    """Effective access each matched login has in this database."""
+def collect_db_access(cursor, server, database, matched_logins, pii_findings,
+                      user=None) -> list:
+    """Effective access this identifier has in this database.
+
+    Covers both shapes: access reached through a matched server login, and
+    access granted directly to a Windows user/group as a database principal with
+    no server login. `user` is optional and additive -- omit it and the result is
+    exactly the previous login-only behaviour.
+    """
     cursor.execute(DB_PRINCIPALS_SQL)
     db_users = {cell(r, "db_user"): cell(r, "type_desc") for r in cursor.fetchall()}
 
@@ -302,7 +417,11 @@ def collect_db_access(cursor, server, database, matched_logins, pii_findings) ->
         cur = pii_by_table.setdefault(key, {"risk": f.risk, "regs": set()})
         cur["regs"].update(f.regulations or [])
 
+    ctx = {"roles_by_user": roles_by_user, "perms_by_user": perms_by_user,
+           "dbscope_by_user": dbscope_by_user, "pii_by_table": pii_by_table}
+
     out = []
+    seen = set()
     # Match db users case-insensitively against the login name (Windows group /
     # user database users typically share the login name).
     lc_users = {u.lower(): u for u in db_users}
@@ -314,54 +433,94 @@ def collect_db_access(cursor, server, database, matched_logins, pii_findings) ->
         implied = _server_implied_level(lg)
         if not db_user and implied == "none":
             continue
-        roles = sorted(roles_by_user.get(db_user, [])) if db_user else []
-        perms = perms_by_user.get(db_user, []) if db_user else []
-        # Database-scoped grants (CONTROL ON DATABASE) apply to everything in the
-        # database and carry no object, so they are levelled separately.
-        scoped = dbscope_by_user.get(db_user, []) if db_user else []
-        scoped_levels = []
-        for (p, st) in scoped:
-            pu = (p or "").strip().upper()
-            if pu in ESCALATION_FLAG_PERMISSIONS:
-                continue                      # flagged below, never levelled
-            if pu.startswith(IMPERSONATE_PREFIX):
-                scoped_levels.append(
-                    "none" if (st or "").upper().startswith("DENY") else "admin")
-            else:
-                scoped_levels.append(_perm_level(p, st))
-        reads_whole_db = any(lv in ("read", "admin") for lv in scoped_levels)
-        # Escalation routes are reported, never folded into the effective level.
-        flags = _escalation_flags(scoped) + _escalation_flags(
-            [(p, st) for (p, st, _s, _o) in perms])
-        levels = [ROLE_LEVEL.get(r, "none") for r in roles]
-        levels += [_perm_level(p, st) for (p, st, _s, _o) in perms]
-        levels += scoped_levels
-        levels.append(implied)
-        level = _max_level(levels)
-
-        # PII tables the user can read: everything if a read-all role, else the
-        # specific tables they hold a non-deny grant on.
-        pii_tables = []
-        if (set(roles) & _READ_ALL_ROLES) or implied == "admin" or reads_whole_db:
-            for (schema, table), info in pii_by_table.items():
-                pii_tables.append((schema, table, info["risk"], sorted(info["regs"])))
-        else:
-            for (p, st, sch, obj) in perms:
-                if (st or "").upper().startswith("DENY"):
-                    continue
-                info = pii_by_table.get((sch, obj))
-                if info:
-                    pii_tables.append((sch, obj, info["risk"], sorted(info["regs"])))
-        pii_tables = sorted(set((s, t, r, tuple(g)) for (s, t, r, g) in pii_tables))
-        pii_tables = [(s, t, r, list(g)) for (s, t, r, g) in pii_tables]
-
         via = ("group " + lg.name) if "GROUP" in (lg.type or "").upper() else "direct login"
         if implied != "none":
             granting = ", ".join(_server_grantors(lg))
             if granting:
                 via += f" -> server-wide {granting}"
-        out.append(DatabaseAccess(
-            server=server, database=database, login=lg.name, db_user=db_user or "",
-            via=via, roles=roles, permissions=perms, level=level,
-            pii_tables=pii_tables, flags=sorted(set(flags))))
+        out.append(_access_row(
+            ctx, server, database, principal=db_user or lg.name, db_user=db_user or "",
+            login=lg.name, principal_type=(db_users.get(db_user) or lg.type or ""),
+            implied=implied, has_server_login=True, via=via))
+        if db_user:
+            seen.add(db_user.lower())
+
+    # --- database principals with NO server login ---------------------------
+    # A Windows user or group can be granted directly in the database with no
+    # login at all. The loop above is seeded from logins, so such a principal can
+    # never be its subject -- it was unreachable for any identifier, and the
+    # access it confers was reported as "no access". `user` is optional so the
+    # signature stays backward compatible; without it this degrades to the
+    # login-only behaviour.
+    if user is not None:
+        names = _user_name_sets(user)
+        for pname, meta in sorted(login_less_windows_principals(
+                collect_db_principals(cursor)).items()):
+            if pname.lower() in seen:
+                continue
+            if not principal_matches(pname, meta["type"], user, names):
+                continue
+            kind = "group" if meta["type"] == "WINDOWS_GROUP" else "user"
+            out.append(_access_row(
+                ctx, server, database, principal=pname, db_user=pname, login="",
+                principal_type=meta["type"], implied="none", has_server_login=False,
+                via=f"{kind} {pname} (database principal; no server login)"))
+            seen.add(pname.lower())
     return out
+
+
+def _access_row(ctx, server, database, *, principal, db_user, login,
+                principal_type, implied, has_server_login, via) -> DatabaseAccess:
+    """Level, PII exposure and escalation flags for one principal.
+
+    Shared by the login-backed and the login-less paths so both are levelled by
+    identical rules -- the two must never drift.
+    """
+    roles = sorted(ctx["roles_by_user"].get(db_user, [])) if db_user else []
+    perms = ctx["perms_by_user"].get(db_user, []) if db_user else []
+    # Database-scoped grants (CONTROL ON DATABASE) apply to everything in the
+    # database and carry no object, so they are levelled separately.
+    scoped = ctx["dbscope_by_user"].get(db_user, []) if db_user else []
+    scoped_levels = []
+    for (p, st) in scoped:
+        pu = (p or "").strip().upper()
+        if pu in ESCALATION_FLAG_PERMISSIONS:
+            continue                      # flagged below, never levelled
+        if pu.startswith(IMPERSONATE_PREFIX):
+            scoped_levels.append(
+                "none" if (st or "").upper().startswith("DENY") else "admin")
+        else:
+            scoped_levels.append(_perm_level(p, st))
+    reads_whole_db = any(lv in ("read", "admin") for lv in scoped_levels)
+    # Escalation routes are reported, never folded into the effective level.
+    flags = _escalation_flags(scoped) + _escalation_flags(
+        [(p, st) for (p, st, _s, _o) in perms])
+    levels = [ROLE_LEVEL.get(r, "none") for r in roles]
+    levels += [_perm_level(p, st) for (p, st, _s, _o) in perms]
+    levels += scoped_levels
+    levels.append(implied)
+    level = _max_level(levels)
+
+    # PII tables the user can read: everything if a read-all role, else the
+    # specific tables they hold a non-deny grant on.
+    pii_by_table = ctx["pii_by_table"]
+    pii_tables = []
+    if (set(roles) & _READ_ALL_ROLES) or implied == "admin" or reads_whole_db:
+        for (schema, table), info in pii_by_table.items():
+            pii_tables.append((schema, table, info["risk"], sorted(info["regs"])))
+    else:
+        for (p, st, sch, obj) in perms:
+            if (st or "").upper().startswith("DENY"):
+                continue
+            info = pii_by_table.get((sch, obj))
+            if info:
+                pii_tables.append((sch, obj, info["risk"], sorted(info["regs"])))
+    pii_tables = sorted(set((s, t, r, tuple(g)) for (s, t, r, g) in pii_tables))
+    pii_tables = [(s, t, r, list(g)) for (s, t, r, g) in pii_tables]
+
+    return DatabaseAccess(
+        server=server, database=database, login=login, db_user=db_user,
+        via=via, roles=roles, permissions=perms, level=level,
+        pii_tables=pii_tables, flags=sorted(set(flags)),
+        principal=principal, principal_type=(principal_type or "").upper(),
+        has_server_login=has_server_login)

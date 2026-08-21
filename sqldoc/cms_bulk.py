@@ -61,7 +61,15 @@ def _w_scan(server, opts):
 
 def _w_health(server, opts):
     from sqldoc.health import collect_health, summarize
-    return dict(summarize(collect_health(_adapter_for(server, opts))))
+    a = _adapter_for(server, opts)
+    # Pass the extracted schema, like every other bulk worker that needs it.
+    # collect_health only runs its two metadata-only detectors (duplicate tables,
+    # redundant indexes) when `tables` is supplied; without it they stayed empty
+    # and summarize() still reported them as `0` -- indistinguishable from
+    # "checked, found none" in the estate table and the aggregated JSON.
+    out = dict(summarize(collect_health(a, tables=_tables(a, opts))))
+    out["database"] = opts.get("database") or "master"
+    return out
 
 
 def _w_quality(server, opts):

@@ -45,18 +45,40 @@ def pick_login(report, parsed, override=None):
         if (a.database or "").lower() == dbl and "group" in (a.via or "").lower():
             if level_meets(a.level, needs):
                 continue
+            # A group granted only as a database principal has no server login
+            # to grant to, and `a.login` is empty for it. Returning it here would
+            # emit CREATE LOGIN [group] FROM WINDOWS -- materialising a server
+            # login for a group the shop deliberately keeps login-less, i.e.
+            # changing their access model as a side effect of a grant request.
+            # Skip it and let a real login be chosen.
+            if not getattr(a, "has_server_login", True) or not a.login:
+                continue
             return a.login, True, f"existing group with access to {a.database}"
     # 2) A Windows group login the user belongs to that exists on the server —
     #    again skipping any that is already server-wide privileged (sysadmin /
     #    CONTROL SERVER), which the requested level cannot add to.
     from sqldoc.access.sqlserver import _server_implied_level
+    self_name = (user.login or user.sam_account_name or user.identifier or "").lower()
     for lg in report.logins:
         if "GROUP" in (lg.type or "").upper():
             if level_meets(_server_implied_level(lg), needs):
                 continue
+            # The requested principal may BE this group: estates that grant to
+            # role groups ask for the group by name. Saying "a group the user
+            # belongs to" would misdescribe that, so name the case correctly.
+            if lg.name.lower() == self_name:
+                return lg.name, True, "granting directly to the requested AD group"
             return lg.name, True, "existing AD group login the user belongs to"
-    # 3) Fall back to the user's own Windows login.
+    # 3) The identifier is itself a Windows group: grant to it directly.
+    #    Estates that standardise on role groups request access *for the group*,
+    #    so telling them "no suitable AD group found — consider creating a
+    #    role-based AD group" is both wrong and the opposite of their policy.
     login = user.login or user.sam_account_name or user.identifier
+    for lg in report.logins:
+        if "GROUP" in (lg.type or "").upper() and lg.name.lower() == (login or "").lower():
+            return lg.name, True, "granting directly to the requested AD group"
+
+    # 4) Fall back to the user's own Windows login.
     return login, False, ("no suitable AD group found — using an individual login; "
                           "consider creating a role-based AD group instead")
 

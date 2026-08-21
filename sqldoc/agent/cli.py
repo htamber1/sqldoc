@@ -96,7 +96,41 @@ def pid_alive(pid) -> bool:
             return True
 
 
+def _kill_tree_windows(pid: int) -> bool:
+    """taskkill /T so the daemon's children die with it. True if the call ran."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True, check=False)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _kill_group_posix(pid: int) -> bool:
+    """Signal the whole process group (the daemon leads one via start_new_session)."""
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        return True
+    except (OSError, AttributeError, ProcessLookupError):
+        return False
+
+
 def _terminate(pid: int):
+    """Force-stop the daemon, INCLUDING any child processes.
+
+    The pid file does not always name the process doing the work. A virtualenv
+    launcher on Windows re-executes the base interpreter as a CHILD, so the
+    recorded pid is the shim and the real daemon sits underneath it -- and on
+    Windows, terminating a parent does not terminate its children. Signalling
+    only the recorded pid can leave the actual daemon running with nothing left
+    to find it by, which is the worst possible outcome for a kill switch.
+
+    So kill the whole tree, and fall back to a plain signal if that is
+    unavailable.
+    """
+    killer = _kill_tree_windows if os.name == "nt" else _kill_group_posix
+    if killer(pid):
+        return
     try:
         os.kill(pid, signal.SIGTERM)
     except (OSError, AttributeError):
@@ -117,9 +151,24 @@ def start(config, foreground):
     ac = _parse(config)   # validate before doing anything
 
     if foreground:
+        # Record the pid here too. Without it `agent stop` finds no pid file,
+        # reports "sqldoc agent is not running", and leaves this process running
+        # -- there was no supported way to stop a foreground agent at all.
+        running = _read_pid()
+        if running and pid_alive(running):
+            raise click.UsageError(
+                f"sqldoc agent is already running (pid {running}). "
+                f"Use 'sqldoc agent stop' first.")
+        _remove(stop_flag_path())
+        _write_pid(os.getpid())
         click.echo(f"Running sqldoc agent in the foreground (Ctrl-C to stop). "
                    f"Dashboard: http://127.0.0.1:{ac.dashboard_port}")
-        _run_foreground(config)
+        try:
+            _run_foreground(config)
+        finally:
+            # Leave no stale pid behind on Ctrl-C, stop-flag or crash.
+            _remove(pid_path())
+            _remove(stop_flag_path())
         return
 
     pid = _read_pid()
@@ -165,6 +214,12 @@ def _make_notifier(ac, store):
 def _run_foreground(config):
     ac = _parse(config)
     store = AgentStore(db_path())
+    # Safe here and only here: `start` has already established that no other
+    # daemon holds the pid file, so any run still marked 'running' is the debris
+    # of a previous kill or crash.
+    stale = store.reconcile_interrupted_runs()
+    if stale:
+        click.echo(f"Reconciled {stale} interrupted run(s) from a previous process.")
     notifier = _make_notifier(ac, store)
     # Optional SSO gate for the dashboard, from the top-level `auth:` section.
     from sqldoc.authn import build_authenticator

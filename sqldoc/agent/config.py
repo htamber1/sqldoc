@@ -32,6 +32,9 @@ from dataclasses import dataclass, field
 
 from sqldoc.adapters import DIALECTS, detect_dialect
 
+# Sentinel: distinguishes an ABSENT `on:` key from an explicit empty list.
+_ON_ABSENT = object()
+
 EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
                "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert",
@@ -278,7 +281,34 @@ def parse_agent_config(cfg: dict) -> AgentConfig:
         ))
 
     n = agent.get("notifications") or {}
-    on = n.get("on") or list(EVENT_TYPES)
+    # YAML 1.1 (which PyYAML implements) resolves the BARE key `on` to the
+    # boolean True, so the documented `on: [schema_change, ...]` arrives here as
+    # the key True, not "on". Every such config therefore matched nothing and
+    # silently fell through to "all event types" -- the allowlist has never
+    # worked from a YAML file, only from a hand-built dict. Accept the boolean
+    # key as the alias it plainly is. (`off`/`yes`/`no` are the same trap, but
+    # `on` is the only key in this schema that collides.)
+    if True in n and "on" not in n:
+        n = {("on" if k is True else k): v for k, v in n.items()}
+    # An ABSENT `on:` means "not configured" -> every event type, the historical
+    # default. An EXPLICIT empty list means "no events" -> notify on nothing.
+    #
+    # These must not be conflated. The old `n.get("on") or list(EVENT_TYPES)`
+    # treated the empty list as falsy, so `on: []` -- the obvious way to write
+    # "turn notifications off" -- silently enabled ALL of them. That is the worst
+    # possible direction for a mistake to fail in: the operator believes the
+    # agent is muted while it is authorised to page every configured channel.
+    raw_on = n.get("on", None) if "on" in n else _ON_ABSENT
+    if raw_on is _ON_ABSENT or raw_on is None:
+        on = list(EVENT_TYPES)
+    elif isinstance(raw_on, str):
+        on = [raw_on]
+    elif isinstance(raw_on, (list, tuple)):
+        on = list(raw_on)
+    else:
+        raise ValueError(
+            "agent.notifications.on must be a list of event names "
+            "(use [] to disable all notifications).")
     bad = [e for e in on if e not in EVENT_TYPES]
     if bad:
         raise ValueError(

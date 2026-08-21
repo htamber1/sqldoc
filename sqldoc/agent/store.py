@@ -224,6 +224,28 @@ class AgentStore:
             c.execute("UPDATE runs SET finished_at=?, status=?, error=? WHERE id=?",
                       (_now(), status, error, run_id))
 
+    def reconcile_interrupted_runs(self) -> int:
+        """Close out runs left mid-flight by a kill, a crash or a power loss.
+
+        `start_run` inserts with status='running' and `finish_run` closes it, so a
+        process that dies in between leaves a row that stays 'running' with a NULL
+        finished_at forever. Nothing else ever reconciles it, and `agent status`
+        goes on reporting a long-dead poll as in progress -- a killed run must not
+        be indistinguishable from a live one.
+
+        Call this at DAEMON STARTUP only, where the pid check has already
+        established no other daemon is running. Calling it from a read-only path
+        such as `agent status` would clobber the live run of a healthy agent.
+
+        Returns the number of rows reconciled.
+        """
+        with self._conn() as c:
+            cur = c.execute(
+                "UPDATE runs SET status='interrupted', finished_at=?, "
+                "error=COALESCE(error, 'process exited before the poll finished') "
+                "WHERE status='running'", (_now(),))
+            return cur.rowcount
+
     def last_run(self, db_name: str):
         with self._conn() as c:
             row = c.execute(

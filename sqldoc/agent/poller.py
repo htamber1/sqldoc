@@ -21,6 +21,7 @@ import os
 import tempfile
 
 from sqldoc.adapters import get_adapter
+from sqldoc import ai
 from sqldoc.ai import enrich_tables, enrich_views, enrich_procedures
 from sqldoc.renderer import render_html
 from sqldoc.snapshot import build_snapshot, diff_snapshots, iter_diff_lines
@@ -91,14 +92,30 @@ def poll_database(store, db_config, agent_config, notifier) -> dict:
         if not db_config.no_ai:
             model = _resolve_model(db_config)
             cache = store.get_cache(name)
+            # Probe once per cycle, before the fan-out. Without it, an
+            # unreachable backend is rediscovered once per object (one task per
+            # table AND per column) on every single poll cycle.
+            #
+            # Deliberately NOT ai.reset_backend_state(): run_daemon runs one
+            # poller thread per database concurrently against shared, process-wide
+            # backend state, so resetting here would wipe a latch another
+            # database's fan-out is actively relying on. ai.BACKEND_STATE_TTL
+            # expires the state instead, which recovers a backend that came back
+            # without any thread destroying another's.
+            reachable, endpoint, reason = ai.probe_backend(db_config.mode, model=model)
+            if not reachable:
+                store.add_event(name, "error",
+                                f"AI enrichment skipped: backend unreachable at "
+                                f"{endpoint} ({reason}); documentation is schema-only")
             try:
-                enrich_tables(tables, mode=db_config.mode, model=model,
-                              concurrency=agent_config.concurrency, cache=cache)
-                enrich_views(views, mode=db_config.mode, model=model,
-                             concurrency=agent_config.concurrency, cache=cache)
-                enrich_procedures(procedures, mode=db_config.mode, model=model,
+                if reachable:
+                    enrich_tables(tables, mode=db_config.mode, model=model,
                                   concurrency=agent_config.concurrency, cache=cache)
-                store.save_cache(name, cache)
+                    enrich_views(views, mode=db_config.mode, model=model,
+                                 concurrency=agent_config.concurrency, cache=cache)
+                    enrich_procedures(procedures, mode=db_config.mode, model=model,
+                                      concurrency=agent_config.concurrency, cache=cache)
+                    store.save_cache(name, cache)
             except Exception as e:
                 store.add_event(name, "error", f"AI enrichment skipped: {type(e).__name__}: {e}")
 

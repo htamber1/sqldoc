@@ -19,7 +19,8 @@ from sqldoc.access.model import ReviewFinding
 from sqldoc.access.roles import roles_for_level
 from sqldoc.access.script import _q
 from sqldoc.access.sqlserver import (
-    collect_server_logins, ROLE_LEVEL, _name_part,
+    collect_server_logins, collect_db_principals, ROLE_LEVEL, _name_part,
+    AUTH_INSTANCE, AUTH_WINDOWS, WINDOWS_PRINCIPAL_TYPES,
     DB_PRINCIPALS_SQL, DB_ROLE_MEMBERS_SQL, DB_PERMISSIONS_SQL)
 from sqldoc.access.titles import expected_level_for_title, exceeds, is_service_account
 
@@ -213,8 +214,102 @@ def review_database(cursor, server, database, source, service_patterns=None) -> 
     return findings
 
 
+def review_db_principals(cursor, server, database, logins=None,
+                         include_read_principals=False) -> list:
+    """Database principals whose access does not trace back to a server login.
+
+    Three genuinely different situations, deliberately reported as three
+    categories because they have three different fixes:
+
+    * **db_principal_no_login** — a Windows user or group granted directly in the
+      database. SQL Server authorises it from the connecting session's Windows
+      token, so this is LIVE, usable access that a login-first audit cannot see.
+    * **orphaned_db_user** — a SQL user whose login is gone (SID no longer
+      resolves). Broken rather than dangerous: nobody can authenticate as it.
+    * ``AUTHENTICATION_TYPE = NONE`` — a deliberate ``CREATE USER ... WITHOUT
+      LOGIN`` used for module signing and ``EXECUTE AS``. **Never** reported.
+
+    Severity for the live class tracks the effective level, and read-level
+    principals are suppressed unless `include_read_principals` is set. Estates
+    that standardise on database-only role groups have thousands of them (~1,180
+    were measured across four dev servers); emitting every one at a fixed
+    severity would bury the handful that matter. An unnoticed db_owner with no
+    login is a real finding; a read-only role group is the intended design.
+    """
+    principals = collect_db_principals(cursor)
+    if not principals:
+        return []                      # linkage unreadable -> report nothing
+    findings = []
+    login_names = {(l.name or "").lower() for l in (logins or [])}
+
+    cursor.execute(DB_ROLE_MEMBERS_SQL)
+    roles_by = {}
+    for r in cursor.fetchall():
+        roles_by.setdefault(cell(r, "member_name"), []).append(cell(r, "role_name"))
+    cursor.execute(DB_PERMISSIONS_SQL)
+    perms_by = {}
+    for r in cursor.fetchall():
+        perms_by.setdefault(cell(r, "principal_name"), []).append((
+            cell(r, "permission_name"), cell(r, "state_desc"),
+            cell(r, "schema_name"), cell(r, "object_name")))
+
+    for name, meta in sorted(principals.items()):
+        if meta.get("has_login") or is_builtin_principal(name):
+            continue
+        auth, ptype = meta.get("auth"), meta.get("type")
+        roles = sorted(roles_by.get(name, []))
+        perms = perms_by.get(name, [])
+        if not roles and not perms:
+            continue               # no entitlements: nothing to report either way
+        level = _max_level(roles, perms)
+        held = ", ".join(roles) or "explicit grants"
+
+        if ptype in WINDOWS_PRINCIPAL_TYPES and auth == AUTH_WINDOWS:
+            severity = {"admin": "HIGH", "write": "MEDIUM"}.get(level, "LOW")
+            if severity == "LOW" and not include_read_principals:
+                continue
+            kind = "group" if ptype == "WINDOWS_GROUP" else "user"
+            findings.append(ReviewFinding(
+                category="db_principal_no_login", severity=severity,
+                principal=name, server=server, database=database,
+                summary=f"{name} has {level} access in {database} with no server login",
+                detail=f"This Windows {kind} is a database principal in {database} "
+                       f"holding {held}, but has no login on the instance. SQL Server "
+                       f"authorises it by SID from the connecting session's Windows "
+                       f"token, so the access is real and usable — yet it is invisible "
+                       f"to any audit that enumerates server logins first. Confirm it "
+                       f"is intentional; if it is, it still belongs in the access "
+                       f"inventory.",
+                # Deliberately advisory: dropping a live group principal revokes
+                # real access from every member of it.
+                fix_sql=f"-- REVIEW ONLY — do not run blind. This principal grants real\n"
+                        f"-- access to everyone in it; dropping it revokes that access.\n"
+                        f"-- Intentional? record it in the access inventory.\n"
+                        f"-- Not intentional? then, after confirming no dependencies:\n"
+                        f"-- USE {_q(database)};\n-- DROP USER {_q(name)};\n"))
+        elif auth == AUTH_INSTANCE and name.lower() not in login_names:
+            # SQL user whose login no longer exists, or whose SID drifted after a
+            # restore. Not a live risk -- it cannot be authenticated as -- but it
+            # is dead entitlement and a standard audit finding.
+            findings.append(ReviewFinding(
+                category="orphaned_db_user", severity="MEDIUM",
+                principal=name, server=server, database=database,
+                summary=f"Database user {name} in {database} has no matching login",
+                detail=f"The user holds {held} but its SID matches no server login, so "
+                       f"nobody can authenticate as it (typically a restored database). "
+                       f"The entitlement is dead but still granted.",
+                fix_sql=f"-- Remap to an existing login of the same name, if there is one:\n"
+                        f"USE {_q(database)};\n"
+                        f"ALTER USER {_q(name)} WITH LOGIN = {_q(name)};\nGO\n"
+                        f"-- If no such login should exist, drop the user instead:\n"
+                        f"-- DROP USER {_q(name)};\n"))
+        # auth == NONE (CREATE USER ... WITHOUT LOGIN) falls through: deliberate.
+    return findings
+
+
 def review_access(cfg, source=None, adapter_factory=None, inactive_days=90,
-                  now_epoch=None, service_patterns=None) -> list:
+                  now_epoch=None, service_patterns=None,
+                  include_read_principals=False) -> list:
     """Run the full review across configured servers/databases. Returns findings
     sorted most-severe first."""
     from sqldoc.access import ad as ad_mod
@@ -234,6 +329,7 @@ def review_access(cfg, source=None, adapter_factory=None, inactive_days=90,
     for entry in access_config.servers(cfg):
         server_name = entry["name"]
         server_checked = False
+        server_logins = []
         for database in entry["databases"]:
             try:
                 adapter = factory(entry, database)
@@ -243,9 +339,16 @@ def review_access(cfg, source=None, adapter_factory=None, inactive_days=90,
                     if not server_checked:
                         findings += review_logins(cursor, server_name, source,
                                                   inactive_days, now_epoch, service_patterns)
+                        # Read once per server and reuse: the database-principal
+                        # check needs the login list to tell a drifted SID from a
+                        # login that simply is not there.
+                        server_logins = collect_server_logins(cursor)
                         server_checked = True
                     findings += review_database(cursor, server_name, database, source,
                                                 service_patterns)
+                    findings += review_db_principals(
+                        cursor, server_name, database, logins=server_logins,
+                        include_read_principals=include_read_principals)
                 finally:
                     conn.close()
             except Exception as e:

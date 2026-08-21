@@ -112,10 +112,35 @@ def test_openai_missing_dep_message(monkeypatch):
 
 
 def test_gemini_missing_dep_message(monkeypatch):
+    # A missing optional SDK is a PERMANENT failure, so `_retry` classifies it as
+    # unreachable and re-raises it as BackendUnavailable rather than retrying an
+    # import that cannot start working. The actionable install line must survive
+    # that wrapping -- it is the whole point of the message.
     monkeypatch.setitem(sys.modules, "google.generativeai", None)
-    with pytest.raises(ImportError) as e:
+    with pytest.raises(ai.BackendUnavailable) as e:
         ai._call_gemini("hi")
     assert "pip install sqldoc[gemini]" in str(e.value)
+
+
+def test_missing_sdk_is_not_retried(monkeypatch):
+    """The reason the exception type changed: a missing SDK fails identically on
+    every attempt, so retrying it three times with backoff only multiplies the
+    wait. It must be attempted exactly once."""
+    monkeypatch.setitem(sys.modules, "google.generativeai", None)
+    calls = []
+    real_sleep = ai.time.sleep
+    monkeypatch.setattr(ai.time, "sleep", lambda s: calls.append(s))
+    with pytest.raises(ai.BackendUnavailable):
+        ai._call_gemini("hi")
+    assert calls == [], "a permanent failure must not back off and retry"
+
+
+def test_gemini_import_error_is_still_the_underlying_cause(monkeypatch):
+    """Wrapping must not lose the original ImportError for anyone inspecting it."""
+    monkeypatch.setitem(sys.modules, "google.generativeai", None)
+    with pytest.raises(ai.BackendUnavailable) as e:
+        ai._call_gemini("hi")
+    assert "ImportError" in str(e.value) or isinstance(e.value.__cause__, ImportError)
 
 
 # --- backends actually call the SDKs when present ---------------------------

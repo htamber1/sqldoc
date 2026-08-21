@@ -77,6 +77,12 @@ def build_check_json(report) -> dict:
                    for l in report.logins],
         "access": [{
             "server": a.server, "database": a.database, "login": a.login,
+            # `login` is "" when access is granted directly to a database
+            # principal with no server login. `principal` always names the
+            # principal that holds the access, so a consumer keying on `login`
+            # alone would silently miss those rows.
+            "principal": a.principal, "principal_type": a.principal_type,
+            "has_server_login": a.has_server_login,
             "db_user": a.db_user, "via": a.via, "roles": a.roles, "level": a.level,
             "permissions": [{"permission": p[0], "state": p[1], "schema": p[2], "object": p[3]}
                             for p in a.permissions],
@@ -137,12 +143,28 @@ def render_check_html(report, output_path):
             roles = "".join(f"<span class='tag'>{_e(r)}</span>" for r in a.roles) or "<span class='muted'>-</span>"
             pii = (f"<span class='pill {_e(a.pii_tables[0][2])}'>{len(a.pii_tables)} PII table(s)</span>"
                    if a.pii_tables else "<span class='muted'>none</span>")
+            # A login-less principal has no login to name here; showing an empty
+            # cell would read as missing data rather than as the point.
+            if a.has_server_login:
+                who = f"<span class='mono'>{_e(a.login)}</span>"
+            else:
+                who = (f"<span class='mono'>{_e(a.principal)}</span>"
+                       "<br><span class='pill MEDIUM'>no server login</span>")
             rows.append(
                 f"<tr><td>{_e(a.server)}</td><td>{_e(a.database)}</td>"
-                f"<td class='mono'>{_e(a.login)}</td><td>{_level_pill(a.level)}</td>"
+                f"<td>{who}</td><td>{_level_pill(a.level)}</td>"
                 f"<td>{roles}</td><td>{_e(len(a.permissions))} grant(s)</td><td>{pii}</td></tr>")
-        access = ("<h2>Current access by database</h2><div class='card'><table>"
-                  "<tr><th>Server</th><th>Database</th><th>Login</th><th>Level</th>"
+        db_only = [a for a in report.access if not a.has_server_login]
+        db_only_note = ""
+        if db_only:
+            db_only_note = ("<p class='muted'>Rows marked <strong>no server login</strong> are "
+                    "granted directly to a Windows user or group as a database "
+                    "principal, with no login on the instance. SQL Server authorises "
+                    "them from the connecting session's Windows token, so the access "
+                    "is real — but it is invisible to any audit that starts from the "
+                    "login list.</p>")
+        access = ("<h2>Current access by database</h2><div class='card'>" + db_only_note + "<table>"
+                  "<tr><th>Server</th><th>Database</th><th>Principal</th><th>Level</th>"
                   "<th>Roles</th><th>Explicit grants</th><th>PII exposure</th></tr>"
                   + "".join(rows) + "</table></div>")
         # PII detail
@@ -163,7 +185,8 @@ def render_check_html(report, output_path):
         for a in report.access:
             for note in a.flags:
                 flag_rows.append(
-                    f"<tr><td>{_e(a.database)}</td><td class='mono'>{_e(a.login)}</td>"
+                    f"<tr><td>{_e(a.database)}</td>"
+                    f"<td class='mono'>{_e(a.login or a.principal)}</td>"
                     f"<td>{_e(note)}</td></tr>")
         if flag_rows:
             access += ("<h2>Escalation routes flagged</h2><div class='card'>"

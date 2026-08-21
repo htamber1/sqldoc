@@ -75,7 +75,15 @@ def check_access(cfg: dict, identifier: str, source=None, adapter_factory=None) 
                             report.logins.append(lg)
                         if "GROUP" in (lg.type or "").upper():
                             matched_group_names.add(lg.name)
-                    access = collect_db_access(cursor, server_name, database, matched, pii)
+                    access = collect_db_access(cursor, server_name, database,
+                                               matched, pii, user=user)
+                    # A group reached as a login-less database principal grants
+                    # real access and must count as a matched group. Counting
+                    # only login-backed groups told a database-only shop
+                    # "with SQL access: 0" while it held db_datareader.
+                    for a in access:
+                        if not a.has_server_login and "GROUP" in (a.principal_type or ""):
+                            matched_group_names.add(a.principal)
                     report.access.extend(access)
                 finally:
                     conn.close()

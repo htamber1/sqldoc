@@ -4,6 +4,274 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] — 2026-08-21
+
+**Security release.** Field fixes from validating sqldoc against a real corporate
+estate — a 300M-row SQL Server, a 159-server Central Management Server, and a
+group-based Active Directory. **+190 tests (1535 -> 1725 passing**, plus 123
+skip-gated integration tests).
+
+**Upgrade priority: high if you run `sqldoc agent` with `access approve` and
+emailed approval links; routine otherwise.** The dashboard recorded database-access
+approvals on an unauthenticated `GET`. The listener is loopback-only, so the
+realistic exposure is software on the agent host itself rather than the mail path in
+general — the scope is set out in full under *Security* below, and it is worth
+reading before you assign this a severity. Every other change is additive or a bug
+fix; one exception type on the AI path changed (see *Changed*).
+
+The theme is the one v3.0.3, v3.0.4 and v3.1.0 chased: **silent wrongness** —
+sqldoc exiting 0 with a report that looked complete and correct while being
+neither. This release adds a second theme: **a run that covers less than it was
+asked to must say so.**
+
+### Security
+
+- **The agent dashboard recorded a database-access approval on an unauthenticated
+  `GET`.** `GET /access/approve?token=...` and `/access/reject` called
+  `record_decision()` straight from the GET handler, so a single request recorded the
+  decision. The dashboard performs no authentication unless a top-level `auth:`
+  section exists, so by default those routes were open to anything that could reach
+  them.
+
+  **Why it matters: the links are emailed.** `access/approval.py` sends the approver
+  a message containing the approve and reject URLs, and automated software routinely
+  fetches links in mail with no human involved -- mail-security scanners, URL-rewriting
+  "safe links" proxies, and browser or mail-client link prefetchers. Any such fetch of
+  the approve URL recorded an approval.
+
+  **Scope -- read this before assigning severity.** The listener binds to `127.0.0.1`
+  only. That is a hardcoded default in both `make_server` and `run_daemon`, with no
+  config key to change it, and it was verified: connections to this host's routable
+  LAN addresses were refused. **A fetch therefore only reaches the dashboard if it
+  originates on the agent host itself, or through something the operator put in front
+  of it.** In practice that means:
+
+  * a mail client or browser previewing the link **on the machine running the agent**;
+  * a scanner, endpoint-security agent or crawler running **on that same host**;
+  * a deployment that put a reverse proxy, port-forward or SSH tunnel in front of the
+    dashboard, which widens it beyond loopback;
+  * any other local process or local user session on a shared machine.
+
+  **A scanner running in a remote mail gateway cannot reach a loopback listener and
+  did not approve anything.** The realistic exposure is co-location, not the mail
+  path in general. The token is `secrets.token_urlsafe(12)` (96 bits) and is not
+  guessable, so this was never a remote or brute-forceable issue; it needed something
+  with both the token and a route to the listener.
+
+  **The fix.** `GET` now renders a confirmation page and records nothing; only the
+  `POST` that page submits records a decision. A request that is already decided shows
+  its status and is not re-offered, so a replayed or resubmitted `POST` cannot flip a
+  decision twice. The emailed link still works -- the approver clicks it, sees the
+  database, login, role and requester, and confirms. `form-action 'self'` in the
+  existing CSP keeps the form pointed at the dashboard.
+
+  **On upgrade, audit approvals you did not make.** An approval recorded by an
+  automated fetch is stored identically to one a human clicked -- there is no field
+  that distinguishes them, and no way to tell them apart after the fact. If you run
+  `sqldoc agent` with `access approve` and email notifications enabled, review the
+  approval store under `SQLDOC_AGENT_HOME` (default `~/.sqldoc`) for decisions that
+  do not match an approver's recollection, and re-confirm any grant that matters.
+  Cross-check against the audit trail (`sqldoc audit`) for the grants actually applied.
+
+  **No CVE has been requested or assigned.** This was found in-house during a
+  pre-deployment security review of the agent, not reported by an external party, and
+  it is fixed in the release that discloses it. If you need a CVE for your own
+  vulnerability-management process, or you believe the scope above understates your
+  deployment, open an issue or follow the reporting process in `SECURITY.md`.
+
+  Related, and **not** fixed here: **every dashboard route remains readable without
+  credentials** by any local process -- schema, PII counts, health history and the
+  full rendered documentation. See *Known limitations*.
+
+### Changed
+
+- **A missing optional AI SDK now raises `BackendUnavailable`, not `ImportError`.**
+  This is a **public-API change on the AI path** and the only change here that can
+  break a downstream caller. `_retry` now classifies a missing SDK, a refused
+  connection and a rejected credential as *permanent* and re-raises them as
+  `sqldoc.ai.BackendUnavailable` (a `RuntimeError` subclass) instead of retrying an
+  import that cannot start working.
+
+  **If you catch `ImportError` around `sqldoc.ai._call_openai` / `_call_gemini` or
+  anything that funnels through `ai.dispatch`, that handler will no longer fire.**
+  Catch `sqldoc.ai.BackendUnavailable` instead. The actionable install message
+  (`pip install sqldoc[gemini]`) is preserved verbatim inside the new exception, so
+  anything matching on the message text is unaffected. `_get_openai_client()` still
+  raises a bare `ImportError` when called directly — only the `_call_*` paths wrap.
+
+- **`--fail-on-partial` now also covers an unreachable AI backend**, not just a
+  failed server in a `--cms` fan-out. One flag, one meaning — "the run covered
+  less than it was asked to" — and both causes route through the same
+  `_exit_on_partial` helper rather than a parallel mechanism. Added to `insights`,
+  `waits`, `plans` and `deadlocks`, which did not have it.
+
+  **Still defaults to off**, for the reason it always did: a partial run has
+  already written its deliverable, so exiting 2 unconditionally would break every
+  existing pipeline on upgrade. The degradation is *always announced*; only the
+  exit code is gated. `--no-ai` is never treated as partial — schema-only is what
+  was asked for.
+
+### Added
+
+- **`--include-read-principals` on `access review`**, and settable from
+  `.sqldoc.yml` as a top-level `include_read_principals:` key or under
+  `access.review:`. Opts read-level login-less database principals back into the
+  report; off by default because a shop granting through database-only role groups
+  has thousands of them and they are the intended design (one dev database: 9
+  findings by default, 21 with everything on).
+
+- **`AgentStore.reconcile_interrupted_runs()`** — closes `runs` rows left at
+  `running` by a killed process, stamping `finished_at` and a reason. Called at
+  daemon startup only, never from `AgentStore.__init__`, so checking `agent status`
+  cannot clobber a healthy agent's live run.
+
+- **`ai.probe_backend()`** — one cheap reachability check per backend per process,
+  memoized, called before any fan-out. The cloud probes check credentials and SDK
+  importability without making a billable call (asserted by a test that fails if
+  the probe touches the network). `OLLAMA_HOST` is now honoured; the endpoint was
+  previously hard-coded.
+
+### Fixed
+
+- **An unreachable AI backend cost hours instead of seconds.** `doc` queues one AI
+  task per table *and per column* *and per procedure*, each retried 3× with
+  exponential backoff, and `_run_tasks` swallowed every per-object exception. On a
+  308-table / 7,501-column / 1,261-procedure database that is ~9,070 objects ×
+  4 attempts ~ 36,280 doomed connections — a projected **7.6 hours**. An observed
+  run was stopped at 2h15m having produced nothing.
+
+  Three layers hid it: the worker swallowed the exception so `cli.main`'s
+  "try `--no-ai`" handler could never fire; the progress counter counted *attempts*,
+  printing `[6/6] table descriptions generated` after six failures; and the command
+  exited 0 having written a document byte-identical to `--no-ai` output. Fixed with
+  a preflight probe plus a process-wide down-latch, so cost is now bounded by the
+  thread-pool width rather than scaling with schema size (10,000 objects: ~40,000
+  attempts -> 8, and 4.3s). The progress line now reads `attempted, N generated`.
+
+- **`cms discover` wrote to a different file than it read**, shadowing the real
+  config. The read resolves through `find_config()`'s parent-directory walk; the
+  write used the raw unresolved path. Run from any subdirectory, discover read
+  `~/.sqldoc.yml` (with `driver:`), connected successfully, then wrote a **new**
+  CWD-local `.sqldoc.yml` containing only `cms_servers:`. That file then became the
+  nearest config, so `driver:`/`windows_auth:` vanished and the *next* `--cms`
+  command failed on **every** server with a bare ODBC `IM002` pointing at driver
+  installation. This is the documented onboarding path. The save target is now
+  resolved once and its absolute path printed.
+
+- **A Windows *group* identifier never matched its own login.** `match_user_logins`
+  matched group logins only against `user.groups` (AD membership), so when the
+  identifier *is* a group — how a group-based estate asks the question — it matched
+  nothing. `access check` reported "no access" for a principal holding
+  `db_datareader, db_datawriter, db_ddladmin`, and `access approve` then generated a
+  **redundant grant**. Resolving this needs no directory at all: the group *is* the
+  login.
+
+- **Database principals with no server login were structurally invisible.** A
+  Windows user or group can be granted directly in a database (`CREATE USER` with no
+  `FOR LOGIN`); SQL Server authorises them by SID from the connecting session's
+  token, so they confer real, usable access. `collect_db_access` seeded its loop from
+  *server* logins, so such a principal could never be its subject. **Measured:
+  ~1,387 role-holding principals invisible across 4 servers / 69 databases** — 815
+  Windows groups, 480 Windows users, 202 orphaned SQL users.
+
+  Detection is by **SID linkage, never by naming convention**: a naming suffix is a
+  convention rather than the mechanism, `authentication_type_desc` does not
+  discriminate, the catalog genuinely disagrees on case, and name matching cannot see
+  a restore orphan. The three classes are kept distinct — live Windows access,
+  orphaned SQL user, and deliberate `WITHOUT LOGIN` (never reported).
+
+- **The agent notification allowlist never worked, and failed open.**
+  `notifications.on: []` — the obvious way to write "turn notifications off" —
+  selected **all fifteen** event types, because an empty list is falsy. Worse, and
+  independently: **YAML 1.1 resolves the bare key `on:` to boolean `True`**, so the
+  documented syntax never parsed from any `.sqldoc.yml` at all, and every
+  YAML-configured agent has been notifying on every event type regardless of its
+  config. An operator who believed the agent was muted had authorised it to page
+  every configured channel. An absent `on:` still means all events; an explicit `[]`
+  now means none.
+
+- **`agent stop` could not stop a foreground agent, and force-kill signalled the
+  wrong process.** `--foreground` never wrote a pid file, so `agent stop` reported
+  "not running" and left it running. Separately, a venv install produces *two*
+  processes — the launcher shim (whose pid is recorded) and the real daemon as its
+  **child** — and on Windows terminating a parent does not terminate its child, so
+  the force path could leave the daemon running with the pid file already deleted.
+  `_terminate` now kills the whole tree (`taskkill /T /F`, `killpg` on POSIX).
+
+- **A `--cms` run without `--database` silently profiled `master`.** Every
+  table-scoped health detector is `DB_ID()`-scoped, so the estate was scored on
+  `master` (6 tables) rather than the real databases (856 and 176 on one measured
+  host) while instance-wide checks still returned real data — an authoritative-looking
+  mixed result reporting `0` findings. Now warned, and the profiled database is
+  recorded in the output. Instance-wide commands (`secure`, `server`, `backup`) stay
+  quiet, since `master` is the correct target for them.
+
+- **Bulk `health` reported two detectors it never ran.** `_w_health` did not pass
+  `tables`, so `duplicate_tables` and `redundant_indexes` were skipped while
+  `summarize()` still emitted `0` — indistinguishable from a genuine zero, and it
+  fed the estate `issues` total.
+
+- **Estate runs announced the whole estate under `--group`.** `executive --cms`,
+  `access review --cms` and `cms report` printed `len(inv.servers)`, so a run
+  auditing 4 servers logged 159. Fixed via a shared `_cms_targets()` helper.
+
+- **The `--cms` path never explained `IM002`.** The `driver:` hint the single-server
+  path has had since v3.0 was missing from the fan-out, so a driver mismatch emitted
+  up to 159 identical bare ODBC errors and never mentioned the config in effect. The
+  hint is now printed once.
+
+- **`access recommend` learned "peers" from service accounts.** `gather_peers`
+  dropped every group principal, leaving a population that was 20 service accounts,
+  1 built-in and **1 actual human** — so a least-privilege recommender was learning
+  from the accounts most likely to hold `db_owner`. Service accounts and built-ins
+  are now excluded via the shared `is_service_account()` helper, and the exclusions
+  are counted and explained rather than surfacing as a bare "0 peer(s)".
+
+- **`access script` told a group-based shop to create a group it was already
+  granting to** — "no suitable AD group found — consider creating a role-based AD
+  group" — and mislabelled the grant with `uses_windows_group=False`. The generated
+  T-SQL was already correct.
+
+- **An unknown database on the dashboard returned "not found" under HTTP 200.** Now
+  404.
+
+- **A cross-thread latch wipe in the agent poller.** The AI down-latch is
+  process-global by design, but `run_daemon` runs one poller thread per database, so
+  a per-cycle `reset_backend_state()` wiped a latch another thread's fan-out was
+  relying on, partially restoring the retry storm. Latch and probe entries now expire
+  on a TTL instead of being destructively cleared. Single-database deployments were
+  unaffected; the damage scaled with database count.
+
+### Report contract changes
+
+Both additive — every pre-existing key keeps its name and meaning, and the pinned
+key sets in `tests/regression/test_contracts.py` were updated to match.
+
+- `access-check` JSON `access[]` gained `principal`, `principal_type` and
+  `has_server_login`. `login` is left **empty** for a login-less principal rather
+  than fabricated, so `principal` is the field that always names whatever actually
+  holds the access.
+- `AccessReport.matched_groups` **widens in meaning** to "AD groups that grant SQL
+  access, whether through a server login or as a database principal". This is what
+  the CLI prints as `with SQL access: N`, and counting only login-backed groups told
+  a database-only shop `0` while it held `db_datareader`.
+
+### Known limitations
+
+- **The agent dashboard still performs no authentication by default.** Every route
+  is readable by any local process — schema, PII counts, health history and the full
+  rendered documentation. Making auth mandatory is a design decision beyond this fix.
+- **`access review --cms` ignores `--include-read-principals`** — the estate path
+  does not thread the flag through.
+- **The AD group half of the login-less principal model is documented, not
+  empirically verified.** The individual-user case of the identical SID mechanism was
+  proven live (`EXECUTE AS USER` returning `IS_ROLEMEMBER('db_datareader') = 1`), but
+  every lever for demonstrating the group path from inside a session is blocked by
+  SQL Server. Closing it needs a test account that is a member of such a group.
+- **Identifier-to-database-principal matching is by name**, reusing the login path's
+  predicate, because `ADUser` carries no SID. SID-based matching would be strictly
+  better and is the natural follow-up.
+
 ## [3.1.0] — 2026-08-14
 
 **SQL Server 2016 support, complete schema-change detection, and error messages
