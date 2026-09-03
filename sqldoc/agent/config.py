@@ -39,6 +39,16 @@ EVENT_TYPES = ["schema_change", "new_pii", "health_degradation",
                "job_failure", "disk_low", "errorlog_critical", "linked_server_down",
                "backup_stale", "replica_lag", "tempdb_version_store", "nl_alert",
                "doc_updated",
+               # An HA posture CHANGE (an availability group appearing or
+               # disappearing) is a subscribable event, not just a timeline
+               # entry: recording it in the store while leaving it unnotifiable
+               # is the half-wired shape -- the fix would record an event that
+               # goes nowhere.
+               "ha_posture",
+               # The alerting safety net failing is itself alertable. Escalation
+               # exists for the alert nobody acknowledged, so an escalation that
+               # reached no one must be able to reach someone.
+               "escalation_failed",
                "cms_server_added", "cms_server_removed", "cms_server_unreachable"]
 
 

@@ -97,3 +97,23 @@ def test_intel_cli_linked_servers(monkeypatch, fake_linked_rows, tmp_path):
     assert "Linked servers: 2" in res.output and "Reachable: 2" in res.output
     data = json.loads(jout.read_text(encoding="utf-8"))
     assert data["linked_servers"]["traversed"] is True
+
+
+def test_summarize_counts_the_not_tested_state_explicitly():
+    """probe_connectivity() is three-state, so reachable + unreachable no longer
+    sums to the total. A server whose probe could not RUN must be counted, not
+    silently absent from both buckets -- that would reinstate, in the summary,
+    the exact silence the three-state classification exists to remove."""
+    from sqldoc.intel import LinkedServer, LinkedServerReport
+
+    rep = LinkedServerReport(local_server="LOCAL", linked_servers=[
+        LinkedServer(name="UP", reachable=True),
+        LinkedServer(name="DOWN", reachable=False),
+        LinkedServer(name="DENIED", reachable=None),
+    ])
+    s = summarize_linked(rep)
+    assert s["linked_servers"] == 3
+    assert s["reachable"] == 1
+    assert s["unreachable"] == 1
+    assert s["not_tested"] == 1
+    assert s["reachable"] + s["unreachable"] + s["not_tested"] == s["linked_servers"]

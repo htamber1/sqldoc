@@ -18,12 +18,19 @@ def test_sqlserver_backups(fake_backup_rows):
     assert dbs["Staging"].never_backed_up
     # FULL recovery with no log backup -> flagged
     assert any("log backups" in i for i in dbs["AdventureWorks2022"].issues)
-    # SIMPLE recovery -> no PITR
-    assert any("SIMPLE" in i for i in dbs["Sales"].issues)
+    # SIMPLE recovery -> no PITR. v3.3.0: reported as INFORMATIONAL, not a
+    # failure -- it is a genuine PITR gap and also a legitimate deliberate
+    # config, so it is surfaced for the DBA to confirm rather than scored as
+    # broken. Still reported; just not counted against compliance.
+    assert any("SIMPLE" in i for i in dbs["Sales"].informational)
+    assert not any("SIMPLE" in i for i in dbs["Sales"].issues)
+    assert "Confirm this is intended" in dbs["Sales"].informational[0]
     assert report.pitr_enabled                       # at least one FULL db
 
     s = summarize(report)
-    assert s["databases"] == 3 and s["never_backed_up"] == 1 and s["with_issues"] == 3
+    assert s["databases"] == 3 and s["never_backed_up"] == 1
+    assert s["with_issues"] == 2            # Staging (never) + AdventureWorks (no log)
+    assert s["with_informational"] == 1     # Sales (SIMPLE)
 
 
 def test_stale_databases(fake_backup_rows):
@@ -78,7 +85,8 @@ def test_server_includes_backups(fake_server_rows, fake_backup_rows):
                             include_jobs=True, include_backups=True)
     assert report.backups is not None and len(report.backups.databases) == 3
     s = server_summarize(report)
-    assert s["never_backed_up"] == 1 and s["backup_issues"] == 3
+    assert s["never_backed_up"] == 1
+    assert s["backup_issues"] == 2 and s["backup_for_review"] == 1
     data = build_server_json("SRV", report)
     assert data["backups"]["pitr_mechanism"] == "log backups"
     assert any(d["never_backed_up"] for d in data["backups"]["databases"])

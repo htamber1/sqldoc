@@ -45,7 +45,16 @@ class DatabaseBackup:
     last_backup_age_hours: float = None
     never_backed_up: bool = False
     pitr_capable: bool = False
+    # Failures: something is wrong and the database is not compliant.
     issues: list = field(default_factory=list)
+    # Low / informational: a posture worth a DBA's eye that is NOT a failure.
+    # SIMPLE recovery is the motivating case -- it is a genuine point-in-time
+    # recovery gap AND a perfectly legitimate deliberate choice for dev/test,
+    # read replicas and warehouses reloaded from source. Scoring it as broken
+    # teaches teams who chose it on purpose to ignore the scorecard, which is
+    # how a scorecard dies; hiding it would be the silent wrongness this
+    # project keeps hunting. So: surfaced, never counted as non-compliant.
+    informational: list = field(default_factory=list)
 
 
 @dataclass
@@ -58,6 +67,14 @@ class BackupReport:
     archiver: dict = None                # PG pg_stat_archiver snapshot
     notes: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+
+
+# SQL Server ships `model` with FULL recovery, so an instance-level "is PITR on?"
+# rollup that counts system databases is True on essentially every instance --
+# which silently suppresses the warning on a box where no USER database has
+# point-in-time recovery at all. The per-database SIMPLE issue below already
+# excluded these; the rollup did not. Same list, both places.
+_SYSTEM_DBS = ("master", "model", "msdb", "tempdb")
 
 
 # --- SQL Server ------------------------------------------------------------
@@ -78,6 +95,7 @@ def _collect_sqlserver(cursor) -> BackupReport:
         ORDER BY d.name
     """)
     any_pitr = False
+    user_dbs = 0
     for r in cursor.fetchall():
         rec = _s(cell(r, "recovery_model_desc")).upper()
         last_full = _s(cell(r, "last_full"))
@@ -97,11 +115,16 @@ def _collect_sqlserver(cursor) -> BackupReport:
         if rec in ("FULL", "BULK_LOGGED") and not last_log:
             db.issues.append(f"{rec} recovery model but no log backups — the transaction "
                              f"log will grow unbounded and point-in-time restore is incomplete.")
-        if rec == "SIMPLE" and db.database not in ("master", "model", "msdb"):
-            db.issues.append("SIMPLE recovery model — no point-in-time recovery.")
-        any_pitr = any_pitr or db.pitr_capable
+        if rec == "SIMPLE" and db.database not in _SYSTEM_DBS:
+            db.informational.append(
+                "SIMPLE recovery model — no point-in-time recovery. "
+                "Confirm this is intended for this database.")
+        if db.database not in _SYSTEM_DBS:
+            user_dbs += 1
+            any_pitr = any_pitr or db.pitr_capable
         report.databases.append(db)
-    report.pitr_enabled = any_pitr
+    # No user databases means nothing to protect, so do not raise a PITR alarm.
+    report.pitr_enabled = any_pitr if user_dbs else True
     return report
 
 
@@ -262,6 +285,7 @@ def summarize(report: BackupReport) -> dict:
         "databases": len(dbs),
         "never_backed_up": sum(1 for d in dbs if d.never_backed_up),
         "with_issues": sum(1 for d in dbs if d.issues),
+        "with_informational": sum(1 for d in dbs if d.informational),
         "pitr_enabled": report.pitr_enabled,
         "pitr_mechanism": report.pitr_mechanism,
     }
@@ -285,19 +309,23 @@ def render_backup_html(database: str, report: BackupReport, output_path: str):
         f"<td>{_h.escape(str(d.last_full_backup or 'never'))}</td>"
         f"<td>{_h.escape(str(d.last_log_backup or '-'))}</td>"
         f"<td>{'yes' if d.never_backed_up else 'no'}</td>"
-        f"<td>{_h.escape('; '.join(d.issues) or '-')}</td></tr>"
+        f"<td>{_h.escape('; '.join(d.issues) or '-')}</td>"
+        f"<td class='info'>{_h.escape('; '.join(d.informational) or '-')}</td></tr>"
         for d in report.databases)
     css = ("body{background:#0d1117;color:#c9d1d9;font:14px -apple-system,Segoe UI,sans-serif;"
            "margin:0;padding:24px}table{border-collapse:collapse;width:100%}"
            "th,td{border:1px solid #21262d;padding:6px 9px;text-align:left}"
-           "th{background:#161b22;color:#8b949e}h1{font-size:19px}")
+           "th{background:#161b22;color:#8b949e}h1{font-size:19px}"
+           "td.info{color:#8b949e}")
     doc = (f"<!doctype html><html><head><meta charset='utf-8'><title>Backups - {_h.escape(database)}</title>"
            f"<style>{css}</style></head><body><h1>Backup status: {_h.escape(database)}</h1>"
            f"<p>PITR: {'enabled' if report.pitr_enabled else 'disabled'} "
            f"({_h.escape(report.pitr_mechanism or 'n/a')}) &middot; {s['databases']} database(s), "
-           f"{s['never_backed_up']} never backed up, {s['with_issues']} with issues.</p>"
+           f"{s['never_backed_up']} never backed up, {s['with_issues']} with issues, "
+           f"{s['with_informational']} for review.</p>"
            f"<table><tr><th>Database</th><th>Recovery</th><th>Last full</th><th>Last log</th>"
-           f"<th>Never</th><th>Issues</th></tr>{rows}</table></body></html>")
+           f"<th>Never</th><th>Issues</th><th>For review</th></tr>{rows}"
+           f"</table></body></html>")
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(doc)
 

@@ -437,14 +437,41 @@ def get_linked_logins(cursor) -> dict:
     return by_server
 
 
+# Failures that mean the probe never left the local server, so the remote
+# server's state is UNKNOWN rather than "down": a missing EXECUTE permission or
+# RPC being switched off says nothing about whether the far end is healthy.
+# Reporting those as unreachable raises an alert naming servers that may be
+# perfectly fine.
+_PROBE_UNAVAILABLE = re.compile(
+    r"permission was denied"
+    r"|permission denied"
+    r"|EXECUTE permission"
+    r"|is not configured for RPC"
+    r"|not configured for DATA ACCESS"
+    r"|Msg\s*(?:229|300|7411|15247)",
+    re.IGNORECASE,
+)
+
+
 def probe_connectivity(cursor, name):
     """Ping a linked server via sp_testlinkedserver, which raises if it cannot
-    connect. Returns (reachable, message)."""
+    connect. Returns (reachable, message).
+
+    `reachable` is three-state, matching `LinkedServer.reachable` ("None = not
+    tested"): True if the ping succeeded, False if it ran and could not reach
+    the remote server, and None if the probe could not be performed at all.
+    Every consumer already tests `is False` for "down" and renders None as "not
+    tested"; this function was the one path collapsing three states into two,
+    so a denied permission surfaced as a false "linked server unreachable".
+    """
     try:
         cursor.execute("EXEC sys.sp_testlinkedserver ?", name)
         return True, "OK"
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        message = f"{type(e).__name__}: {e}"
+        if _PROBE_UNAVAILABLE.search(str(e)):
+            return None, "not tested — " + message
+        return False, message
 
 
 def probe_linked_server(cursor, name):
@@ -510,6 +537,12 @@ def summarize_linked(report: LinkedServerReport) -> dict:
         "linked_servers": len(servers),
         "reachable": sum(1 for s in servers if s.reachable),
         "unreachable": sum(1 for s in servers if s.reachable is False),
+        # probe_connectivity() is three-state, so reachable + unreachable no
+        # longer sums to the total. Counting the third state explicitly keeps a
+        # server whose probe could not RUN from silently vanishing out of the
+        # summary -- which would reinstate, in the summary, exactly the silence
+        # the three-state classification exists to remove.
+        "not_tested": sum(1 for s in servers if s.reachable is None),
         "rpc_out_enabled": sum(1 for s in servers if s.is_rpc_out),
         "data_access_enabled": sum(1 for s in servers if s.is_data_access),
     }

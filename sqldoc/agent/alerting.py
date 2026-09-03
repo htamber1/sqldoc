@@ -40,6 +40,10 @@ DEFAULT_SEVERITY = {
     "health_degradation": "medium",
     "nl_alert": "medium",
     "doc_updated": "info",
+    "ha_posture": "info",
+    # Not "high": if the escalation path is broken, the thing that tells you so
+    # must outrank the alert whose escalation failed.
+    "escalation_failed": "critical",
 }
 _ALL_CHANNELS = ("slack", "teams", "webex", "email", "sms", "whatsapp", "sms_gateway",
                  "pagerduty", "opsgenie", "servicenow")
@@ -307,9 +311,69 @@ class AlertManager(Notifier):
         for al in pending:
             dedup_key = al.get("dedup_key") or f"{al.get('db_name')}|{al['type']}"
             title = f"[ESCALATED] {al['summary']}"
-            self._dispatch(tier2, al["type"], al["severity"], title,
-                           al.get("detail") or "", dedup_key, al.get("db_name"))
-            self.store.mark_alert(al["id"], "escalated")
-            log(f"escalated alert #{al['id']} ({al['type']}) to {', '.join(tier2) or 'no channels'}")
-            n += 1
+            # _dispatch returns per-channel (channel, ok, error). Discarding it
+            # made an escalation that reached NOBODY -- every tier-2 channel
+            # failing, or escalation_channels naming a channel that is not
+            # configured, leaving tier2 empty -- indistinguishable from one that
+            # paged the on-call: same return count, same "escalated" status,
+            # same log line. The alert was then marked escalated, so it dropped
+            # out of pending_escalations and never escalated again. Escalation
+            # exists precisely for the alert nobody acknowledged, so a silent
+            # failure there is the worst place for this to happen.
+            results = self._dispatch(tier2, al["type"], al["severity"], title,
+                                     al.get("detail") or "", dedup_key,
+                                     al.get("db_name"))
+            delivered = [ch for ch, good, _ in results if good]
+            failed = [(ch, err) for ch, good, err in results if not good]
+
+            if delivered:
+                self.store.mark_alert(al["id"], "escalated")
+                n += 1
+            else:
+                # Distinct, queryable status -- never the success status.
+                self.store.mark_alert(al["id"], "escalation_failed")
+
+            if failed or not tier2:
+                reason = ("no tier-2 channel is configured "
+                          f"(escalation.channels={self.a.escalation_channels})"
+                          if not tier2 else
+                          "; ".join(f"{ch}: {err}" for ch, err in failed))
+                self.store.add_event(
+                    al.get("db_name"), "error",
+                    f"Escalation of alert #{al['id']} ({al['type']}) did not "
+                    f"reach {'any' if not delivered else 'every'} tier-2 "
+                    f"channel: {reason}")
+                # ...and PUSH it. An "error" event is not in EVENT_TYPES, so
+                # recording the failure there alone reaches nobody who is not
+                # already looking at the dashboard -- which leaves the operator
+                # whose escalation path is wired to nothing exactly as uninformed
+                # as before. Dispatched directly rather than through notify() so
+                # it cannot be deduped or maintenance-suppressed into silence:
+                # this is the one message that must not be swallowed. It cannot
+                # storm, because mark_alert clears escalate_at, so an alert
+                # leaves pending_escalations for good and produces at most one
+                # of these, ever. Tier-2 channels that just failed are excluded;
+                # re-sending to a dead channel is how the report gets lost.
+                fallback = [c for c in self.a.channels_for(
+                    "critical", self._configured_channels())
+                    if c not in {ch for ch, _ in failed}]
+                if fallback:
+                    self._dispatch(
+                        fallback, "escalation_failed", "critical",
+                        f"ESCALATION FAILED for alert #{al['id']} ({al['type']})",
+                        f"{al.get('summary') or ''}\n\nEscalation did not reach "
+                        f"{'any' if not delivered else 'every'} tier-2 channel: "
+                        f"{reason}\n\nThis alert will NOT escalate again.",
+                        f"escalation_failed|{dedup_key}", al.get("db_name"))
+
+            if delivered:
+                log(f"escalated alert #{al['id']} ({al['type']}) to "
+                    f"{', '.join(delivered)}"
+                    + (f" (FAILED: {', '.join(ch for ch, _ in failed)})"
+                       if failed else ""))
+            else:
+                log(f"ESCALATION FAILED for alert #{al['id']} ({al['type']}): "
+                    + ("no tier-2 channel is configured"
+                       if not tier2 else
+                       f"every tier-2 channel failed ({', '.join(ch for ch, _ in failed)})"))
         return n

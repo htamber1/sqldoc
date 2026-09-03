@@ -90,6 +90,33 @@ _DOWN = {}
 _DOWN_LOCK = threading.Lock()
 _PROBED = {}
 
+# One lock per backend, held only across an actual probe. _DOWN_LOCK guards the
+# dicts and must never be held across a network call (a worker asking
+# backend_down() mid-fan-out would block for PROBE_TIMEOUT); this second, much
+# narrower lock is what makes the _PROBED memo hold when several poller threads
+# probe the same backend at the same instant. See probe_backend().
+_PROBE_LOCKS = {}
+_PROBE_LOCKS_LOCK = threading.Lock()
+
+
+def _probe_lock(backend: str):
+    """The lock for `backend`, created on first use."""
+    with _PROBE_LOCKS_LOCK:
+        lock = _PROBE_LOCKS.get(backend)
+        if lock is None:
+            lock = _PROBE_LOCKS[backend] = threading.Lock()
+        return lock
+
+
+def _read_probe_memo(backend: str):
+    """The memoised probe result for `backend`, or None. Drops it if expired."""
+    with _DOWN_LOCK:
+        cached = _PROBED.get(backend)
+        if cached is not None and cached[1] <= _now():
+            del _PROBED[backend]
+            cached = None
+    return cached[0] if cached is not None else None
+
 
 def _now() -> float:
     return time.monotonic()
@@ -192,15 +219,27 @@ def probe_backend(mode: str = "local", backend: str = None, model: str = None,
     """
     backend = resolve_backend(mode, backend)
     endpoint = backend_endpoint(backend)
-    with _DOWN_LOCK:
-        cached = _PROBED.get(backend)
-        if cached is not None and cached[1] <= _now():
-            del _PROBED[backend]
-            cached = None
+    cached = _read_probe_memo(backend)
     if cached is not None:
-        return cached[0]
+        return cached
     timeout = PROBE_TIMEOUT if timeout is None else timeout
 
+    # Serialise the probe itself per backend. Reading the memo, releasing the
+    # lock and only then probing means N threads arriving together all miss and
+    # all probe -- run_daemon starts every poller thread at once and each polls
+    # immediately, so that is the normal shape of cycle 1, not a rare race. The
+    # second read below is the "checked" half: whoever waited here gets the
+    # winner's result instead of repeating the call.
+    with _probe_lock(backend):
+        cached = _read_probe_memo(backend)
+        if cached is not None:
+            return cached
+        return _do_probe(backend, endpoint, timeout)
+
+
+def _do_probe(backend: str, endpoint: str, timeout: float) -> tuple:
+    """Perform one real probe and record it. Caller holds that backend's probe
+    lock, so exactly one thread per backend is ever in here."""
     if backend == "ollama":
         try:
             resp = requests.get(ollama_base_url() + "/api/tags", timeout=timeout)

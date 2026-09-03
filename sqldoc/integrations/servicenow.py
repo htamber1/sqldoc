@@ -36,12 +36,22 @@ def _base(cfg) -> str:
 
 def sn_request(method: str, path: str, cfg: dict, *, timeout: float = 30.0, **kwargs):
     """ServiceNow Table API call (path relative to instance_url) with basic auth."""
-    import requests
+    from sqldoc.nethttp import safe_request
+    from sqldoc.validation import ValidationError
     auth = (cfg["username"], cfg["password"])
     headers = kwargs.pop("headers", {})
     headers.setdefault("Accept", "application/json")
-    resp = requests.request(method, f"{_base(cfg)}{path}", auth=auth, headers=headers,
+    # Routed through the SSRF-aware transport like every other config-URL
+    # integration (webhook, Slack, Teams). instance_url is operator-supplied
+    # config and was the one such channel still calling requests directly, so
+    # it alone followed redirects unvetted — with basic-auth credentials
+    # attached to every hop.
+    url = f"{_base(cfg)}{path}"
+    try:
+        resp = safe_request(method, url, auth=auth, headers=headers,
                             timeout=timeout, **kwargs)
+    except ValidationError as e:
+        raise IntegrationError(f"ServiceNow {method} {path} refused: {e}")
     if not (200 <= resp.status_code < 300):
         raise IntegrationError(f"ServiceNow {method} {path} -> {resp.status_code}: {resp.text[:300]}")
     return resp.json() if resp.content else {}

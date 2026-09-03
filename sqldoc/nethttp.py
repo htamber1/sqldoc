@@ -46,11 +46,25 @@ def _check_hop(url: str, origin_internal: bool, allow_internal: bool,
             f"refusing request to cloud-metadata host {host!r} (SSRF).")
     internal = is_internal_host(host)
     if is_redirect:
-        # A redirect into an internal address from an external origin is the
-        # SSRF pivot — always refuse it.
-        if internal and not origin_internal:
+        # A redirect must not CROSS the internal/external divide in either
+        # direction.
+        #
+        #   external -> internal  is the classic SSRF pivot.
+        #   internal -> external  is credential exfiltration: safe_request
+        #       re-issues each hop with the caller's original kwargs, and an
+        #       explicit headers={"Authorization": ...} is NOT stripped by that
+        #       manual re-issue the way requests strips its own auth= on a
+        #       cross-host redirect. So a self-hosted or attacker-influenced
+        #       internal endpoint could 302 an authenticated POST — bearer token,
+        #       routing key, webhook secret and body — straight out to any
+        #       external host of its choosing.
+        if internal != origin_internal:
+            direction = ("external -> internal" if internal
+                         else "internal -> external")
             raise ValidationError(
-                f"refusing redirect to internal address {host!r} (SSRF).")
+                f"refusing {direction} redirect to {host!r}: a redirect may not "
+                "cross the internal/external divide (SSRF / credential "
+                "exfiltration).")
     else:
         if internal and not allow_internal:
             raise ValidationError(

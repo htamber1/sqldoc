@@ -1862,6 +1862,8 @@ def intel(config, server, database, username, password, connection_string, windo
             click.style(f"Linked servers: {ls['linked_servers']}", fg='blue')
             + click.style(f"    Reachable: {ls['reachable']}", fg='green')
             + click.style(f"    Unreachable: {ls['unreachable']}", fg='red' if ls['unreachable'] else 'green')
+            + (click.style(f"    Not tested: {ls['not_tested']}", fg='yellow')
+               if ls['not_tested'] else "")
         )
 
     click.echo("\nRendering report...")

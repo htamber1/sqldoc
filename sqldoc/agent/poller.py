@@ -288,6 +288,19 @@ def _poll_server_monitoring(store, name, adapter, agent_config, notifier, result
     # Linked-server connectivity failures.
     try:
         lsr = collect_linked_servers(adapter)
+        # collect_linked_servers() degrades by ACCUMULATING into report.errors
+        # rather than raising, so the except: below never sees those failures.
+        # Without this, a denied `sys.servers` read produced a completely silent
+        # poll: no findings, no error, indistinguishable from a clean estate.
+        for what, err in lsr.errors:
+            store.add_event(name, "error", f"Linked-server check — {what}: {err}")
+        untested = [s for s in lsr.linked_servers if s.reachable is None]
+        if untested:
+            store.add_event(
+                name, "error",
+                f"{len(untested)} linked server(s) could not be tested "
+                f"(state unknown, not reported as down): "
+                + ", ".join(s.name for s in untested[:10]))
         down = [s for s in lsr.linked_servers if s.reachable is False]
         if down:
             names = ", ".join(s.name for s in down)
@@ -352,6 +365,31 @@ def _poll_ha(store, name, adapter, agent_config, notifier, result):
     except Exception as e:
         store.add_event(name, "error", f"HA check skipped: {type(e).__name__}: {e}")
         return
+    # Record the posture, not just the problems. Returning silently here made an
+    # instance with HADR enabled but no availability group indistinguishable from
+    # one where ha_monitoring was never switched on: the collector already knows
+    # the honest answer ("No Always On availability groups are configured on this
+    # instance.") and it was being discarded. Written only when it CHANGES, so a
+    # steady state costs one event, not one per cycle.
+    result["ha_enabled"] = report.ha_enabled
+    posture = "enabled" if report.ha_enabled else "none"
+    meta_key = "ha_posture:" + name
+    if store.get_meta(meta_key) != posture:
+        store.set_meta(meta_key, posture)
+        if report.ha_enabled:
+            detail = f"HA detected: {report.mechanism}; {len(report.replicas)} replica(s)."
+        else:
+            detail = (report.notes[0] if report.notes
+                      else "No HA/replication is configured on this instance.")
+        store.add_event(name, "ha_posture", detail)
+        # Notify too, not just record. A posture CHANGE -- an availability group
+        # appearing, or disappearing from an instance that had one -- is exactly
+        # the thing an operator wants pushed to them; storing it where only
+        # someone already looking at the dashboard would see it leaves the fix
+        # half-wired. Gated by the `on` allowlist like every other event, and
+        # written only on change, so a steady state never notifies.
+        result["notifications"] += notifier.notify(
+            "ha_posture", f"{name}: HA posture changed", detail)
     if not report.ha_enabled:
         return
     behind = behind_replicas(report, agent_config.replica_lag_threshold_seconds)

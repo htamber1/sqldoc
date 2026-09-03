@@ -311,12 +311,20 @@ class AgentStore:
             return cur.lastrowid
 
     def recent_alert_since(self, dedup_key: str, since_epoch: float):
-        """Most recent *fired/escalated* alert with this dedup key whose epoch is
-        at/after the cutoff (for deduplication)."""
+        """Most recent *delivered* alert with this dedup key whose epoch is
+        at/after the cutoff (for deduplication).
+
+        `escalation_failed` counts as delivered here: that alert DID fire and
+        tier-1 delivery succeeded -- only its escalation failed. Excluding it
+        would drop it out of the dedup window, so the same condition would
+        re-alert at full rate on every cycle. The escalation failure itself is
+        surfaced separately, and unconditionally, by run_escalations.
+        """
         with self._conn() as c:
             row = c.execute(
                 "SELECT * FROM alerts WHERE dedup_key=? AND at_epoch >= ? "
-                "AND status IN ('fired','escalated') ORDER BY id DESC LIMIT 1",
+                "AND status IN ('fired','escalated','escalation_failed') "
+                "ORDER BY id DESC LIMIT 1",
                 (dedup_key, since_epoch)).fetchone()
         return dict(row) if row else None
 

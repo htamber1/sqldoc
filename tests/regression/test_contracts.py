@@ -207,6 +207,52 @@ def test_doc_json_index_and_constraint_schema():
     assert set(t["unique_constraints"][0].keys()) == {"name", "columns"}
 
 
+def test_linked_server_summary_schema():
+    """`summarize_linked` is the linked-server summary that reaches both the
+    intel HTML report and the CLI, so its key set is pinned.
+
+    `not_tested` was added deliberately: `probe_connectivity` is three-state, so
+    `reachable + unreachable` no longer sums to the total, and a server whose
+    probe could not RUN (permission denied, RPC off) would otherwise be absent
+    from every bucket -- reinstating in the summary the exact silence the
+    three-state classification exists to remove. Additive; no key was removed or
+    renamed, so no consumer breaks.
+    """
+    from sqldoc.intel import LinkedServer, LinkedServerReport, summarize_linked
+
+    rep = LinkedServerReport(local_server="LOCAL", linked_servers=[
+        LinkedServer(name="UP", reachable=True),
+        LinkedServer(name="DOWN", reachable=False),
+        LinkedServer(name="DENIED", reachable=None),
+    ])
+    s = summarize_linked(rep)
+    assert set(s.keys()) == {"linked_servers", "reachable", "unreachable",
+                             "not_tested", "rpc_out_enabled", "data_access_enabled"}
+    assert (s["linked_servers"], s["reachable"], s["unreachable"], s["not_tested"])         == (3, 1, 1, 1)
+    # the three states must partition the set -- nothing may go uncounted
+    assert s["reachable"] + s["unreachable"] + s["not_tested"] == s["linked_servers"]
+
+
+def test_agent_event_type_inventory():
+    """The agent's subscribable event types are a config contract: a user's
+    `notify.on:` list is validated against it, so removing or renaming one
+    breaks existing configs at parse time.
+
+    `ha_posture` and `escalation_failed` were added deliberately -- both were
+    being recorded in the store while being impossible to subscribe to, which
+    made each a fix that reported into a place nobody is watching.
+    """
+    from sqldoc.agent.config import EVENT_TYPES
+
+    assert set(EVENT_TYPES) == {
+        "schema_change", "new_pii", "health_degradation", "job_failure",
+        "disk_low", "errorlog_critical", "linked_server_down", "backup_stale",
+        "replica_lag", "tempdb_version_store", "nl_alert", "doc_updated",
+        "ha_posture", "escalation_failed",
+        "cms_server_added", "cms_server_removed", "cms_server_unreachable"}
+    assert len(EVENT_TYPES) == len(set(EVENT_TYPES)), "duplicate event type"
+
+
 # --- rendered report structure ---------------------------------------------
 
 def test_doc_report_structure(tmp_path):

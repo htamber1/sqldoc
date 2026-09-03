@@ -739,6 +739,8 @@ def summarize(report: ServerReport) -> dict:
                             if report.backups else 0),
         "backup_issues": (sum(1 for d in report.backups.databases if d.issues)
                           if report.backups else 0),
+        "backup_for_review": (sum(1 for d in report.backups.databases if d.informational)
+                              if report.backups else 0),
         "pitr_enabled": report.backups.pitr_enabled if report.backups else False,
         "tempdb_version_store_mb": report.tempdb.version_store_mb if report.tempdb else 0.0,
         "tempdb_contention": report.tempdb.pagelatch_contention if report.tempdb else 0,

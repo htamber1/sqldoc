@@ -138,6 +138,11 @@ def render_db_page(store, name) -> str:
 _ALERT_STATUS_LABEL = {
     "fired": ("sent", "err"),
     "escalated": ("escalated", "err"),
+    # An escalation that reached NOBODY must not render in the muted style used
+    # for benign suppressions -- that is the same "a step that could not run
+    # looks like one that succeeded" shape the escalation fix exists to remove,
+    # landing one layer downstream in the UI.
+    "escalation_failed": ("ESCALATION FAILED", "err"),
     "suppressed_maintenance": ("suppressed (maintenance)", "muted"),
     "suppressed_dedup": ("suppressed (duplicate)", "muted"),
     "resolved": ("resolved", "ok"),

@@ -4,6 +4,235 @@ All notable changes to **sqldoc** are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [3.3.0] — 2026-09-03
+
+**Security release.** Field fixes from validating the `sqldoc agent` against a real
+corporate SQL Server, Central Management Server and Active Directory estate, plus
+the first end-to-end exercise of all ten notification channels. **+83 tests
+(1725 -> 1808 passing**, plus 123 skip-gated integration tests).
+
+**Upgrade priority: high if you run `sqldoc agent` with notification channels,
+escalation, or the ServiceNow connector; routine otherwise.** Two SSRF fixes and one
+silent-failure fix are described in full below, each with its actual precondition —
+none of the three is "anyone on the internet can attack you", and it is worth reading
+the scope before assigning a severity.
+
+Minor, not patch: these change observable contracts. `probe_connectivity` returns a
+third value, `run_escalations` returns a different count and writes a new alert
+status, the SIMPLE-recovery finding moves from `issues` to a new `informational`
+field, two new event types appear, and two redirect shapes that used to be followed
+are now refused.
+
+The theme is the one v3.0.3, v3.0.4, v3.1.0 and v3.2.0 chased — **silent
+wrongness** — narrowed to its worst case: **a step that could not run reporting the
+same thing as a step that succeeded.** Four of these fixes are that exact shape. The
+release adds a corollary: **a fix that only records into the store is half-wired**,
+because nothing can subscribe to an event type that is not in `EVENT_TYPES`.
+
+### Security
+
+- **A redirect could cross the internal/external divide and carry an `Authorization`
+  header out with it.** `nethttp._check_hop` refused `external -> internal` (the
+  classic SSRF pivot) but allowed `internal -> external`. `safe_request` follows
+  redirects manually and re-issues each hop with the caller's original `kwargs`;
+  `requests` strips its own `auth=` parameter on a cross-host redirect but does not
+  strip an explicit `headers={"Authorization": ...}`, and here it never gets the
+  chance, because `safe_request` bypasses the redirect machinery that would do the
+  stripping.
+
+  **Precondition, stated plainly: this requires an endpoint that sqldoc is already
+  configured to talk to, at an internal address, to return a redirect to an external
+  host.** It is not remotely triggerable by an unrelated party, and it does not affect
+  a normal configuration pointing at a public SaaS endpoint (`external -> external`
+  redirects were and remain allowed). The realistic routes to it are an operator
+  misconfiguring a URL, an internal service that legitimately redirects off-site, or
+  someone who has compromised a self-hosted endpoint an operator already trusts —
+  in that last case this turns a foothold on an internal box into disclosure of the
+  notification credential.
+
+  What would be disclosed, when it does happen, is real: every channel that carries a
+  secret carries it in exactly the re-sent kwargs — Webex and WhatsApp
+  (`Authorization: Bearer`), Opsgenie (`Authorization: GenieKey`), PagerDuty
+  (`routing_key` in the JSON body), and Slack, Teams and the generic webhook (where
+  the secret *is* the URL), plus the full alert body.
+
+  A redirect may now not cross the divide in **either** direction, and the error names
+  the direction so a misconfiguration is diagnosable. `internal -> internal` and
+  `external -> external` are unchanged, so ordinary webhook relocations and internal
+  service redirects keep working.
+
+- **The ServiceNow connector bypassed the SSRF-aware transport entirely.**
+  `servicenow.sn_request` called `requests.request` directly — the only config-URL
+  channel still doing so. It therefore followed redirects with the `requests`
+  **auto-redirect default and no hop vetting at all**, including to `169.254.169.254`
+  and the other cloud-metadata addresses `safe_request` refuses unconditionally, and
+  did so **with basic auth attached to each hop**. It also accepted any scheme the
+  configured URL happened to carry.
+
+  **Precondition: it applies only if the ServiceNow connector is configured**, and as
+  with the previous item something must actually redirect — either an
+  operator-supplied `instance_url` pointing somewhere unintended, or a ServiceNow
+  endpoint (frequently self-hosted, therefore often internal) that returns a redirect.
+  This is the more serious of the two SSRF items despite the narrower reach, because
+  it had *no* vetting whatsoever rather than half of it: the cloud-metadata refusal
+  that every other channel got for free did not apply here.
+
+  Now routed through `safe_request`, with `ValidationError` converted to the
+  `IntegrationError` the connector's callers already expect — `create_issues` catches
+  `IntegrationError` only, so a raw `ValidationError` would have escaped the
+  connector's error contract and propagated out of a best-effort push. Basic auth, the
+  `Accept` default, the non-2xx check and `allow_internal=True` (so a legitimately
+  internal ServiceNow is still reachable as a **direct** target) are all preserved.
+
+- **A failed alert escalation was reported, stored and logged as a successful one.**
+
+  **Who is affected, first: anyone running `sqldoc agent` with `alerting.escalation`
+  configured. There is no other precondition — no attacker, no unusual deployment,
+  just a misconfiguration or an ordinary outage.** The misconfiguration case needs no
+  failure at all: writing `channels: [pagerduty]` with no `pagerduty:` block
+  configured is enough, because `channels_for` silently intersects with the configured
+  set and leaves the tier-2 list empty. Nothing in the config parse, the logs or the
+  store said so, so a wholly non-functional escalation path looked identical to a
+  working one. **If you run escalation, check your tier-2 channels are actually
+  configured** — that check is most of the remedy here, and it is worth doing whether
+  or not you upgrade today.
+
+  **This is not a disclosure bug; it is an availability-of-alerting bug, and that is
+  why it is in this section.** `run_escalations` discarded `_dispatch`'s per-channel
+  results, and `_dispatch` swallows every exception. So every tier-2 channel failing,
+  and an empty tier-2 list, both produced the same return count, the same stored
+  `escalated` status and the same log line as a page that actually reached the
+  on-call. Worse, `mark_alert(id, "escalated")` clears `escalate_at`, which drops the
+  alert out of `pending_escalations()` permanently: a critical alert that nobody
+  acknowledged, whose escalation reached nobody, **stopped escalating** — and the
+  store recorded that it had been escalated. Escalation exists precisely for the alert
+  nobody has looked at, so a silent failure there is the worst place for one.
+
+  Escalation now marks `escalated` only when a tier-2 channel actually accepted the
+  page, marks the new, queryable `escalation_failed` otherwise, counts only delivered
+  escalations, names the failed channels in the log, and **pushes a `critical` notice
+  about the failure to the surviving channels** — dispatched directly rather than
+  through `notify()` so it cannot be deduped or maintenance-suppressed into silence,
+  and bounded to at most one per alert, since `escalate_at` is cleared either way.
+  Partial delivery still counts as escalated (someone was genuinely paged) with the
+  failed channel recorded.
+
+### Fixed
+
+- **`pitr_enabled` counted system databases, so the warning could never fire.**
+  SQL Server ships `model` with FULL recovery, so the instance-level "is
+  point-in-time recovery on?" rollup was True on essentially every instance. Observed
+  live: 11 databases, every user database SIMPLE, **zero** user databases PITR-capable
+  — and `pitr_enabled` still True, solely because of `model`. The per-database SIMPLE
+  rule already excluded system databases; the sibling rollup did not. Both now share
+  one `_SYSTEM_DBS` tuple. An instance with no user databases reports `True`, because
+  there is nothing to protect and a bare instance should not raise an alarm.
+
+- **The agent discarded the honest "no HA is configured" answer.** `collect_ha()`
+  returns `ha_enabled=False` plus a note reading *"No Always On availability groups
+  are configured on this instance."*; `_poll_ha` returned on the flag and threw the
+  note away, storing nothing. "`ha_monitoring` is on and found no availability group"
+  was byte-for-byte indistinguishable from "`ha_monitoring` was never enabled". The
+  posture is now recorded **and notified**, written only when it *changes*, so a
+  steady state costs one event rather than one per cycle. Lag detection is untouched.
+
+- **A denied permission was reported as an unreachable linked server.**
+  `LinkedServer.reachable` is documented three-state and every consumer honours that —
+  the agent and `summarize_linked` test `is False`, the renderer has a grey "not
+  tested" pill — but `probe_connectivity` collapsed any failure to `False`. So a
+  missing `EXECUTE` permission on `sp_testlinkedserver`, or RPC simply being switched
+  off for that linked server, produced **"N linked server(s) unreachable"**, naming
+  servers that may be perfectly healthy and paging someone about them. The probe never
+  left the local instance in those cases, so the remote server's state was never
+  determined. Failures that demonstrably mean the probe could not run (permission
+  denied, RPC not configured, DATA ACCESS off, SQL error 229/300/7411/15247) now
+  return `None`; genuine connectivity failures still return `False` and alert exactly
+  as before.
+
+- **A denied linked-server enumeration produced a completely silent poll.**
+  `collect_linked_servers()` degrades by accumulating into `report.errors` rather than
+  raising, so `_poll_server_monitoring`'s `except` never saw those failures and
+  nothing else read the field. A denied `sys.servers` read was indistinguishable from
+  a clean estate. Every `errors` entry is now surfaced as an error event, and servers
+  left in the new "not tested" state are reported separately, so the more conservative
+  classification above does not itself become a new silence.
+
+- **Concurrent AI backend probes cost one network probe per thread.**
+  `probe_backend()` documents one check per process per TTL, but read the memo,
+  released the lock, then probed — so every thread arriving in that window missed and
+  probed. `run_daemon` starts every poller thread at once and each polls immediately,
+  making simultaneous arrival the normal shape of cycle 1, not a rare race. Measured:
+  32 concurrent threads, 32 probes. Now double-checked locking on a second,
+  per-backend lock — 32 threads, **1** probe. `_DOWN_LOCK` is deliberately *not*
+  widened to cover the probe: holding it across a network call would block any worker
+  calling `backend_down()` mid-fan-out for up to `PROBE_TIMEOUT`, reintroducing a
+  stall on the path that lock exists to keep fast. Severity is low — the cost is
+  bounded by database count, not object count, and the probe is the cheapest call each
+  backend has — and the no-per-object-retry-storm guarantee was re-verified throughout.
+
+- **A failed escalation rendered on the dashboard in the style used for benign
+  alerts.** The status-label map had no `escalation_failed` entry, so it fell through
+  to the `muted` class used for *suppressed* alerts, while a successful escalation
+  renders in the error style — inverting the visual severity of the two.
+
+### Changed
+
+- **SIMPLE recovery is now an informational finding, not a failure.**
+  `DatabaseBackup` gained an `informational` list alongside `issues`, and the SIMPLE
+  finding moved there, reworded: *"SIMPLE recovery model — no point-in-time recovery.
+  Confirm this is intended for this database."* SIMPLE is a genuine point-in-time
+  recovery gap **and** a perfectly legitimate deliberate choice for dev/test
+  databases, read replicas and warehouses reloaded from source. Scoring it as broken
+  teaches teams who chose it on purpose to ignore the scorecard; hiding it would be
+  the silent wrongness this project keeps hunting. So it is surfaced for a DBA to
+  judge, and no longer counted against compliance. **`executive`'s backup score on a
+  SIMPLE-only instance rises accordingly** (40 -> 80 on the validation shape). Real
+  failures — never backed up, FULL/BULK_LOGGED with no log backups, stale — are
+  unchanged and still score as failures. `summarize` gained `with_informational` and
+  the `server` summary gained `backup_for_review`.
+- **`probe_connectivity` returns three states**, matching the
+  `LinkedServer.reachable` contract every other path already assumed. Callers testing
+  `is False` are unaffected; callers testing truthiness now correctly treat "not
+  tested" as not-reachable.
+- **`summarize_linked` gained `not_tested`** (additive). With three states,
+  `reachable + unreachable` no longer sums to the total, so a server whose probe could
+  not run would otherwise be absent from every bucket. Pinned in
+  `tests/regression/test_contracts.py`.
+- **`run_escalations` counts only delivered escalations** and writes the new
+  `escalation_failed` alert status. **If you query the alert store, a check that
+  treated `escalated` as "handled" should now treat `escalation_failed` as
+  unhandled.**
+- **Two new event types: `ha_posture` and `escalation_failed`**, both subscribable via
+  `notifications.on:` and both on by default. `EVENT_TYPES` is now pinned in
+  `tests/regression/test_contracts.py`, since a user's `on:` list is validated against
+  it and removing or renaming an entry breaks existing configs at parse time.
+- **`escalation_failed` counts as a delivered prior alert for deduplication.** That
+  alert did fire and tier-1 delivery succeeded — only its escalation failed — so
+  excluding it would re-alert the same condition at full rate on every cycle. The
+  escalation failure itself is surfaced separately and unconditionally.
+
+### Known, and deliberately not changed
+
+- **A monitor that was skipped and a monitor that found nothing still produce the
+  same poll result.** On a denied check the run reports `status=ok`, the summary line
+  reads `poll ok`, and the finding is simply absent — the shape of a healthy instance.
+  The reason *is* recorded as an error event, so it is not silent in the store, but
+  anything consuming the result dict or the log line rather than the event stream
+  cannot tell the two apart. Fixing it is a cross-cutting change to how every monitor
+  reports, not a defect in any one of them.
+- **`server_monitoring` probes every linked server on every poll cycle.** That is by
+  design, not a defect, but it means enabling the flag on an instance carrying
+  production-reachable linked servers will have the monitored server connect to
+  production every cycle. There is no allowlist and no enumerate-without-probing
+  option. **Decide this before enabling the flag anywhere it can reach production.**
+- **`deadlocks` reads only the `system_health` ring buffer**, never the `event_file`
+  (`.xel`) target, so deadlocks that have rolled off the size-limited buffer are
+  invisible and a busy server can report 0 while history exists on disk. The report's
+  note warns about roll-off, so this is documented behaviour rather than a surprise.
+- **`ha` reports "No replication configured" having checked Always On only.** Log
+  shipping, mirroring and transactional replication are not examined. The report's own
+  note is correctly scoped; the CLI line overclaims.
+
 ## [3.2.0] — 2026-08-21
 
 **Security release.** Field fixes from validating sqldoc against a real corporate

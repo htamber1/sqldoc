@@ -173,3 +173,19 @@ def test_run_daemon_lifecycle(store):
     assert set(polled) >= {"prod", "wh"}
     assert any("agent started" in m for m in logs)
     assert any("agent stopped" in m for m in logs)
+
+
+def test_failed_escalation_does_not_render_in_the_benign_style():
+    """A failed escalation must not be styled like a suppressed (benign) alert.
+    `escalation_failed` is a new status; without an entry here the status-label
+    map falls back to the 'muted' class used for suppressions, so an escalation
+    that reached NOBODY would render less prominently than one that paged the
+    on-call -- the same 'could-not-run looks like succeeded' shape one layer
+    down from the fix in run_escalations."""
+    from sqldoc.agent.dashboard import _ALERT_STATUS_LABEL
+
+    label, cls = _ALERT_STATUS_LABEL["escalation_failed"]
+    assert cls == "err", "a failed escalation must use the error style"
+    assert cls == _ALERT_STATUS_LABEL["escalated"][1]
+    assert cls != _ALERT_STATUS_LABEL["suppressed_dedup"][1]
+    assert "FAIL" in label.upper()

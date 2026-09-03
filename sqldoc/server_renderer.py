@@ -320,7 +320,7 @@ SERVER_TEMPLATE = """
                         <td class="num">{% if d.last_backup_age_hours is not none %}{{ d.last_backup_age_hours }}{% else %}—{% endif %}</td>
                         <td class="mono">{{ d.last_log_backup or '—' }}</td>
                         <td><span class="pill {{ 'ok' if d.pitr_capable else 'bad' }}">{{ 'yes' if d.pitr_capable else 'no' }}</span></td>
-                        <td>{% for i in d.issues %}<div class="mono" style="font-size:0.75rem; color: var(--amber);">{{ i }}</div>{% endfor %}{% if not d.issues %}<span class="muted">—</span>{% endif %}</td>
+                        <td>{% for i in d.issues %}<div class="mono" style="font-size:0.75rem; color: var(--amber);">{{ i }}</div>{% endfor %}{% for i in d.informational %}<div class="mono muted" style="font-size:0.75rem;">{{ i }}</div>{% endfor %}{% if not d.issues and not d.informational %}<span class="muted">—</span>{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
